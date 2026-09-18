@@ -72,6 +72,16 @@ DEFAULT_ENGINES: list[dict[str, Any]] = [
         "enabled": True,
         "parametros": {"model": "qwen3.5:9b"},
     },
+    {
+        "id": "comfyui",
+        "nombre": "ComfyUI",
+        "ruta": "http://127.0.0.1:8188",
+        "enabled": False,
+        "parametros": {
+            "workflow_path": "C:/CComfyUI/flux_dev_workflow_api.json",
+            "default_model": "flux1-dev-fp8-e4m3fn.safetensors",
+        },
+    },
 ]
 DEFAULT_APIS: list[dict[str, Any]] = []
 DEFAULT_SETTINGS: dict[str, Any] = {"log_level": "INFO", "rutas": {}}

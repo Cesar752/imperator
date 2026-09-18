@@ -5,6 +5,7 @@ import logging
 from core.engine_manager import EngineManager
 from tasks.base_task import Task
 from tasks.chat import ChatTask
+from tasks.image import ImageTask
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 # o pasar las dependencias como kwargs para no romper la construcción uniforme.
 TASK_FACTORY: dict[str, type[Task]] = {
     "chat": ChatTask,
+    "image": ImageTask,
 }
 
 

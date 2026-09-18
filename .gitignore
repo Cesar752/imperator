@@ -21,3 +21,6 @@ logs/
 !.env.example
 config/*.json
 !config/*.example.json
+
+# Salidas generadas (imágenes, etc.)
+output/

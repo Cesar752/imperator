@@ -32,6 +32,8 @@ class Engine(ABC):
     def list_models(self) -> list[str]:
         """Devuelve los nombres de los modelos expuestos por el motor."""
 
+    # TODO(fase N): separar Engine (texto) de ImageEngine/VideoEngine/AudioEngine
+    # para no forzar a los motores multimodales a implementar chat().
     @abstractmethod
     def chat(self, messages: list[dict]) -> str:
         """Ejecuta una conversación y devuelve la respuesta completa."""

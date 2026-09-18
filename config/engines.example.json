@@ -17,5 +17,15 @@
       "modelo": "models/mistral-7b.Q4_K_M.gguf",
       "n_ctx": 4096
     }
+  },
+  {
+    "id": "comfyui",
+    "nombre": "ComfyUI",
+    "ruta": "http://127.0.0.1:8188",
+    "enabled": false,
+    "parametros": {
+      "workflow_path": "C:/CComfyUI/flux_dev_workflow_api.json",
+      "default_model": "flux1-dev-fp8-e4m3fn.safetensors"
+    }
   }
 ]

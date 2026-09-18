@@ -4,6 +4,7 @@ import logging
 
 from core.config_manager import ConfigManager
 from engines.base_engine import Engine
+from engines.comfyui import ComfyUIEngine
 from engines.ollama import OllamaEngine
 
 logger = logging.getLogger(__name__)
@@ -12,11 +13,14 @@ logger = logging.getLogger(__name__)
 # al cargar la configuración (ver :meth:`EngineManager.reload`).
 ENGINE_FACTORY: dict[str, type[Engine]] = {
     "ollama": OllamaEngine,
+    "comfyui": ComfyUIEngine,
 }
 
 # Defaults por tipo de motor (si faltan en la configuración).
 _OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
 _OLLAMA_DEFAULT_MODEL = "qwen3.5:9b"
+_COMFYUI_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
+_COMFYUI_DEFAULT_MODEL = "flux1-dev-fp8-e4m3fn.safetensors"
 
 
 class EngineManager:
@@ -59,6 +63,12 @@ class EngineManager:
             return OllamaEngine(
                 base_url=entry.get("ruta", _OLLAMA_DEFAULT_BASE_URL),
                 model=params.get("model", _OLLAMA_DEFAULT_MODEL),
+            )
+        if engine_id == "comfyui":
+            return ComfyUIEngine(
+                base_url=entry.get("ruta", _COMFYUI_DEFAULT_BASE_URL),
+                workflow_path=params.get("workflow_path"),
+                default_model=params.get("default_model", _COMFYUI_DEFAULT_MODEL),
             )
         # Genérico para futuros motores: los parametros se pasan tal cual.
         cls = ENGINE_FACTORY[engine_id]
