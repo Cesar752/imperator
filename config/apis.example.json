@@ -1,0 +1,26 @@
+[
+  {
+    "id": "openai",
+    "nombre": "OpenAI",
+    "enabled": false,
+    "key": "",
+    "base_url": "https://api.openai.com/v1",
+    "tipo": "llm"
+  },
+  {
+    "id": "deepseek",
+    "nombre": "DeepSeek",
+    "enabled": false,
+    "key": "",
+    "base_url": "https://api.deepseek.com/v1",
+    "tipo": "llm"
+  },
+  {
+    "id": "kling",
+    "nombre": "Kling",
+    "enabled": false,
+    "key": "",
+    "base_url": "https://api.klingai.com",
+    "tipo": "video"
+  }
+]

@@ -1,0 +1,21 @@
+[
+  {
+    "id": "ollama",
+    "nombre": "Ollama",
+    "ruta": "http://localhost:11434",
+    "enabled": true,
+    "parametros": {
+      "model": "qwen3.5:9b"
+    }
+  },
+  {
+    "id": "llama_cpp",
+    "nombre": "llama.cpp",
+    "ruta": "C:/ruta/a/llama.cpp/server.exe",
+    "enabled": false,
+    "parametros": {
+      "modelo": "models/mistral-7b.Q4_K_M.gguf",
+      "n_ctx": 4096
+    }
+  }
+]
