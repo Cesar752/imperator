@@ -8,6 +8,7 @@ from PyQt6.QtCore import QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -69,12 +70,14 @@ class VideoWidget(QWidget):
         "calidad": ("Calidad", 1024, 576, 5, "1024×576 · 5 s (~250 s)"),
     }
 
-    def __init__(self, engine: Engine | None, parent=None) -> None:
+    def __init__(self, engine: Engine | None, config_manager=None, parent=None) -> None:
         super().__init__(parent)
         self._engine: Engine | None = engine
+        self._config_manager = config_manager
         self._worker: VideoWorker | None = None
         self._last_path: str | None = None
         self._build_ui()
+        self._populate_models()
         if self._engine is None:
             self._set_status("Wan Video no está configurado o deshabilitado.")
 
@@ -84,6 +87,9 @@ class VideoWidget(QWidget):
 
         self._negative_prompt = QLineEdit()
         self._negative_prompt.setPlaceholderText("(opcional)")
+
+        self._model = QComboBox()
+        self._model.currentIndexChanged.connect(self._on_model_changed)
 
         self._width = QSpinBox()
         self._width.setRange(256, 2048)
@@ -135,6 +141,7 @@ class VideoWidget(QWidget):
             presets_row.addWidget(self._preset_buttons[key])
 
         form = QFormLayout()
+        form.addRow("Modelo", self._model)
         form.addRow("Prompt", self._prompt)
         form.addRow("Negativo", self._negative_prompt)
         form.addRow("Ancho", self._width)
@@ -188,6 +195,7 @@ class VideoWidget(QWidget):
             "height": self._height.value(),
             "length": length,
             "fps": self._fps.value(),
+            "model": self._model.currentData(),
         }
         if not self._random_seed.isChecked():
             try:
@@ -253,6 +261,7 @@ class VideoWidget(QWidget):
         self._generate_button.setEnabled(not busy)
         self._prompt.setEnabled(not busy)
         self._negative_prompt.setEnabled(not busy)
+        self._model.setEnabled(not busy)
         self._width.setEnabled(not busy)
         self._height.setEnabled(not busy)
         self._duration.setEnabled(not busy)
@@ -267,6 +276,32 @@ class VideoWidget(QWidget):
 
     def set_engine(self, engine: Engine | None) -> None:
         self._engine = engine
+        self._populate_models()
         if engine is None:
             self._set_status("Wan Video no está configurado o deshabilitado.")
+
+    def _populate_models(self) -> None:
+        """Rellena el selector con los GGUF del motor y restaura el último."""
+        if self._engine is None:
+            return
+        models = list(self._engine.list_models())
+        self._model.blockSignals(True)
+        self._model.clear()
+        for model_id in models:
+            self._model.addItem(model_id, model_id)
+        last = None
+        if self._config_manager is not None:
+            last = self._config_manager.load_last_models().get("video")
+        if last in models:
+            self._model.setCurrentIndex(models.index(last))
+        else:
+            # Por defecto, el GGUF high-noise (el primero que contenga "HighNoise").
+            default = next((m for m in models if "HighNoise" in m), None)
+            if default is not None:
+                self._model.setCurrentIndex(models.index(default))
+        self._model.blockSignals(False)
+
+    def _on_model_changed(self) -> None:
+        if self._config_manager is not None and self._model.currentData():
+            self._config_manager.save_last_model("video", self._model.currentData())
 

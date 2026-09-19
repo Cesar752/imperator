@@ -24,8 +24,12 @@
     "ruta": "http://127.0.0.1:8188",
     "enabled": false,
     "parametros": {
-      "workflow_path": "C:/CComfyUI/flux_dev_workflow_api.json",
-      "default_model": "flux1-dev-fp8-e4m3fn.safetensors"
+      "workflows": {
+        "flux_dev": "C:/CComfyUI/flux_dev_workflow_api.json",
+        "flux_schnell": "C:/CComfyUI/flux_schnell_workflow_api.json",
+        "z_image_turbo": "C:/CComfyUI/z_image_turbo_workflow_api.json"
+      },
+      "default_model": "flux_dev"
     }
   },
   {

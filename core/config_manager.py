@@ -61,6 +61,7 @@ SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
         "allowed": ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"),
     },
     "rutas": {"type": dict, "required": True},
+    "last_models": {"type": dict, "required": False},
 }
 
 # Valores por defecto (se escriben en disco cuando el archivo no existe).
@@ -78,8 +79,12 @@ DEFAULT_ENGINES: list[dict[str, Any]] = [
         "ruta": "http://127.0.0.1:8188",
         "enabled": False,
         "parametros": {
-            "workflow_path": "C:/CComfyUI/flux_dev_workflow_api.json",
-            "default_model": "flux1-dev-fp8-e4m3fn.safetensors",
+            "workflows": {
+                "flux_dev": "C:/CComfyUI/flux_dev_workflow_api.json",
+                "flux_schnell": "C:/CComfyUI/flux_schnell_workflow_api.json",
+                "z_image_turbo": "C:/CComfyUI/z_image_turbo_workflow_api.json",
+            },
+            "default_model": "flux_dev",
         },
     },
     {
@@ -93,7 +98,7 @@ DEFAULT_ENGINES: list[dict[str, Any]] = [
     },
 ]
 DEFAULT_APIS: list[dict[str, Any]] = []
-DEFAULT_SETTINGS: dict[str, Any] = {"log_level": "INFO", "rutas": {}}
+DEFAULT_SETTINGS: dict[str, Any] = {"log_level": "INFO", "rutas": {}, "last_models": {}}
 
 
 def _type_name(expected: type | tuple[type, ...]) -> str:
@@ -208,6 +213,19 @@ class ConfigManager:
 
     def save_settings(self, settings: dict[str, Any]) -> None:
         self._save_json("settings.json", settings, SETTINGS_SCHEMA, is_list=False)
+
+    # ---- Último modelo seleccionado por tarea --------------------
+
+    def load_last_models(self) -> dict[str, str]:
+        """Devuelve el mapa tarea -> último modelo seleccionado (settings.json)."""
+        settings = self.load_settings()
+        return dict(settings.get("last_models", {}))
+
+    def save_last_model(self, task_id: str, model: str) -> None:
+        """Guarda el último modelo seleccionado para una tarea (settings.json)."""
+        settings = self.load_settings()
+        settings.setdefault("last_models", {})[task_id] = model
+        self.save_settings(settings)
 
     # ---- Resolución de clave de API ------------------------------
 

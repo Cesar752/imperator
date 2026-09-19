@@ -51,15 +51,15 @@ class ComfyUIEngine(Engine):
     def __init__(
         self,
         base_url: str = "http://127.0.0.1:8188",
-        workflow_path: str | None = None,
-        default_model: str = "flux1-dev-fp8-e4m3fn.safetensors",
+        workflows: dict[str, str] | None = None,
+        default_model: str | None = None,
         output_dir: str | Path | None = None,
     ) -> None:
-        if not workflow_path:
-            raise EngineError("ComfyUI: falta 'workflow_path' en la config de engines.json")
+        if not workflows:
+            raise EngineError("ComfyUI: falta 'workflows' en la config de engines.json")
         self._base_url = base_url.rstrip("/")
-        self._workflow_path = Path(workflow_path)
-        self._default_model = default_model
+        self._workflows = {name: Path(path) for name, path in workflows.items()}
+        self._default_model = default_model or next(iter(self._workflows))
         # Carpeta de salida por defecto: <raíz del proyecto>/output.
         self._output_dir = (
             Path(output_dir)
@@ -86,16 +86,9 @@ class ComfyUIEngine(Engine):
         return True
 
     def list_models(self) -> list[str]:
-        # En Flux los checkpoints no se listan vía CheckpointLoaderSimple;
-        # se cargan con UNETLoader ("Load Diffusion Model"), cuyo input
-        # "unet_name" expone los ficheros de models/unet (o diffusion_models).
-        resp = requests.get(
-            f"{self._base_url}/object_info/UNETLoader", timeout=self._SHORT_TIMEOUT
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        unet_name = data["UNETLoader"]["input"]["required"]["unet_name"]
-        return list(unet_name[0])
+        # Cada modelo es una clave del diccionario "workflows" (un workflow
+        # JSON por modelo); la config es la fuente de verdad.
+        return list(self._workflows.keys())
 
     def chat(self, messages: list[dict]) -> str:
         raise EngineError("ComfyUI es un motor de generación de imagen, no de chat.")
@@ -109,12 +102,13 @@ class ComfyUIEngine(Engine):
         steps: int = 20,
         seed: int | None = None,
         guidance: float = 3.5,
+        model: str | None = None,
     ) -> Path:
         """Genera una imagen y devuelve la ruta del PNG guardado en ``output/``."""
         if seed is None:
             seed = random.randint(0, 2**31 - 1)
 
-        workflow = self._load_workflow()
+        workflow = self._load_workflow(model or self._default_model)
         self._patch_workflow(
             workflow,
             prompt=prompt,
@@ -133,13 +127,16 @@ class ComfyUIEngine(Engine):
 
     # ---- Carga y parcheo del workflow -----------------------------
 
-    def _load_workflow(self) -> dict:
+    def _load_workflow(self, model: str) -> dict:
+        if model not in self._workflows:
+            raise EngineError(f"ComfyUI: modelo desconocido '{model}'.")
+        path = self._workflows[model]
         try:
-            with self._workflow_path.open("r", encoding="utf-8") as fh:
+            with path.open("r", encoding="utf-8") as fh:
                 return json.load(fh)
         except (OSError, json.JSONDecodeError) as exc:
             raise EngineError(
-                f"ComfyUI: no se pudo cargar el workflow '{self._workflow_path}': {exc}"
+                f"ComfyUI: no se pudo cargar el workflow '{path}': {exc}"
             ) from exc
 
     def _patch_workflow(
@@ -154,20 +151,31 @@ class ComfyUIEngine(Engine):
         seed: int,
         guidance: float,
     ) -> None:
-        """Parchea los nodos del workflow con los parámetros de la petición.
+        """Parchea los nodos por tipo (los workflows Flux tienen IDs distintos).
 
-        Los IDs corresponden al workflow exportado (``flux_dev_workflow_api.json``).
+        - CLIPTextEncode con texto = prompt positivo; vacío = negativo.
+        - FluxGuidance (solo Flux Dev) = guidance.
+        - EmptySD3LatentImage = dimensiones; KSampler = seed/steps.
+        El ``unet_name`` ya está embebido en cada workflow (no se parchea).
         """
-        workflow["1"]["inputs"]["unet_name"] = self._default_model
-        workflow["4"]["inputs"]["text"] = prompt
-        # Nota: Flux Dev no aplica negative_prompt (CFG=1.0). El campo se parchea
-        # por consistencia con workflows SDXL, pero no tiene efecto en Flux.
-        workflow["6"]["inputs"]["text"] = negative_prompt
-        workflow["5"]["inputs"]["guidance"] = guidance
-        workflow["7"]["inputs"]["width"] = width
-        workflow["7"]["inputs"]["height"] = height
-        workflow["8"]["inputs"]["steps"] = steps
-        workflow["8"]["inputs"]["seed"] = seed
+        for node in workflow.values():
+            inputs = node.get("inputs")
+            if not isinstance(inputs, dict):
+                continue
+            class_type = node.get("class_type")
+            if class_type == "CLIPTextEncode":
+                if inputs.get("text", "").strip():
+                    inputs["text"] = prompt
+                else:
+                    inputs["text"] = negative_prompt
+            elif class_type == "FluxGuidance":
+                inputs["guidance"] = guidance
+            elif class_type == "EmptySD3LatentImage":
+                inputs["width"] = width
+                inputs["height"] = height
+            elif class_type == "KSampler":
+                inputs["seed"] = seed
+                inputs["steps"] = steps
 
     # ---- Envío, polling y descarga --------------------------------
 

@@ -32,7 +32,7 @@ class VideoTask(Task):
 
     def build_widget(self, parent: QWidget | None = None) -> QWidget:
         engine = self._engine_manager.get_engine("wanvideo")
-        self._widget = VideoWidget(engine, parent)
+        self._widget = VideoWidget(engine, self._engine_manager.config_manager, parent)
         return self._widget
 
     def refresh_engine(self) -> None:

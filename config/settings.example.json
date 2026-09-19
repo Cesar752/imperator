@@ -4,5 +4,6 @@
     "modelos": "C:/ruta/a/tus/modelos",
     "salida": "C:/ruta/a/tu/salida",
     "logs": "logs"
-  }
+  },
+  "last_models": {}
 }

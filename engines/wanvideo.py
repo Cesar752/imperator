@@ -104,6 +104,7 @@ class WanVideoEngine(Engine):
         length: int = 33,
         fps: int = 16,
         seed: int | None = None,
+        model: str | None = None,
         progress_callback: Callable[[int, str], None] | None = None,
     ) -> Path:
         """Genera un clip y devuelve la ruta del MP4 guardado en ``output/``.
@@ -124,6 +125,7 @@ class WanVideoEngine(Engine):
             length=length,
             fps=fps,
             seed=seed,
+            model=model,
         )
 
         client_id = str(uuid4())
@@ -155,6 +157,7 @@ class WanVideoEngine(Engine):
         length: int,
         fps: int,
         seed: int,
+        model: str | None = None,
     ) -> None:
         """Parchea los nodos del workflow con los parámetros de la petición.
 
@@ -169,6 +172,12 @@ class WanVideoEngine(Engine):
         # La misma semilla en ambas etapas (high y low) para un clip coherente.
         workflow["57"]["inputs"]["noise_seed"] = seed
         workflow["58"]["inputs"]["noise_seed"] = seed
+        # ``model`` es el GGUF high-noise; el low-noise se deriva por nombre.
+        if model is not None:
+            workflow["37"]["inputs"]["unet_name"] = model
+            workflow["56"]["inputs"]["unet_name"] = model.replace(
+                "HighNoise", "LowNoise"
+            )
 
     # ---- Envío ----------------------------------------------------
 

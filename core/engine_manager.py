@@ -22,7 +22,6 @@ ENGINE_FACTORY: dict[str, type[Engine]] = {
 _OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
 _OLLAMA_DEFAULT_MODEL = "qwen3.5:9b"
 _COMFYUI_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
-_COMFYUI_DEFAULT_MODEL = "flux1-dev-fp8-e4m3fn.safetensors"
 _WANVIDEO_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
 
 
@@ -40,6 +39,11 @@ class EngineManager:
         self._configs: dict[str, dict] = {}
         self._instances: dict[str, Engine] = {}
         self.reload()
+
+    @property
+    def config_manager(self) -> ConfigManager:
+        """ConfigManager asociado (para persistencia de preferencias de UI)."""
+        return self._config
 
     # ---- Carga ---------------------------------------------------
 
@@ -70,8 +74,8 @@ class EngineManager:
         if engine_id == "comfyui":
             return ComfyUIEngine(
                 base_url=entry.get("ruta", _COMFYUI_DEFAULT_BASE_URL),
-                workflow_path=params.get("workflow_path"),
-                default_model=params.get("default_model", _COMFYUI_DEFAULT_MODEL),
+                workflows=params.get("workflows", {}),
+                default_model=params.get("default_model"),
             )
         if engine_id == "wanvideo":
             return WanVideoEngine(

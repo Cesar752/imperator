@@ -32,7 +32,7 @@ class ImageTask(Task):
 
     def build_widget(self, parent: QWidget | None = None) -> QWidget:
         engine = self._engine_manager.get_engine("comfyui")
-        self._widget = ImageWidget(engine, parent)
+        self._widget = ImageWidget(engine, self._engine_manager.config_manager, parent)
         return self._widget
 
     def refresh_engine(self) -> None:

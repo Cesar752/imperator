@@ -8,6 +8,7 @@ from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -54,9 +55,10 @@ class ImageWorker(QThread):
 class ImageWidget(QWidget):
     """Formulario de generación con preview de la imagen resultante."""
 
-    def __init__(self, engine: Engine | None, parent=None) -> None:
+    def __init__(self, engine: Engine | None, config_manager=None, parent=None) -> None:
         super().__init__(parent)
         self._engine: Engine | None = engine
+        self._config_manager = config_manager
         self._worker: ImageWorker | None = None
         self._elapsed = 0
         self._last_path: str | None = None
@@ -64,6 +66,7 @@ class ImageWidget(QWidget):
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self._tick)
         self._build_ui()
+        self._populate_models()
         if self._engine is None:
             self._set_status("ComfyUI no está configurado o deshabilitado.")
 
@@ -73,6 +76,9 @@ class ImageWidget(QWidget):
 
         self._negative_prompt = QLineEdit()
         self._negative_prompt.setPlaceholderText("(opcional)")
+
+        self._model = QComboBox()
+        self._model.currentIndexChanged.connect(self._on_model_changed)
 
         self._width = QSpinBox()
         self._width.setRange(256, 2048)
@@ -109,6 +115,7 @@ class ImageWidget(QWidget):
         self._preview.setMinimumSize(480, 320)
 
         form = QFormLayout()
+        form.addRow("Modelo:", self._model)
         form.addRow("Prompt:", self._prompt)
         form.addRow("Prompt negativo:", self._negative_prompt)
         form.addRow("Ancho:", self._width)
@@ -137,6 +144,31 @@ class ImageWidget(QWidget):
     def set_engine(self, engine: Engine | None) -> None:
         """Cambia el motor activo."""
         self._engine = engine
+        self._populate_models()
+
+    def _populate_models(self) -> None:
+        """Rellena el selector con los modelos del motor y restaura el último."""
+        if self._engine is None:
+            return
+        models = list(self._engine.list_models())
+        self._model.blockSignals(True)
+        self._model.clear()
+        for model_id in models:
+            self._model.addItem(self._display_model(model_id), model_id)
+        last = None
+        if self._config_manager is not None:
+            last = self._config_manager.load_last_models().get("image")
+        if last in models:
+            self._model.setCurrentIndex(models.index(last))
+        self._model.blockSignals(False)
+
+    @staticmethod
+    def _display_model(model_id: str) -> str:
+        return model_id.replace("_", " ").title()
+
+    def _on_model_changed(self) -> None:
+        if self._config_manager is not None and self._model.currentData():
+            self._config_manager.save_last_model("image", self._model.currentData())
 
     def _generate(self) -> None:
         if self._engine is None:
@@ -156,6 +188,7 @@ class ImageWidget(QWidget):
             "height": self._height.value(),
             "steps": self._steps.value(),
             "guidance": self._guidance.value(),
+            "model": self._model.currentData(),
         }
         if not self._random_seed.isChecked():
             try:
@@ -226,6 +259,7 @@ class ImageWidget(QWidget):
         self._generate_button.setEnabled(not busy)
         self._prompt.setEnabled(not busy)
         self._negative_prompt.setEnabled(not busy)
+        self._model.setEnabled(not busy)
         self._width.setEnabled(not busy)
         self._height.setEnabled(not busy)
         self._steps.setEnabled(not busy)
