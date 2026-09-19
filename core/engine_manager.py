@@ -6,6 +6,7 @@ from core.config_manager import ConfigManager
 from engines.base_engine import Engine
 from engines.comfyui import ComfyUIEngine
 from engines.ollama import OllamaEngine
+from engines.wanvideo import WanVideoEngine
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 ENGINE_FACTORY: dict[str, type[Engine]] = {
     "ollama": OllamaEngine,
     "comfyui": ComfyUIEngine,
+    "wanvideo": WanVideoEngine,
 }
 
 # Defaults por tipo de motor (si faltan en la configuración).
@@ -21,6 +23,7 @@ _OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
 _OLLAMA_DEFAULT_MODEL = "qwen3.5:9b"
 _COMFYUI_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
 _COMFYUI_DEFAULT_MODEL = "flux1-dev-fp8-e4m3fn.safetensors"
+_WANVIDEO_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
 
 
 class EngineManager:
@@ -69,6 +72,11 @@ class EngineManager:
                 base_url=entry.get("ruta", _COMFYUI_DEFAULT_BASE_URL),
                 workflow_path=params.get("workflow_path"),
                 default_model=params.get("default_model", _COMFYUI_DEFAULT_MODEL),
+            )
+        if engine_id == "wanvideo":
+            return WanVideoEngine(
+                base_url=entry.get("ruta", _WANVIDEO_DEFAULT_BASE_URL),
+                workflow_path=params.get("workflow_path"),
             )
         # Genérico para futuros motores: los parametros se pasan tal cual.
         cls = ENGINE_FACTORY[engine_id]

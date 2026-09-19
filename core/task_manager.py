@@ -6,6 +6,7 @@ from core.engine_manager import EngineManager
 from tasks.base_task import Task
 from tasks.chat import ChatTask
 from tasks.image import ImageTask
+from tasks.video import VideoTask
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 TASK_FACTORY: dict[str, type[Task]] = {
     "chat": ChatTask,
     "image": ImageTask,
+    "video": VideoTask,
 }
 
 

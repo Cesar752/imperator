@@ -82,6 +82,15 @@ DEFAULT_ENGINES: list[dict[str, Any]] = [
             "default_model": "flux1-dev-fp8-e4m3fn.safetensors",
         },
     },
+    {
+        "id": "wanvideo",
+        "nombre": "Wan Video",
+        "ruta": "http://127.0.0.1:8188",
+        "enabled": False,
+        "parametros": {
+            "workflow_path": "C:/CComfyUI/wan22_t2v_workflow_api.json",
+        },
+    },
 ]
 DEFAULT_APIS: list[dict[str, Any]] = []
 DEFAULT_SETTINGS: dict[str, Any] = {"log_level": "INFO", "rutas": {}}
