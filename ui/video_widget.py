@@ -62,6 +62,13 @@ class VideoWorker(QThread):
 class VideoWidget(QWidget):
     """Formulario de generación de vídeo con barra de progreso y salida MP4."""
 
+    # Presets: id -> (label, width, height, duración_s, tooltip).
+    _PRESETS = {
+        "rapido": ("Rápido", 832, 480, 2, "832×480 · 2 s (~69 s)"),
+        "equilibrado": ("Equilibrado", 832, 480, 4, "832×480 · 4 s (~140 s)"),
+        "calidad": ("Calidad", 1024, 576, 5, "1024×576 · 5 s (~250 s)"),
+    }
+
     def __init__(self, engine: Engine | None, parent=None) -> None:
         super().__init__(parent)
         self._engine: Engine | None = engine
@@ -88,7 +95,7 @@ class VideoWidget(QWidget):
 
         self._duration = QSpinBox()
         self._duration.setRange(1, 30)
-        self._duration.setValue(2)
+        self._duration.setValue(4)
         self._duration.setSuffix(" s")
 
         self._fps = QSpinBox()
@@ -104,6 +111,13 @@ class VideoWidget(QWidget):
         )
         self._seed.setEnabled(False)
 
+        self._preset_buttons: dict[str, QPushButton] = {}
+        for key, (label, _w, _h, _dur, tooltip) in self._PRESETS.items():
+            btn = QPushButton(label)
+            btn.setToolTip(tooltip)
+            btn.clicked.connect(lambda _checked=False, k=key: self._apply_preset(k))
+            self._preset_buttons[key] = btn
+
         self._generate_button = QPushButton("Generar")
         self._save_button = QPushButton("Guardar como...")
         self._save_button.setEnabled(False)
@@ -116,6 +130,10 @@ class VideoWidget(QWidget):
 
         self._status = QLabel("")
 
+        presets_row = QHBoxLayout()
+        for key in self._PRESETS:
+            presets_row.addWidget(self._preset_buttons[key])
+
         form = QFormLayout()
         form.addRow("Prompt", self._prompt)
         form.addRow("Negativo", self._negative_prompt)
@@ -123,6 +141,7 @@ class VideoWidget(QWidget):
         form.addRow("Alto", self._height)
         form.addRow("Duración", self._duration)
         form.addRow("FPS", self._fps)
+        form.addRow("Presets", presets_row)
         form.addRow("Seed", self._seed)
         form.addRow("", self._random_seed)
 
@@ -141,6 +160,13 @@ class VideoWidget(QWidget):
         self._generate_button.clicked.connect(self._generate)
         self._save_button.clicked.connect(self._save_as)
         self._open_button.clicked.connect(self._open_folder)
+
+    def _apply_preset(self, key: str) -> None:
+        label, width, height, duration, _tooltip = self._PRESETS[key]
+        self._width.setValue(width)
+        self._height.setValue(height)
+        self._duration.setValue(duration)
+        self._set_status(f"Preset aplicado: {label}")
 
     def _generate(self) -> None:
         if self._engine is None:
@@ -232,6 +258,8 @@ class VideoWidget(QWidget):
         self._duration.setEnabled(not busy)
         self._fps.setEnabled(not busy)
         self._random_seed.setEnabled(not busy)
+        for btn in self._preset_buttons.values():
+            btn.setEnabled(not busy)
         self._seed.setEnabled(not busy and not self._random_seed.isChecked())
 
     def _set_status(self, text: str) -> None:
