@@ -1,11 +1,30 @@
 """Ventana principal de PlataformaIA."""
 
+import logging
+from pathlib import Path
+
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QMainWindow, QMessageBox, QTabWidget
+from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtWidgets import (
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from core.engine_manager import EngineManager
 from core.task_manager import TaskManager
 from ui.engines_dialog import EnginesDialog
+
+logger = logging.getLogger(__name__)
+
+# Raíz del proyecto (C:\Imperator); los assets viven en assets/.
+ASSETS = Path(__file__).resolve().parent.parent / "assets"
+
+# Altura del logo en el header (px).
+HEADER_LOGO_HEIGHT = 60
 
 
 class MainWindow(QMainWindow):
@@ -14,6 +33,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("PlataformaIA")
+        self._apply_window_icon()
         self.resize(900, 600)
         self._engine_manager = EngineManager()
         self._task_manager = TaskManager(self._engine_manager)
@@ -21,6 +41,13 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._build_central_widget()
         self._build_status_bar()
+
+    def _apply_window_icon(self) -> None:
+        icon_path = ASSETS / "icono.ico"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
+        else:
+            logger.warning("Falta el icono: %s", icon_path)
 
     def _build_menu(self) -> None:
         menubar = self.menuBar()
@@ -41,7 +68,44 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         for task in self._task_manager.list_tasks():
             tabs.addTab(task.build_widget(parent=tabs), task.nombre)
-        self.setCentralWidget(tabs)
+
+        header = self._build_header()
+        if header is None:
+            self.setCentralWidget(tabs)
+            return
+
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(header)
+        layout.addWidget(tabs)
+        self.setCentralWidget(central)
+
+    def _build_header(self) -> QLabel | None:
+        """Devuelve el QLabel con el logo, o ``None`` si no hay logo disponible."""
+        logo_path = ASSETS / "imperator.png"
+        if not logo_path.exists():
+            logger.warning("Falta el logo: %s", logo_path)
+            return None
+        pixmap = QPixmap(str(logo_path))
+        if pixmap.isNull():
+            logger.warning("El logo no se pudo cargar: %s", logo_path)
+            return None
+
+        label = QLabel()
+        label.setPixmap(
+            pixmap.scaledToHeight(
+                HEADER_LOGO_HEIGHT,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+        label.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        label.setFixedHeight(HEADER_LOGO_HEIGHT)
+        label.setContentsMargins(8, 0, 8, 0)
+        return label
 
     def _build_status_bar(self) -> None:
         engine = self._engine_manager.get_engine("ollama")
