@@ -24,3 +24,9 @@ config/*.json
 
 # Salidas generadas (imágenes, etc.)
 output/
+
+# Medios generados sueltos en la raiz (los de output/ ya estan ignorados)
+/*.mp4
+/*.png
+/*.jpg
+/*.jpeg
