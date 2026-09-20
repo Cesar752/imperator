@@ -6,6 +6,7 @@ from core.engine_manager import EngineManager
 from tasks.base_task import Task
 from tasks.chat import ChatTask
 from tasks.document import DocumentTask
+from tasks.audio import AudioTask
 from tasks.image import ImageTask
 from tasks.video import VideoTask
 
@@ -23,6 +24,7 @@ TASK_FACTORY: dict[str, type[Task]] = {
     "document": DocumentTask,
     "image": ImageTask,
     "video": VideoTask,
+    "audio": AudioTask,
 }
 
 

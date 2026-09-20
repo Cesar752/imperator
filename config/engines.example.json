@@ -53,5 +53,15 @@
       },
       "default_model": "t2v"
     }
+  },
+  {
+    "id": "piper_tts",
+    "nombre": "Piper TTS",
+    "ruta": "voices",
+    "enabled": true,
+    "parametros": {
+      "voices_dir": "voices",
+      "default_voice": "es_ES-davefx-medium"
+    }
   }
 ]

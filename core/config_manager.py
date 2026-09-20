@@ -107,6 +107,16 @@ DEFAULT_ENGINES: list[dict[str, Any]] = [
             "default_model": "t2v",
         },
     },
+    {
+        "id": "piper_tts",
+        "nombre": "Piper TTS",
+        "ruta": "voices",
+        "enabled": True,
+        "parametros": {
+            "voices_dir": "voices",
+            "default_voice": "es_ES-davefx-medium",
+        },
+    },
 ]
 DEFAULT_APIS: list[dict[str, Any]] = []
 DEFAULT_SETTINGS: dict[str, Any] = {"log_level": "INFO", "rutas": {}, "last_models": {}}

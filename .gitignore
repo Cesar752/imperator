@@ -30,3 +30,7 @@ output/
 /*.png
 /*.jpg
 /*.jpeg
+/*.wav
+
+# Voces de Piper (modelos ONNX descargados, no se versionan)
+voices/

@@ -7,6 +7,7 @@ from engines.base_engine import Engine
 from engines.comfyui import ComfyUIEngine
 from engines.ollama import OllamaEngine
 from engines.ollama_vision import OllamaVisionEngine
+from engines.piper_tts import PiperTTSEngine
 from engines.wanvideo import WanVideoEngine
 
 logger = logging.getLogger(__name__)
@@ -18,6 +19,7 @@ ENGINE_FACTORY: dict[str, type[Engine]] = {
     "ollama_vision": OllamaVisionEngine,
     "comfyui": ComfyUIEngine,
     "wanvideo": WanVideoEngine,
+    "piper_tts": PiperTTSEngine,
 }
 
 # Defaults por tipo de motor (si faltan en la configuración).
@@ -27,6 +29,7 @@ _OLLAMA_VISION_DEFAULT_BASE_URL = "http://localhost:11434"
 _OLLAMA_VISION_DEFAULT_MODEL = "qwen2.5vl:7b"
 _COMFYUI_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
 _WANVIDEO_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
+_PIPER_DEFAULT_VOICES_DIR = "voices"
 
 
 class EngineManager:
@@ -95,6 +98,11 @@ class EngineManager:
                 base_url=entry.get("ruta", _WANVIDEO_DEFAULT_BASE_URL),
                 workflows=workflows,
                 default_model=params.get("default_model", "t2v"),
+            )
+        if engine_id == "piper_tts":
+            return PiperTTSEngine(
+                voices_dir=params.get("voices_dir", entry.get("ruta", _PIPER_DEFAULT_VOICES_DIR)),
+                default_voice=params.get("default_voice"),
             )
         # Genérico para futuros motores: los parametros se pasan tal cual.
         cls = ENGINE_FACTORY[engine_id]
