@@ -62,6 +62,7 @@ SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
     },
     "rutas": {"type": dict, "required": True},
     "last_models": {"type": dict, "required": False},
+    "unload_on_tab_change": {"type": bool, "required": False},
 }
 
 # Valores por defecto (se escriben en disco cuando el archivo no existe).
@@ -130,7 +131,12 @@ DEFAULT_ENGINES: list[dict[str, Any]] = [
     },
 ]
 DEFAULT_APIS: list[dict[str, Any]] = []
-DEFAULT_SETTINGS: dict[str, Any] = {"log_level": "INFO", "rutas": {}, "last_models": {}}
+DEFAULT_SETTINGS: dict[str, Any] = {
+    "log_level": "INFO",
+    "rutas": {},
+    "last_models": {},
+    "unload_on_tab_change": True,
+}
 
 
 def _type_name(expected: type | tuple[type, ...]) -> str:

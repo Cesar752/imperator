@@ -84,17 +84,19 @@ class ComfyUIEngine(Engine):
         except requests.RequestException as exc:
             logger.warning("No se pudo interrumpir ComfyUI: %s", exc)
 
-    def _free_models(self) -> None:
-        """Libera VRAM/RAM de ComfyUI tras finalizar una generación (POST /free)."""
+    def unload_model(self) -> bool:
+        """Libera VRAM/RAM de ComfyUI (POST /free)."""
         try:
             requests.post(
                 f"{self._base_url}/free",
                 json={"unload_models": True, "free_memory": True},
                 timeout=5,
             )
-            logger.info("ComfyUI: modelos liberados tras generate_image")
+            logger.info("ComfyUI: modelos liberados")
+            return True
         except requests.RequestException as exc:
             logger.warning("No se pudo liberar ComfyUI: %s", exc)
+            return False
 
     def is_available(self) -> bool:
         try:
@@ -150,7 +152,7 @@ class ComfyUIEngine(Engine):
             content = self._download(image_meta)
             return self._save(content, seed)
         finally:
-            self._free_models()
+            self.unload_model()
 
     # ---- Carga y parcheo del workflow -----------------------------
 

@@ -26,6 +26,10 @@ ASSETS = Path(__file__).resolve().parent.parent / "assets"
 # Altura del logo en el header (px).
 HEADER_LOGO_HEIGHT = 60
 
+# Índice de pestaña -> id de motor Ollama cuyo modelo se descarga al salir.
+# El orden de pestañas viene de TASK_FACTORY (0 chat, 1 document, ...).
+TAB_TO_ENGINE = {0: "ollama", 1: "ollama_vision"}
+
 
 class MainWindow(QMainWindow):
     """Ventana principal con las tareas registradas en pestañas y menú de motores."""
@@ -38,8 +42,11 @@ class MainWindow(QMainWindow):
         self._engine_manager = EngineManager()
         self._task_manager = TaskManager(self._engine_manager)
         self._engines_dialog: EnginesDialog | None = None
+        self._current_tab_index = 0
+        self._unload_toggle = None
         self._build_menu()
         self._build_central_widget()
+        self._validate_tab_mapping()
         self._build_status_bar()
 
     def closeEvent(self, event) -> None:
@@ -89,12 +96,28 @@ class MainWindow(QMainWindow):
         manage_action = engines_menu.addAction("&Gestionar motores...")
         manage_action.triggered.connect(self._open_engines_dialog)
 
+        engines_menu.addSeparator()
+
+        self._unload_toggle = engines_menu.addAction("Liberar VRAM al cambiar de pestaña")
+        self._unload_toggle.setCheckable(True)
+        self._unload_toggle.setChecked(self._unload_on_tab_change_enabled())
+        self._unload_toggle.setToolTip(
+            "Libera la VRAM del modelo de Ollama al salir de Chat o Documentos.\n"
+            "Desactivar acelera si alternas Chat/Documentos, pero puede provocar OOM\n"
+            "al pasar a Imagen o Vídeo."
+        )
+        self._unload_toggle.toggled.connect(self._on_unload_toggle)
+
+        free_action = engines_menu.addAction("Liberar VRAM ahora")
+        free_action.triggered.connect(self._free_all_vram)
+
         help_menu = menubar.addMenu("&Ayuda")
         about_action = help_menu.addAction("&Acerca de")
         about_action.triggered.connect(self._show_about)
 
     def _build_central_widget(self) -> None:
         tabs = QTabWidget()
+        tabs.currentChanged.connect(self._on_tab_changed)
         for task in self._task_manager.list_tasks():
             tabs.addTab(task.build_widget(parent=tabs), task.nombre)
 
@@ -168,6 +191,60 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Ollama: desconectado")
         else:
             self.statusBar().showMessage("Ollama: conectado")
+
+    # ---- Liberación de VRAM --------------------------------------
+
+    def _on_tab_changed(self, index: int) -> None:
+        """Descarga el motor Ollama de la pestaña que se abandona."""
+        previous = self._current_tab_index
+        self._current_tab_index = index
+        if previous == index or not self._unload_toggle.isChecked():
+            return
+        engine_id = TAB_TO_ENGINE.get(previous)
+        if engine_id is None:
+            return
+        try:
+            engine = self._engine_manager.get_engine(engine_id)
+            if engine is not None and hasattr(engine, "unload_model"):
+                engine.unload_model()
+        except Exception as exc:  # noqa: BLE001 - no bloquear el cambio de pestaña
+            logger.warning("No se pudo liberar VRAM del motor %s: %s", engine_id, exc)
+
+    def _validate_tab_mapping(self) -> None:
+        """Verifica que TAB_TO_ENGINE siga alineado con el orden de pestañas."""
+        tasks = self._task_manager.list_tasks()
+        expected = {0: "chat", 1: "document"}
+        for tab_index, task_id in expected.items():
+            if tab_index >= len(tasks) or tasks[tab_index].id != task_id:
+                logger.warning(
+                    "TAB_TO_ENGINE desincronizado: se esperaba '%s' en la pestaña %d.",
+                    task_id,
+                    tab_index,
+                )
+
+    def _unload_on_tab_change_enabled(self) -> bool:
+        settings = self._engine_manager.config_manager.load_settings()
+        return bool(settings.get("unload_on_tab_change", True))
+
+    def _on_unload_toggle(self, checked: bool) -> None:
+        settings = self._engine_manager.config_manager.load_settings()
+        settings["unload_on_tab_change"] = checked
+        self._engine_manager.config_manager.save_settings(settings)
+
+    def _free_all_vram(self) -> None:
+        """Libera la VRAM de todos los motores que la usan (botón manual)."""
+        freed = False
+        for engine_id in self._engine_manager.supported_types():
+            try:
+                engine = self._engine_manager.get_engine(engine_id)
+                if engine is not None and hasattr(engine, "unload_model"):
+                    if engine.unload_model():
+                        freed = True
+            except Exception as exc:  # noqa: BLE001 - no bloquear la liberación
+                logger.warning("No se pudo liberar VRAM de %s: %s", engine_id, exc)
+        self.statusBar().showMessage(
+            "VRAM liberada" if freed else "No se pudo liberar VRAM"
+        )
 
     def _show_about(self) -> None:
         QMessageBox.about(

@@ -45,6 +45,7 @@ class OllamaVisionEngine(Engine):
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._default_model = default_model
+        self._last_used_model: str | None = None
 
     @property
     def id(self) -> str:
@@ -99,6 +100,7 @@ class OllamaVisionEngine(Engine):
             ) from exc
 
         model = model or self._default_model
+        self._last_used_model = model
         payload = {
             "model": model,
             "messages": [{"role": "user", "content": prompt, "images": [encoded]}],
@@ -135,3 +137,20 @@ class OllamaVisionEngine(Engine):
         content = data.get("message", {}).get("content", "") or ""
         logger.debug("Ollama Vision OK: %d chars", len(content))
         return content
+
+    def unload_model(self) -> bool:
+        """Descarga el modelo en uso de la VRAM de Ollama (``keep_alive: 0``)."""
+        model = self._last_used_model or self._default_model
+        if not model:
+            return True
+        try:
+            requests.post(
+                f"{self._base_url}/api/generate",
+                json={"model": model, "keep_alive": 0},
+                timeout=2,
+            )
+            logger.info("Ollama Vision: modelo '%s' descargado de VRAM", model)
+            return True
+        except requests.RequestException as exc:
+            logger.warning("No se pudo descargar '%s' de Ollama: %s", model, exc)
+            return False

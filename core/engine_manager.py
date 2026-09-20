@@ -81,7 +81,7 @@ class EngineManager:
         if engine_id == "ollama":
             return OllamaEngine(
                 base_url=entry.get("ruta", _OLLAMA_DEFAULT_BASE_URL),
-                model=params.get("model", _OLLAMA_DEFAULT_MODEL),
+                default_model=params.get("model", _OLLAMA_DEFAULT_MODEL),
             )
         if engine_id == "ollama_vision":
             return OllamaVisionEngine(

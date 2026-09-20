@@ -110,6 +110,10 @@ class WanVideoEngine(Engine):
         except requests.RequestException as exc:
             logger.warning("No se pudo liberar ComfyUI: %s", exc)
 
+    def unload_model(self) -> bool:
+        """WanVideo ya libera tras cada generación; no-op para consistencia."""
+        return True
+
     def is_available(self) -> bool:
         try:
             resp = requests.get(

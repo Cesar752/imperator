@@ -32,7 +32,7 @@ class ChatTask(Task):
 
     def build_widget(self, parent: QWidget | None = None) -> QWidget:
         engine = self._engine_manager.get_engine("ollama")
-        self._widget = ChatWidget(engine, parent)
+        self._widget = ChatWidget(engine, self._engine_manager.config_manager, parent)
         return self._widget
 
     def refresh_engine(self) -> None:
