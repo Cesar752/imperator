@@ -2,4 +2,5 @@ PyQt6>=6.6.0
 python-dotenv>=1.0.0
 requests>=2.31.0
 websocket-client>=1.6.0
+PyMuPDF>=1.24.0
 # Pillow>=10.0  # solo para regenerar assets/icono.ico (no runtime)

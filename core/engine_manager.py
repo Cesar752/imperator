@@ -6,6 +6,7 @@ from core.config_manager import ConfigManager
 from engines.base_engine import Engine
 from engines.comfyui import ComfyUIEngine
 from engines.ollama import OllamaEngine
+from engines.ollama_vision import OllamaVisionEngine
 from engines.wanvideo import WanVideoEngine
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 # al cargar la configuración (ver :meth:`EngineManager.reload`).
 ENGINE_FACTORY: dict[str, type[Engine]] = {
     "ollama": OllamaEngine,
+    "ollama_vision": OllamaVisionEngine,
     "comfyui": ComfyUIEngine,
     "wanvideo": WanVideoEngine,
 }
@@ -21,6 +23,8 @@ ENGINE_FACTORY: dict[str, type[Engine]] = {
 # Defaults por tipo de motor (si faltan en la configuración).
 _OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
 _OLLAMA_DEFAULT_MODEL = "qwen3.5:9b"
+_OLLAMA_VISION_DEFAULT_BASE_URL = "http://localhost:11434"
+_OLLAMA_VISION_DEFAULT_MODEL = "qwen2.5vl:7b"
 _COMFYUI_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
 _WANVIDEO_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
 
@@ -70,6 +74,11 @@ class EngineManager:
             return OllamaEngine(
                 base_url=entry.get("ruta", _OLLAMA_DEFAULT_BASE_URL),
                 model=params.get("model", _OLLAMA_DEFAULT_MODEL),
+            )
+        if engine_id == "ollama_vision":
+            return OllamaVisionEngine(
+                base_url=entry.get("ruta", _OLLAMA_VISION_DEFAULT_BASE_URL),
+                default_model=params.get("model", _OLLAMA_VISION_DEFAULT_MODEL),
             )
         if engine_id == "comfyui":
             return ComfyUIEngine(

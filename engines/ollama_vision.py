@@ -1,0 +1,137 @@
+"""Motor local Ollama Vision (HTTP API en http://localhost:11434)."""
+
+import base64
+import logging
+from pathlib import Path
+
+import requests
+
+from engines.base_engine import Engine, EngineError
+
+logger = logging.getLogger(__name__)
+
+# Marcadores (subcadenas, en minúsculas) para detectar modelos con capacidad de
+# visión entre los expuestos por /api/tags.
+VISION_MODEL_MARKERS = (
+    "qwen2.5vl",
+    "qwen2-vl",
+    "qwen-vl",
+    "glm-ocr",
+    "minicpm-v",
+    "llava",
+    "gemma3",
+    "llama3.2-vision",
+    "vision",
+)
+
+
+class OllamaVisionEngine(Engine):
+    """Motor multimodal de Ollama: analiza una imagen y devuelve texto.
+
+    Expone ``analyze_image()``, que codifica la imagen en base64 y la envía a
+    ``/api/chat`` con el campo ``images`` (formato nativo de Ollama para modelos
+    de visión). El OCR/resumen/extracción de tablas se orquesta desde la capa de
+    UI (ver ``ui/document_widget.py``); aquí solo vive el primitivo "dime el
+    texto que ves en esta imagen".
+    """
+
+    _SHORT_TIMEOUT = 2.0       # /api/tags
+    _ANALYZE_TIMEOUT = 180.0   # /api/chat (los PDFs grandes tardan)
+
+    def __init__(
+        self,
+        base_url: str = "http://localhost:11434",
+        default_model: str = "qwen2.5vl:7b",
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._default_model = default_model
+
+    @property
+    def id(self) -> str:
+        return "ollama_vision"
+
+    @property
+    def nombre(self) -> str:
+        return "Ollama Vision"
+
+    def is_available(self) -> bool:
+        try:
+            resp = requests.get(
+                f"{self._base_url}/api/tags", timeout=self._SHORT_TIMEOUT
+            )
+            resp.raise_for_status()
+        except requests.RequestException:
+            return False
+        return True
+
+    def list_models(self) -> list[str]:
+        resp = requests.get(
+            f"{self._base_url}/api/tags", timeout=self._SHORT_TIMEOUT
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return [
+            model["name"]
+            for model in data.get("models", [])
+            if self._is_vision_model(model.get("name", ""))
+        ]
+
+    @staticmethod
+    def _is_vision_model(name: str) -> bool:
+        lowered = name.lower()
+        return any(marker in lowered for marker in VISION_MODEL_MARKERS)
+
+    def chat(self, messages: list[dict]) -> str:
+        raise EngineError("Ollama Vision es un motor de visión, no de chat.")
+
+    def analyze_image(
+        self, image_path: Path, prompt: str, model: str | None = None
+    ) -> str:
+        """Codifica la imagen en base64 y pide a Ollama que la analice."""
+        image_path = Path(image_path)
+        if not image_path.exists():
+            raise EngineError(f"Ollama Vision: la imagen no existe: {image_path}")
+        try:
+            encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+        except OSError as exc:
+            raise EngineError(
+                f"Ollama Vision: no se pudo leer la imagen: {exc}"
+            ) from exc
+
+        model = model or self._default_model
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt, "images": [encoded]}],
+            "stream": False,
+        }
+        logger.debug(
+            "Ollama Vision: analizando '%s' con '%s'", image_path.name, model
+        )
+        try:
+            resp = requests.post(
+                f"{self._base_url}/api/chat",
+                json=payload,
+                timeout=self._ANALYZE_TIMEOUT,
+            )
+            resp.raise_for_status()
+        except requests.exceptions.ConnectionError as exc:
+            raise EngineError(
+                "No se pudo conectar a Ollama. ¿Está arrancado?"
+            ) from exc
+        except requests.exceptions.Timeout as exc:
+            raise EngineError(
+                "Ollama Vision: timeout al procesar la imagen."
+            ) from exc
+        except requests.RequestException as exc:
+            raise EngineError(f"Error al hablar con Ollama: {exc}") from exc
+
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise EngineError(
+                "Ollama devolvió una respuesta que no es JSON válido."
+            ) from exc
+
+        content = data.get("message", {}).get("content", "") or ""
+        logger.debug("Ollama Vision OK: %d chars", len(content))
+        return content

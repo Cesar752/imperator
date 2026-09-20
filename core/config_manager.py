@@ -74,6 +74,13 @@ DEFAULT_ENGINES: list[dict[str, Any]] = [
         "parametros": {"model": "qwen3.5:9b"},
     },
     {
+        "id": "ollama_vision",
+        "nombre": "Ollama Vision",
+        "ruta": "http://localhost:11434",
+        "enabled": True,
+        "parametros": {"model": "qwen2.5vl:7b"},
+    },
+    {
         "id": "comfyui",
         "nombre": "ComfyUI",
         "ruta": "http://127.0.0.1:8188",

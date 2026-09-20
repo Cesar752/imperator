@@ -9,6 +9,15 @@
     }
   },
   {
+    "id": "ollama_vision",
+    "nombre": "Ollama Vision",
+    "ruta": "http://localhost:11434",
+    "enabled": true,
+    "parametros": {
+      "model": "qwen2.5vl:7b"
+    }
+  },
+  {
     "id": "llama_cpp",
     "nombre": "llama.cpp",
     "ruta": "C:/ruta/a/llama.cpp/server.exe",
