@@ -110,3 +110,20 @@ PlataformaIA/            (raíz = C:\Imperator)
 ### Cómo se registra una tarea
 - Heredar de `tasks.base_task.Task` e implementar su interfaz (identificador, nombre, `run()`).
 - `task_manager.py` descubre y registra las tareas automáticamente para exponerlas en la UI.
+
+## Optimizaciones de ComfyUI
+
+Notas sobre cómo arrancar y afinar ComfyUI (GPU RTX 5080, 16 GB VRAM,
+`sm_120`) para la generación de vídeo con Wan 2.2.
+
+- **Arranque**: ComfyUI se arranca con `--use-ck-attention` en
+  `run_nvidia_gpu.bat`. Mejora ~15 % en sampling (38 s → 32 s para un clip
+  480x832 de 2 s). Usa la atención INT8 de comfy-kitchen, nativa para RTX
+  5080 (`sm_120`).
+- **NO usar `--highvram`**: con 16 GB, Wan 2.2 carga completo (11,5 GB
+  usables) y el offload dinámico es óptimo. Forzar `highvram` causaría OOM.
+- **NO usar `--use-sage-attention`**: causa *black output* con Wan 2.2
+  (backend Triton incompatible).
+- **Mejora futura (~30 % más)**: SageAttention 2.2 + nodo *Patch Sage
+  Attention* de KJNodes (requiere un wheel específico para Python 3.13 +
+  PyTorch 2.13 + CUDA 13). No aplicado por ahora.
