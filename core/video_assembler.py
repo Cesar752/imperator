@@ -102,6 +102,8 @@ class VideoAssembler:
         music_volume: float = 0.3,
         voice_volume: float = 1.0,
         ducking: bool = True,
+        voice_offset: float = 0.0,
+        music_offset: float = 0.0,
     ) -> Path:
         """Ensambla el MP4 final y devuelve su ruta.
 
@@ -110,6 +112,10 @@ class VideoAssembler:
         hay SRT, genera un ASS temporal con el estilo indicado y lo quema en el
         vídeo. Con música, la mezcla voz+música (ducking opcional vía
         ``sidechaincompress``) se hace con ``-filter_complex``.
+
+        ``voice_offset`` y ``music_offset`` desplazan (en segundos) la entrada de
+        cada pista. El vídeo actúa como maestro: el audio se rellena con silencio
+        (``apad``) y ``-shortest`` corta lo que sobrepase la duración del vídeo.
         """
         video_path = Path(video_path)
         if not video_path.is_file():
@@ -140,6 +146,9 @@ class VideoAssembler:
                 video_height=info.get("height"),
             )
 
+        voice_offset_ms = int(voice_offset * 1000)
+        music_offset_ms = int(music_offset * 1000)
+
         cmd = self._build_command(
             video_path,
             audio_path,
@@ -149,6 +158,8 @@ class VideoAssembler:
             music_volume,
             voice_volume,
             ducking,
+            voice_offset_ms,
+            music_offset_ms,
         )
         try:
             self._run(cmd)
@@ -169,6 +180,8 @@ class VideoAssembler:
         music_volume: float,
         voice_volume: float,
         ducking: bool,
+        voice_offset_ms: int,
+        music_offset_ms: int,
     ) -> list[str]:
         """Construye el comando ffmpeg según el caso (1-8)."""
         if music_path is not None:
@@ -181,6 +194,8 @@ class VideoAssembler:
                 music_volume,
                 voice_volume,
                 ducking,
+                voice_offset_ms,
+                music_offset_ms,
             )
 
         # Sin música: casos 1-4.
@@ -197,9 +212,13 @@ class VideoAssembler:
             cmd += ["-c", "copy"]
         elif has_voice and not burn:
             # Caso 2: vídeo + voz -> muxing (vídeo copiado, audio AAC).
+            # adelay desplaza la voz y apad rellena con silencio para que
+            # -shortest corte al vídeo (master).
             cmd += [
                 "-map", "0:v:0", "-map", "1:a:0",
-                "-c:v", "copy", "-c:a", "aac", "-shortest",
+                "-c:v", "copy", "-c:a", "aac",
+                "-af", f"adelay={voice_offset_ms}|{voice_offset_ms},apad",
+                "-shortest",
             ]
         elif burn:
             # Caso 3/4: re-codificar vídeo y quemar subtítulos.
@@ -208,7 +227,11 @@ class VideoAssembler:
                 "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
             ]
             if has_voice:
-                cmd += ["-map", "0:v:0", "-map", "1:a:0", "-c:a", "aac", "-shortest"]
+                cmd += [
+                    "-map", "0:v:0", "-map", "1:a:0", "-c:a", "aac",
+                    "-af", f"adelay={voice_offset_ms}|{voice_offset_ms},apad",
+                    "-shortest",
+                ]
             else:
                 cmd += ["-c:a", "copy"]
 
@@ -226,6 +249,8 @@ class VideoAssembler:
         music_volume: float,
         voice_volume: float,
         ducking: bool,
+        voice_offset_ms: int,
+        music_offset_ms: int,
     ) -> list[str]:
         """Casos 5-8: música de fondo (ducking opcional) vía ``-filter_complex``.
 
@@ -251,7 +276,8 @@ class VideoAssembler:
             filter_parts.append(f"[0:v]{vf}[vout]")
         filter_parts.append(
             self._audio_filter_complex(
-                has_voice, voice_idx, music_idx, music_volume, voice_volume, ducking
+                has_voice, voice_idx, music_idx, music_volume, voice_volume,
+                ducking, voice_offset_ms, music_offset_ms,
             )
         )
         cmd += ["-filter_complex", ";".join(filter_parts)]
@@ -275,36 +301,42 @@ class VideoAssembler:
         music_volume: float,
         voice_volume: float,
         ducking: bool,
+        voice_offset_ms: int,
+        music_offset_ms: int,
     ) -> str:
         """Devuelve la rama de audio del ``-filter_complex`` (produce ``[mix]``).
 
         Todas las ramas normalizan formato con ``aresample=48000`` y
         ``aformat=channel_layouts=stereo`` (incluye el upmix mono->estéreo).
+        ``adelay`` desplaza la entrada de cada rama y ``apad`` rellena con
+        silencio para que ``-shortest`` corte al vídeo (master).
         """
         mv = f"{music_volume:.3f}"
         vv = f"{voice_volume:.3f}"
+        adelay_voice = f"adelay={voice_offset_ms}|{voice_offset_ms},"
+        adelay_music = f"adelay={music_offset_ms}|{music_offset_ms},"
 
         if not has_voice:
             # Caso 7/8: solo música de fondo.
             return (
-                f"[{music_idx}:a]aresample=48000,aformat=channel_layouts=stereo,"
-                f"volume={mv}[mix]"
+                f"[{music_idx}:a]{adelay_music}aresample=48000,"
+                f"aformat=channel_layouts=stereo,volume={mv},apad[mix]"
             )
 
         # Caso 5/6: voz + música (ducking opcional).
         if ducking:
             voice_chain = (
-                f"[{voice_idx}:a]aresample=48000,aformat=channel_layouts=stereo,"
-                f"volume={vv},asplit=2[v1][vsc]"
+                f"[{voice_idx}:a]{adelay_voice}aresample=48000,"
+                f"aformat=channel_layouts=stereo,volume={vv},asplit=2[v1][vsc]"
             )
         else:
             voice_chain = (
-                f"[{voice_idx}:a]aresample=48000,aformat=channel_layouts=stereo,"
-                f"volume={vv}[v1]"
+                f"[{voice_idx}:a]{adelay_voice}aresample=48000,"
+                f"aformat=channel_layouts=stereo,volume={vv}[v1]"
             )
         music_chain = (
-            f"[{music_idx}:a]aresample=48000,aformat=channel_layouts=stereo,"
-            f"volume={mv}[music]"
+            f"[{music_idx}:a]{adelay_music}aresample=48000,"
+            f"aformat=channel_layouts=stereo,volume={mv}[music]"
         )
         if ducking:
             mid = (
@@ -317,8 +349,8 @@ class VideoAssembler:
             mix_in = "[music]"
 
         amix = (
-            f"{mix_in}[v1]amix=inputs=2:duration=first:dropout_transition=3:"
-            f"normalize=0[mix]"
+            f"{mix_in}[v1]amix=inputs=2:duration=longest:dropout_transition=3:"
+            f"normalize=0,apad[mix]"
         )
 
         parts = [voice_chain, music_chain]

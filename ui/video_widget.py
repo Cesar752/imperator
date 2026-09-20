@@ -1,10 +1,18 @@
 """Widget de generación de vídeo: prompt, parámetros, progreso y salida MP4."""
 
 import logging
+import math
+import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import requests
+
+try:
+    import imageio_ffmpeg
+except ImportError:  # pragma: no cover - dependencia declarada en requirements.txt
+    imageio_ffmpeg = None
 
 from PyQt6.QtCore import Qt, QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QPixmap
@@ -126,6 +134,12 @@ class VideoWidget(QWidget):
         self._duration.setValue(4)
         self._duration.setSuffix(" s")
 
+        self._adjust_audio_button = QPushButton("Ajustar al audio...")
+        self._adjust_audio_button.setToolTip(
+            "Lee la duración de un archivo de audio y ajusta la duración del vídeo."
+        )
+        self._adjust_audio_button.clicked.connect(self._adjust_to_audio)
+
         self._fps = QSpinBox()
         self._fps.setRange(1, 60)
         self._fps.setValue(16)
@@ -206,13 +220,18 @@ class VideoWidget(QWidget):
         presets_group.addWidget(QLabel("Vertical (TikTok):"))
         presets_group.addLayout(vertical_row)
 
+        duration_row = QHBoxLayout()
+        duration_row.addWidget(self._duration)
+        duration_row.addWidget(self._adjust_audio_button)
+        duration_row.addStretch(1)
+
         form = QFormLayout()
         form.addRow("Modo", self._mode)
         form.addRow("Prompt", self._prompt)
         form.addRow("Negativo", self._negative_prompt)
         form.addRow("Ancho", self._width)
         form.addRow("Alto", self._height)
-        form.addRow("Duración", self._duration)
+        form.addRow("Duración", duration_row)
         form.addRow("FPS", self._fps)
         form.addRow("Presets", presets_group)
         form.addRow("Seed", self._seed)
@@ -252,6 +271,47 @@ class VideoWidget(QWidget):
         self._height.setValue(height)
         self._duration.setValue(duration)
         self._set_status(f"Preset aplicado: {label}")
+
+    def _adjust_to_audio(self) -> None:
+        """Ajusta la duración del vídeo a la de un archivo de audio."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Seleccionar audio",
+            "",
+            "Audio (*.wav *.mp3 *.m4a *.ogg *.flac)",
+        )
+        if not path:
+            return
+        seconds = self._probe_audio_duration(path)
+        if seconds is None:
+            self._set_status("No se pudo leer la duración del audio.")
+            return
+        # Redondear hacia arriba para que -shortest no corte la voz.
+        target = max(self._duration.minimum(), math.ceil(seconds))
+        target = min(self._duration.maximum(), target)
+        self._duration.setValue(target)
+        self._set_status(f"Duración ajustada a {target}s (audio: {seconds:.1f}s).")
+
+    @staticmethod
+    def _probe_audio_duration(path: str) -> float | None:
+        """Devuelve la duración en segundos del audio, o ``None`` si no se pudo leer."""
+        if imageio_ffmpeg is None:
+            return None
+        try:
+            ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+            result = subprocess.run(
+                [ffmpeg, "-i", str(path), "-hide_banner"],
+                capture_output=True,
+                text=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - binario ausente o fallo de ejecución
+            logger.debug("No se pudo sondear la duración del audio: %r", exc)
+            return None
+        match = re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", result.stderr)
+        if not match:
+            return None
+        h, m, s = match.groups()
+        return int(h) * 3600 + int(m) * 60 + float(s)
 
     def _generate(self) -> None:
         if self._engine is None:
@@ -444,6 +504,7 @@ class VideoWidget(QWidget):
         self._width.setEnabled(not busy)
         self._height.setEnabled(not busy)
         self._duration.setEnabled(not busy)
+        self._adjust_audio_button.setEnabled(not busy)
         self._fps.setEnabled(not busy)
         self._random_seed.setEnabled(not busy)
         for btn in self._preset_buttons.values():

@@ -2,17 +2,20 @@
 
 import logging
 import os
+import shutil
 from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QSpinBox,
@@ -78,6 +81,8 @@ class AssemblerWorker(QThread):
         music_volume,
         voice_volume,
         ducking,
+        voice_offset,
+        music_offset,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -93,6 +98,8 @@ class AssemblerWorker(QThread):
         self._music_volume = music_volume
         self._voice_volume = voice_volume
         self._ducking = ducking
+        self._voice_offset = voice_offset
+        self._music_offset = music_offset
 
     def run(self) -> None:
         try:
@@ -123,6 +130,8 @@ class AssemblerWorker(QThread):
                 music_volume=self._music_volume,
                 voice_volume=self._voice_volume,
                 ducking=self._ducking,
+                voice_offset=self._voice_offset,
+                music_offset=self._music_offset,
             )
             if self.isInterruptionRequested():
                 raise EngineError("Cancelado por el usuario")
@@ -221,10 +230,32 @@ class AssemblerWidget(QWidget):
         self._ducking.setChecked(True)
         self._ducking.toggled.connect(self._on_ducking_toggled)
 
+        self._voice_offset = QDoubleSpinBox()
+        self._voice_offset.setRange(0.0, 30.0)
+        self._voice_offset.setSingleStep(0.5)
+        self._voice_offset.setDecimals(1)
+        self._voice_offset.setValue(0.0)
+        self._voice_offset.setToolTip(
+            "Cuándo empieza a sonar la voz, en segundos."
+        )
+        self._voice_offset.valueChanged.connect(self._on_voice_offset_changed)
+
+        self._music_offset = QDoubleSpinBox()
+        self._music_offset.setRange(0.0, 30.0)
+        self._music_offset.setSingleStep(0.5)
+        self._music_offset.setDecimals(1)
+        self._music_offset.setValue(0.0)
+        self._music_offset.setToolTip(
+            "Cuándo empieza a sonar la música, en segundos."
+        )
+        self._music_offset.valueChanged.connect(self._on_music_offset_changed)
+
         music_form = QFormLayout()
         music_form.addRow("Pista:", music_row)
         music_form.addRow("Vol. música:", self._music_volume)
         music_form.addRow("Vol. voz:", self._voice_volume)
+        music_form.addRow("Inicio voz (s):", self._voice_offset)
+        music_form.addRow("Inicio música (s):", self._music_offset)
         music_form.addRow("", self._ducking)
 
         music_group = QGroupBox("Música de fondo")
@@ -288,10 +319,13 @@ class AssemblerWidget(QWidget):
         self._cancel_button.setEnabled(False)
         self._open_button = QPushButton("Abrir carpeta")
         self._open_button.setEnabled(False)
+        self._save_button = QPushButton("Guardar como...")
+        self._save_button.setEnabled(False)
 
         buttons = QHBoxLayout()
         buttons.addWidget(self._assemble_button)
         buttons.addWidget(self._cancel_button)
+        buttons.addWidget(self._save_button)
         buttons.addWidget(self._open_button)
 
         self._progress = QProgressBar()
@@ -313,6 +347,7 @@ class AssemblerWidget(QWidget):
 
         self._assemble_button.clicked.connect(self._assemble)
         self._cancel_button.clicked.connect(self._cancel)
+        self._save_button.clicked.connect(self._save_as)
         self._open_button.clicked.connect(self._open_folder)
 
     # ---- Selección de archivos -----------------------------------
@@ -360,7 +395,8 @@ class AssemblerWidget(QWidget):
         if abs(video - audio) > _DURATION_GAP_WARNING:
             self._set_status(
                 f"Aviso: el audio dura {audio:.1f} s y el vídeo {video:.1f} s. "
-                "Se cortará al más corto."
+                "El vídeo es el maestro: el audio se cortará o completará con "
+                "silencio para ajustarse a su duración."
             )
 
     # ---- Ensamblado ----------------------------------------------
@@ -392,6 +428,29 @@ class AssemblerWidget(QWidget):
         music_volume = self._music_volume.value() / 100.0
         voice_volume = self._voice_volume.value() / 100.0
         ducking = self._ducking.isChecked()
+        voice_offset = self._voice_offset.value()
+        music_offset = self._music_offset.value()
+
+        video_duration = self._video_duration
+        if video_duration is None and self._video_path:
+            video_duration = self._assembler.probe(self._video_path).get("duration")
+        if video_duration is not None:
+            if self._audio_path and voice_offset > video_duration - 0.5:
+                self._set_status(
+                    f"Aviso: el inicio de la voz ({voice_offset:.1f}s) supera la "
+                    f"duración del vídeo ({video_duration:.1f}s). La voz no se "
+                    "oirá. Cambia el offset o genera un vídeo más largo antes de "
+                    "continuar."
+                )
+                return
+            if music_path and music_offset > video_duration - 0.5:
+                self._set_status(
+                    f"Aviso: el inicio de la música ({music_offset:.1f}s) supera "
+                    f"la duración del vídeo ({video_duration:.1f}s). La música no "
+                    "se oirá. Cambia el offset o genera un vídeo más largo antes "
+                    "de continuar."
+                )
+                return
 
         self._set_busy(True)
         self._progress.setValue(0)
@@ -410,6 +469,8 @@ class AssemblerWidget(QWidget):
             music_volume,
             voice_volume,
             ducking,
+            voice_offset,
+            music_offset,
             self,
         )
         self._worker.progress.connect(self._on_progress)
@@ -426,6 +487,7 @@ class AssemblerWidget(QWidget):
         self._last_path = path
         self._progress.setValue(100)
         self._open_button.setEnabled(True)
+        self._save_button.setEnabled(True)
         self._set_status(f"Listo: {path}")
 
     def _on_error(self, message: str) -> None:
@@ -456,6 +518,26 @@ class AssemblerWidget(QWidget):
             startfile(str(output_dir))
         except OSError as exc:
             self._set_status(f"No se pudo abrir la carpeta: {exc}")
+
+    def _save_as(self) -> None:
+        if not self._last_path:
+            return
+        target, _ = QFileDialog.getSaveFileName(
+            self,
+            "Guardar vídeo como...",
+            self._last_path,
+            "Vídeo MP4 (*.mp4)",
+        )
+        if not target:
+            return
+        if not target.lower().endswith(".mp4"):
+            target += ".mp4"
+        try:
+            shutil.copyfile(self._last_path, target)
+        except OSError as exc:
+            QMessageBox.critical(self, "Error", f"No se pudo guardar el vídeo: {exc}")
+            return
+        self._set_status(f"Copiado a: {target}")
 
     # ---- Subtítulos y persistencia -------------------------------
 
@@ -503,6 +585,12 @@ class AssemblerWidget(QWidget):
     def _on_voice_volume_changed(self) -> None:
         self._save_pref("assembler_voz_vol", str(self._voice_volume.value()))
 
+    def _on_voice_offset_changed(self) -> None:
+        self._save_pref("assembler_voice_offset", str(self._voice_offset.value()))
+
+    def _on_music_offset_changed(self) -> None:
+        self._save_pref("assembler_music_offset", str(self._music_offset.value()))
+
     def _on_ducking_toggled(self, checked: bool) -> None:
         self._save_pref("assembler_ducking", "1" if checked else "0")
 
@@ -530,7 +618,13 @@ class AssemblerWidget(QWidget):
         )
         for combo in all_combos:
             combo.blockSignals(True)
-        for spin in (self._fontsize, self._music_volume, self._voice_volume):
+        for spin in (
+            self._fontsize,
+            self._music_volume,
+            self._voice_volume,
+            self._voice_offset,
+            self._music_offset,
+        ):
             spin.blockSignals(True)
         self._ducking.blockSignals(True)
         try:
@@ -563,13 +657,31 @@ class AssemblerWidget(QWidget):
                     self._voice_volume.setValue(int(voice_vol))
                 except ValueError:
                     pass
+            voice_offset = last.get("assembler_voice_offset")
+            if voice_offset is not None:
+                try:
+                    self._voice_offset.setValue(float(voice_offset))
+                except ValueError:
+                    pass
+            music_offset = last.get("assembler_music_offset")
+            if music_offset is not None:
+                try:
+                    self._music_offset.setValue(float(music_offset))
+                except ValueError:
+                    pass
             ducking = last.get("assembler_ducking")
             if ducking is not None:
                 self._ducking.setChecked(ducking == "1")
         finally:
             for combo in all_combos:
                 combo.blockSignals(False)
-            for spin in (self._fontsize, self._music_volume, self._voice_volume):
+            for spin in (
+                self._fontsize,
+                self._music_volume,
+                self._voice_volume,
+                self._voice_offset,
+                self._music_offset,
+            ):
                 spin.blockSignals(False)
             self._ducking.blockSignals(False)
 
@@ -578,12 +690,15 @@ class AssemblerWidget(QWidget):
     def _set_busy(self, busy: bool) -> None:
         self._assemble_button.setEnabled(not busy)
         self._cancel_button.setEnabled(busy)
+        self._save_button.setEnabled(not busy and self._last_path is not None)
         self._video_button.setEnabled(not busy)
         self._audio_button.setEnabled(not busy)
         self._music_combo.setEnabled(not busy)
         self._music_refresh.setEnabled(not busy)
         self._music_volume.setEnabled(not busy)
         self._voice_volume.setEnabled(not busy)
+        self._voice_offset.setEnabled(not busy)
+        self._music_offset.setEnabled(not busy)
         self._ducking.setEnabled(not busy)
         self._subtitles_check.setEnabled(not busy and self._whisper is not None)
         self._subtitles_section.setEnabled(not busy)
