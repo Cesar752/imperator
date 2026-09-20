@@ -69,7 +69,10 @@ class AudioWorker(QThread):
             logger.debug("Error inesperado en AudioWorker: %r", exc, exc_info=True)
             self.failed.emit(f"Error inesperado: {exc}")
         else:
-            self.audio_ready.emit(str(path))
+            if self.isInterruptionRequested():
+                self.failed.emit("Cancelado por el usuario")
+            else:
+                self.audio_ready.emit(str(path))
 
 
 class AudioWidget(QWidget):
@@ -110,6 +113,8 @@ class AudioWidget(QWidget):
         form.addRow("Velocidad:", self._speed)
 
         self._generate_button = QPushButton("Generar voz")
+        self._cancel_button = QPushButton("Cancelar")
+        self._cancel_button.setEnabled(False)
         self._play_button = QPushButton("Reproducir")
         self._play_button.setEnabled(False)
         self._open_button = QPushButton("Abrir con el reproductor del sistema")
@@ -119,6 +124,7 @@ class AudioWidget(QWidget):
 
         buttons = QHBoxLayout()
         buttons.addWidget(self._generate_button)
+        buttons.addWidget(self._cancel_button)
         buttons.addWidget(self._play_button)
         buttons.addWidget(self._open_button)
         buttons.addWidget(self._save_button)
@@ -132,6 +138,7 @@ class AudioWidget(QWidget):
         layout.addWidget(self._status)
 
         self._generate_button.clicked.connect(self._generate)
+        self._cancel_button.clicked.connect(self._cancel)
         self._play_button.clicked.connect(self._toggle_play)
         self._open_button.clicked.connect(self._open_system)
         self._save_button.clicked.connect(self._save_as)
@@ -217,12 +224,21 @@ class AudioWidget(QWidget):
         self._set_status(f"Listo: {path}")
 
     def _on_error(self, message: str) -> None:
-        self._set_status(f"Error: {message}")
+        if message == "Cancelado por el usuario":
+            self._set_status(message)
+        else:
+            self._set_status(f"Error: {message}")
 
     def _on_finished(self) -> None:
         self._set_busy(False)
         self._worker.deleteLater()
         self._worker = None
+
+    def _cancel(self) -> None:
+        if self._worker is None or not self._worker.isRunning():
+            return
+        self._worker.requestInterruption()
+        self._set_status("Cancelando...")
 
     # ---- Reproductor ---------------------------------------------
 
@@ -288,6 +304,7 @@ class AudioWidget(QWidget):
 
     def _set_busy(self, busy: bool) -> None:
         self._generate_button.setEnabled(not busy and self._engine is not None)
+        self._cancel_button.setEnabled(busy)
         self._text_area.setEnabled(not busy)
         self._voice.setEnabled(not busy)
         self._speed.setEnabled(not busy)

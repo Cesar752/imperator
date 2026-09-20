@@ -4,6 +4,8 @@ import logging
 import shutil
 from pathlib import Path
 
+import requests
+
 from PyQt6.QtCore import Qt, QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QPixmap
 from PyQt6.QtWidgets import (
@@ -11,6 +13,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -18,6 +21,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -44,6 +48,7 @@ class VideoWorker(QThread):
         # El progreso llega desde el WebSocket vía este callback.
         params = dict(self._params)
         params["progress_callback"] = self._on_progress
+        params["cancel_check"] = self.isInterruptionRequested
         try:
             # Duck-typing: el motor debe exponer generate_video() (WanVideoEngine).
             path = self._engine.generate_video(**params)
@@ -94,6 +99,7 @@ class VideoWidget(QWidget):
         self._image_path: str | None = None
         self._build_ui()
         self._populate_modes()
+        self._restore_timeout()
         if self._engine is None:
             self._set_status("Wan Video no está configurado o deshabilitado.")
 
@@ -124,6 +130,12 @@ class VideoWidget(QWidget):
         self._fps.setRange(1, 60)
         self._fps.setValue(16)
 
+        self._timeout = QSpinBox()
+        self._timeout.setRange(300, 3600)
+        self._timeout.setValue(1800)
+        self._timeout.setSuffix(" s")
+        self._timeout.valueChanged.connect(self._on_timeout_changed)
+
         self._seed = QLineEdit()
         self._seed.setPlaceholderText("12345")
         self._random_seed = QCheckBox("Aleatorio")
@@ -137,6 +149,7 @@ class VideoWidget(QWidget):
         for key, (label, _w, _h, _dur, tooltip) in self._PRESETS.items():
             btn = QPushButton(label)
             btn.setToolTip(tooltip)
+            btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             btn.clicked.connect(lambda _checked=False, k=key: self._apply_preset(k))
             self._preset_buttons[key] = btn
 
@@ -164,6 +177,8 @@ class VideoWidget(QWidget):
         image_layout.addWidget(self._image_path_label)
 
         self._generate_button = QPushButton("Generar")
+        self._cancel_button = QPushButton("Cancelar")
+        self._cancel_button.setEnabled(False)
         self._save_button = QPushButton("Guardar como...")
         self._save_button.setEnabled(False)
         self._open_button = QPushButton("Abrir carpeta")
@@ -178,10 +193,12 @@ class VideoWidget(QWidget):
         horizontal_row = QHBoxLayout()
         for key in self._HORIZONTAL_KEYS:
             horizontal_row.addWidget(self._preset_buttons[key])
+        horizontal_row.addStretch(1)
 
         vertical_row = QHBoxLayout()
         for key in self._VERTICAL_KEYS:
             vertical_row.addWidget(self._preset_buttons[key])
+        vertical_row.addStretch(1)
 
         presets_group = QVBoxLayout()
         presets_group.addWidget(QLabel("Horizontal:"))
@@ -203,11 +220,18 @@ class VideoWidget(QWidget):
 
         buttons = QHBoxLayout()
         buttons.addWidget(self._generate_button)
+        buttons.addWidget(self._cancel_button)
         buttons.addWidget(self._save_button)
         buttons.addWidget(self._open_button)
 
+        advanced_form = QFormLayout()
+        advanced_form.addRow("Timeout (s):", self._timeout)
+        advanced_group = QGroupBox("Avanzado")
+        advanced_group.setLayout(advanced_form)
+
         layout = QVBoxLayout(self)
         layout.addLayout(form)
+        layout.addWidget(advanced_group)
         layout.addWidget(self._image_section)
         layout.addLayout(buttons)
         layout.addWidget(self._progress)
@@ -215,6 +239,7 @@ class VideoWidget(QWidget):
         layout.addStretch(1)
 
         self._generate_button.clicked.connect(self._generate)
+        self._cancel_button.clicked.connect(self._cancel)
         self._save_button.clicked.connect(self._save_as)
         self._open_button.clicked.connect(self._open_folder)
 
@@ -265,6 +290,13 @@ class VideoWidget(QWidget):
                 )
                 return
 
+        set_timeout = getattr(self._engine, "set_timeout", None)
+        if callable(set_timeout):
+            set_timeout(self._timeout.value())
+
+        if not self._warn_low_ram():
+            return
+
         self._set_busy(True)
         self._progress.setValue(0)
         self._set_status("Generando... 0%")
@@ -288,12 +320,24 @@ class VideoWidget(QWidget):
         self._set_status(f"Listo: {path}")
 
     def _on_error(self, message: str) -> None:
-        self._set_status(f"Error: {message}")
+        if message == "Cancelado por el usuario":
+            self._set_status(message)
+        else:
+            self._set_status(f"Error: {message}")
 
     def _on_finished(self) -> None:
         self._set_busy(False)
         self._worker.deleteLater()
         self._worker = None
+
+    def _cancel(self) -> None:
+        if self._worker is None or not self._worker.isRunning():
+            return
+        self._worker.requestInterruption()
+        cancel_remote = getattr(self._engine, "cancel_remote", None)
+        if callable(cancel_remote):
+            cancel_remote()
+        self._set_status("Cancelando...")
 
     def _save_as(self) -> None:
         if not self._last_path:
@@ -392,6 +436,8 @@ class VideoWidget(QWidget):
 
     def _set_busy(self, busy: bool) -> None:
         self._generate_button.setEnabled(not busy)
+        self._cancel_button.setEnabled(busy)
+        self._timeout.setEnabled(not busy)
         self._prompt.setEnabled(not busy)
         self._negative_prompt.setEnabled(not busy)
         self._mode.setEnabled(not busy)
@@ -408,6 +454,54 @@ class VideoWidget(QWidget):
 
     def _set_status(self, text: str) -> None:
         self._status.setText(text)
+
+    def _warn_low_ram(self) -> bool:
+        """Avisa si queda poca RAM libre; devuelve False si el usuario aborta."""
+        base_url = "http://127.0.0.1:8188"
+        if self._engine is not None:
+            base_url = getattr(self._engine, "base_url", None) or base_url
+        try:
+            resp = requests.get(f"{base_url}/system_stats", timeout=2)
+            resp.raise_for_status()
+            data = resp.json()
+        except (requests.RequestException, ValueError):
+            return True  # sin datos de RAM: no bloquear la generación
+        ram_free = (data.get("system") or {}).get("ram_free")
+        if not isinstance(ram_free, (int, float)):
+            return True
+        gb = ram_free / (1024 ** 3)
+        if gb >= 10:
+            return True
+        answer = QMessageBox.question(
+            self,
+            "RAM baja",
+            f"Solo quedan {gb:.1f} GB de RAM libre. El vídeo puede ir lento o fallar. "
+            "¿Continuar?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _on_timeout_changed(self) -> None:
+        if self._config_manager is not None:
+            self._config_manager.save_last_model(
+                "video_timeout", str(self._timeout.value())
+            )
+
+    def _restore_timeout(self) -> None:
+        if self._config_manager is None:
+            return
+        raw = self._config_manager.load_last_models().get("video_timeout")
+        if raw is None:
+            return
+        try:
+            value = int(raw)
+        except ValueError:
+            return
+        if self._timeout.minimum() <= value <= self._timeout.maximum():
+            self._timeout.blockSignals(True)
+            self._timeout.setValue(value)
+            self._timeout.blockSignals(False)
 
     def set_engine(self, engine: Engine | None) -> None:
         self._engine = engine

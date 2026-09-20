@@ -6,6 +6,7 @@ import random
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 from uuid import uuid4
 
 import requests
@@ -75,6 +76,14 @@ class ComfyUIEngine(Engine):
     def nombre(self) -> str:
         return "ComfyUI"
 
+    def cancel_remote(self) -> None:
+        """Solicita a ComfyUI detener la ejecución en curso (POST /interrupt)."""
+        try:
+            requests.post(f"{self._base_url}/interrupt", timeout=2)
+            logger.info("ComfyUI: interrupción solicitada")
+        except requests.RequestException as exc:
+            logger.warning("No se pudo interrumpir ComfyUI: %s", exc)
+
     def is_available(self) -> bool:
         try:
             resp = requests.get(
@@ -103,6 +112,7 @@ class ComfyUIEngine(Engine):
         seed: int | None = None,
         guidance: float = 3.5,
         model: str | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> Path:
         """Genera una imagen y devuelve la ruta del PNG guardado en ``output/``."""
         if seed is None:
@@ -121,7 +131,9 @@ class ComfyUIEngine(Engine):
         )
 
         prompt_id = self._submit(workflow)
-        image_meta = self._wait(prompt_id, timeout=self._GENERATE_TIMEOUT)
+        image_meta = self._wait(
+            prompt_id, timeout=self._GENERATE_TIMEOUT, cancel_check=cancel_check
+        )
         content = self._download(image_meta)
         return self._save(content, seed)
 
@@ -209,10 +221,17 @@ class ComfyUIEngine(Engine):
             raise EngineError("ComfyUI no devolvió 'prompt_id' al enviar el prompt.")
         return prompt_id
 
-    def _wait(self, prompt_id: str, timeout: float) -> dict:
+    def _wait(
+        self,
+        prompt_id: str,
+        timeout: float,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> dict:
         start = time.monotonic()
         last_log = 0.0
         while True:
+            if cancel_check is not None and cancel_check():
+                raise EngineError("Cancelado por el usuario")
             elapsed = time.monotonic() - start
             if elapsed >= timeout:
                 raise EngineError(

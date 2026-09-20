@@ -3,7 +3,7 @@
 import logging
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QLabel,
@@ -41,6 +41,35 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._build_central_widget()
         self._build_status_bar()
+
+    def closeEvent(self, event) -> None:
+        # Al cerrar la ventana, detener los workers antes de que Qt destruya
+        # los QThread mientras aún se ejecutan ("QThread: Destroyed while
+        # thread is still running").
+
+        # 1. Cancelación remota en motores que la soportan (Video, Image).
+        for engine_id in ("wanvideo", "comfyui"):
+            try:
+                engine = self._engine_manager.get_engine(engine_id)
+                if engine is not None and hasattr(engine, "cancel_remote"):
+                    engine.cancel_remote()
+            except Exception as exc:  # noqa: BLE001 - no bloquear el cierre
+                logger.warning("No se pudo cancelar remoto en %s: %s", engine_id, exc)
+
+        # 2. Interrupción de los QThread hijos.
+        running = [t for t in self.findChildren(QThread) if t.isRunning()]
+        for thread in running:
+            thread.requestInterruption()
+
+        # 3. Espera híbrida: 5 s con límite, luego sin límite para evitar crash.
+        for thread in running:
+            if not thread.wait(5000):
+                logger.warning(
+                    "Worker no terminó en 5s, esperando sin límite: %s", thread
+                )
+                thread.wait()
+
+        event.accept()
 
     def _apply_window_icon(self) -> None:
         icon_path = ASSETS / "icono.ico"

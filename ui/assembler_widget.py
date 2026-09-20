@@ -96,6 +96,8 @@ class AssemblerWorker(QThread):
 
     def run(self) -> None:
         try:
+            if self.isInterruptionRequested():
+                raise EngineError("Cancelado por el usuario")
             srt_path = None
             if self._use_subtitles and self._audio_path:
                 if self._whisper is None:
@@ -109,6 +111,8 @@ class AssemblerWorker(QThread):
                     model_size=self._model_size,
                     progress_callback=self._on_transcribe_progress,
                 )
+            if self.isInterruptionRequested():
+                raise EngineError("Cancelado por el usuario")
             self.progress.emit(40, "Ensamblando vídeo...")
             output = self._assembler.assemble(
                 self._video_path,
@@ -120,6 +124,8 @@ class AssemblerWorker(QThread):
                 voice_volume=self._voice_volume,
                 ducking=self._ducking,
             )
+            if self.isInterruptionRequested():
+                raise EngineError("Cancelado por el usuario")
             self.progress.emit(100, "Listo")
             self.result_ready.emit(str(output))
         except EngineError as exc:
@@ -278,11 +284,14 @@ class AssemblerWidget(QWidget):
 
         # Acciones y estado
         self._assemble_button = QPushButton("Ensamblar")
+        self._cancel_button = QPushButton("Cancelar")
+        self._cancel_button.setEnabled(False)
         self._open_button = QPushButton("Abrir carpeta")
         self._open_button.setEnabled(False)
 
         buttons = QHBoxLayout()
         buttons.addWidget(self._assemble_button)
+        buttons.addWidget(self._cancel_button)
         buttons.addWidget(self._open_button)
 
         self._progress = QProgressBar()
@@ -303,6 +312,7 @@ class AssemblerWidget(QWidget):
         layout.addStretch(1)
 
         self._assemble_button.clicked.connect(self._assemble)
+        self._cancel_button.clicked.connect(self._cancel)
         self._open_button.clicked.connect(self._open_folder)
 
     # ---- Selección de archivos -----------------------------------
@@ -419,12 +429,21 @@ class AssemblerWidget(QWidget):
         self._set_status(f"Listo: {path}")
 
     def _on_error(self, message: str) -> None:
-        self._set_status(f"Error: {message}")
+        if message == "Cancelado por el usuario":
+            self._set_status(message)
+        else:
+            self._set_status(f"Error: {message}")
 
     def _on_finished(self) -> None:
         self._set_busy(False)
         self._worker.deleteLater()
         self._worker = None
+
+    def _cancel(self) -> None:
+        if self._worker is None or not self._worker.isRunning():
+            return
+        self._worker.requestInterruption()
+        self._set_status("Cancelando...")
 
     def _open_folder(self) -> None:
         startfile = getattr(os, "startfile", None)
@@ -558,6 +577,7 @@ class AssemblerWidget(QWidget):
 
     def _set_busy(self, busy: bool) -> None:
         self._assemble_button.setEnabled(not busy)
+        self._cancel_button.setEnabled(busy)
         self._video_button.setEnabled(not busy)
         self._audio_button.setEnabled(not busy)
         self._music_combo.setEnabled(not busy)

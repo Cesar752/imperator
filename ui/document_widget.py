@@ -101,6 +101,8 @@ class DocumentWorker(QThread):
             self.result_ready.emit(result)
 
     def _process_image(self, prompt: str) -> str:
+        if self.isInterruptionRequested():
+            raise EngineError("Cancelado por el usuario")
         self.progress.emit(1, 1)
         return self._engine.analyze_image(self._file_path, prompt, self._model)
 
@@ -114,6 +116,8 @@ class DocumentWorker(QThread):
             total = doc.page_count
             blocks: list[str] = []
             for index, page in enumerate(doc):
+                if self.isInterruptionRequested():
+                    raise EngineError("Cancelado por el usuario")
                 self.progress.emit(index + 1, total)
                 text = (page.get_text() or "").strip()
                 if len(text) > _TEXT_THRESHOLD:
@@ -177,6 +181,8 @@ class DocumentWidget(QWidget):
         form.addRow("Modelo:", self._model)
 
         self._process_button = QPushButton("Procesar")
+        self._cancel_button = QPushButton("Cancelar")
+        self._cancel_button.setEnabled(False)
         self._save_button = QPushButton("Guardar como .txt")
         self._save_button.setEnabled(False)
         self._copy_button = QPushButton("Copiar al portapapeles")
@@ -184,6 +190,7 @@ class DocumentWidget(QWidget):
 
         buttons = QHBoxLayout()
         buttons.addWidget(self._process_button)
+        buttons.addWidget(self._cancel_button)
         buttons.addWidget(self._save_button)
         buttons.addWidget(self._copy_button)
 
@@ -208,6 +215,7 @@ class DocumentWidget(QWidget):
 
         self._select_button.clicked.connect(self._select_file)
         self._process_button.clicked.connect(self._process)
+        self._cancel_button.clicked.connect(self._cancel)
         self._save_button.clicked.connect(self._save_as)
         self._copy_button.clicked.connect(self._copy)
 
@@ -339,13 +347,22 @@ class DocumentWidget(QWidget):
         self._set_status("Listo.")
 
     def _on_error(self, message: str) -> None:
-        self._set_status(f"Error: {message}")
+        if message == "Cancelado por el usuario":
+            self._set_status(message)
+        else:
+            self._set_status(f"Error: {message}")
 
     def _on_finished(self) -> None:
         self._set_busy(False)
         self._progress.setVisible(False)
         self._worker.deleteLater()
         self._worker = None
+
+    def _cancel(self) -> None:
+        if self._worker is None or not self._worker.isRunning():
+            return
+        self._worker.requestInterruption()
+        self._set_status("Cancelando...")
 
     # ---- Resultado -------------------------------------------------
 
@@ -385,6 +402,7 @@ class DocumentWidget(QWidget):
         self._mode.setEnabled(not busy)
         self._model.setEnabled(not busy)
         self._process_button.setEnabled(not busy and self._engine is not None)
+        self._cancel_button.setEnabled(busy)
         if busy:
             self._save_button.setEnabled(False)
             self._copy_button.setEnabled(False)

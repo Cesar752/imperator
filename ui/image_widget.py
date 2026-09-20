@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -39,9 +40,11 @@ class ImageWorker(QThread):
         self._params = params
 
     def run(self) -> None:
+        params = dict(self._params)
+        params["cancel_check"] = self.isInterruptionRequested
         try:
             # Duck-typing: el motor debe exponer generate_image() (ComfyUIEngine).
-            path = self._engine.generate_image(**self._params)
+            path = self._engine.generate_image(**params)
         except EngineError as exc:
             self.failed.emit(str(exc))
         except Exception as exc:  # noqa: BLE001 - red/timeout/JSON inesperados
@@ -97,6 +100,7 @@ class ImageWidget(QWidget):
         for key, (label, _w, _h, tooltip) in self._PRESETS.items():
             btn = QPushButton(label)
             btn.setToolTip(tooltip)
+            btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             btn.clicked.connect(lambda _checked=False, k=key: self._apply_preset(k))
             self._preset_buttons[key] = btn
 
@@ -119,6 +123,8 @@ class ImageWidget(QWidget):
         self._seed.setEnabled(False)
 
         self._generate_button = QPushButton("Generar")
+        self._cancel_button = QPushButton("Cancelar")
+        self._cancel_button.setEnabled(False)
         self._save_button = QPushButton("Guardar como...")
         self._save_button.setEnabled(False)
 
@@ -130,6 +136,7 @@ class ImageWidget(QWidget):
         presets_row = QHBoxLayout()
         for key in self._PRESETS:
             presets_row.addWidget(self._preset_buttons[key])
+        presets_row.addStretch(1)
 
         form = QFormLayout()
         form.addRow("Modelo:", self._model)
@@ -148,6 +155,7 @@ class ImageWidget(QWidget):
 
         buttons = QHBoxLayout()
         buttons.addWidget(self._generate_button)
+        buttons.addWidget(self._cancel_button)
         buttons.addWidget(self._save_button)
 
         layout = QVBoxLayout(self)
@@ -157,6 +165,7 @@ class ImageWidget(QWidget):
         layout.addWidget(self._preview)
 
         self._generate_button.clicked.connect(self._generate)
+        self._cancel_button.clicked.connect(self._cancel)
         self._save_button.clicked.connect(self._save_as)
 
     def set_engine(self, engine: Engine | None) -> None:
@@ -243,13 +252,25 @@ class ImageWidget(QWidget):
         self._set_status(f"Listo: {path}")
 
     def _on_error(self, message: str) -> None:
-        self._set_status(f"Error: {message}")
+        if message == "Cancelado por el usuario":
+            self._set_status(message)
+        else:
+            self._set_status(f"Error: {message}")
 
     def _on_finished(self) -> None:
         self._timer.stop()
         self._set_busy(False)
         self._worker.deleteLater()
         self._worker = None
+
+    def _cancel(self) -> None:
+        if self._worker is None or not self._worker.isRunning():
+            return
+        self._worker.requestInterruption()
+        cancel_remote = getattr(self._engine, "cancel_remote", None)
+        if callable(cancel_remote):
+            cancel_remote()
+        self._set_status("Cancelando...")
 
     def _show_image(self, path: str) -> None:
         pixmap = QPixmap(path)
@@ -280,6 +301,7 @@ class ImageWidget(QWidget):
 
     def _set_busy(self, busy: bool) -> None:
         self._generate_button.setEnabled(not busy)
+        self._cancel_button.setEnabled(busy)
         self._prompt.setEnabled(not busy)
         self._negative_prompt.setEnabled(not busy)
         self._model.setEnabled(not busy)

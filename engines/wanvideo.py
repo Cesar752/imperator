@@ -41,8 +41,9 @@ class WanVideoEngine(Engine):
     _SUBMIT_TIMEOUT = 30.0      # POST /prompt
     _WS_TIMEOUT = 5.0           # recv() del WebSocket
     _VIEW_TIMEOUT = 120.0       # GET /view (descarga del MP4)
-    _GENERATE_TIMEOUT = 600.0   # espera máxima total por clip
-    _HISTORY_RETRIES = 10       # reintentos al leer /history tras el éxito
+    _GENERATE_TIMEOUT = 1800.0  # espera máxima total por clip (default)
+    _HISTORY_RETRIES = 30       # reintentos al leer /history tras el éxito (30 s)
+    _HISTORY_RETRY_DELAY = 1.0  # segundos entre reintentos de /history
     _UPLOAD_TIMEOUT = 60.0      # POST /upload/image
 
     # IDs de los KSampler en el workflow Lightning (para mapear el progreso).
@@ -58,12 +59,14 @@ class WanVideoEngine(Engine):
         workflows: dict[str, str] | None = None,
         default_model: str = "t2v",
         output_dir: str | Path | None = None,
+        timeout: float = 1800.0,
     ) -> None:
         if not workflows:
             raise EngineError("WanVideo: falta 'workflows' en la config de engines.json")
         self._base_url = base_url.rstrip("/")
         self._workflows = {name: Path(path) for name, path in workflows.items()}
         self._default_model = default_model or next(iter(self._workflows))
+        self._generate_timeout = float(timeout)
         # Carpeta de salida por defecto: <raíz del proyecto>/output.
         self._output_dir = (
             Path(output_dir)
@@ -78,6 +81,34 @@ class WanVideoEngine(Engine):
     @property
     def nombre(self) -> str:
         return "Wan Video"
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    def set_timeout(self, timeout: float) -> None:
+        """Actualiza el tiempo máximo de espera por clip (segundos)."""
+        self._generate_timeout = float(timeout)
+
+    def cancel_remote(self) -> None:
+        """Solicita a ComfyUI detener la ejecución en curso (POST /interrupt)."""
+        try:
+            requests.post(f"{self._base_url}/interrupt", timeout=2)
+            logger.info("ComfyUI: interrupción solicitada")
+        except requests.RequestException as exc:
+            logger.warning("No se pudo interrumpir ComfyUI: %s", exc)
+
+    def _free_models(self) -> None:
+        """Libera VRAM/RAM de ComfyUI tras finalizar una generación (POST /free)."""
+        try:
+            requests.post(
+                f"{self._base_url}/free",
+                json={"unload_models": True, "free_memory": True},
+                timeout=5,
+            )
+            logger.info("ComfyUI: modelos liberados")
+        except requests.RequestException as exc:
+            logger.warning("No se pudo liberar ComfyUI: %s", exc)
 
     def is_available(self) -> bool:
         try:
@@ -108,6 +139,7 @@ class WanVideoEngine(Engine):
         fps: int = 16,
         seed: int | None = None,
         progress_callback: Callable[[int, str], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> Path:
         """Genera un clip y devuelve la ruta del MP4 guardado en ``output/``.
 
@@ -145,10 +177,15 @@ class WanVideoEngine(Engine):
 
         client_id = str(uuid4())
         prompt_id = self._submit(workflow, client_id)
-        video_meta = self._await_result(client_id, prompt_id, progress_callback)
+        video_meta = self._await_result(
+            client_id, prompt_id, progress_callback, cancel_check
+        )
 
-        content = self._download(video_meta)
-        return self._save(content, video_meta, seed)
+        try:
+            content = self._download(video_meta)
+            return self._save(content, video_meta, seed)
+        finally:
+            self._free_models()
 
     # ---- Subida de imagen -----------------------------------------
 
@@ -262,6 +299,7 @@ class WanVideoEngine(Engine):
         except requests.RequestException as exc:
             raise EngineError(f"WanVideo: error al enviar el prompt: {exc}") from exc
 
+        logger.info("ComfyUI POST /prompt status=%d", resp.status_code)
         if resp.status_code >= 400:
             try:
                 data = resp.json()
@@ -278,9 +316,11 @@ class WanVideoEngine(Engine):
                 "ComfyUI devolvió una respuesta inválida al enviar el prompt."
             ) from exc
 
+        logger.info("ComfyUI response: %s", json.dumps(data)[:500])
         prompt_id = data.get("prompt_id")
+        logger.info("ComfyUI prompt_id: %s", prompt_id)
         if not prompt_id:
-            raise EngineError("ComfyUI no devolvió 'prompt_id' al enviar el prompt.")
+            raise EngineError(f"ComfyUI no devolvió 'prompt_id' al enviar el prompt: {data}")
         return prompt_id
 
     # ---- Espera vía WebSocket (sin polling de /history) ----------
@@ -290,6 +330,7 @@ class WanVideoEngine(Engine):
         client_id: str,
         prompt_id: str,
         progress_callback: Callable[[int, str], None] | None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> dict:
         """Espera la notificación de fin por WebSocket y lee la salida.
 
@@ -311,10 +352,12 @@ class WanVideoEngine(Engine):
         start = time.monotonic()
         try:
             while True:
+                if cancel_check is not None and cancel_check():
+                    raise EngineError("Cancelado por el usuario")
                 elapsed = time.monotonic() - start
-                if elapsed >= self._GENERATE_TIMEOUT:
+                if elapsed >= self._generate_timeout:
                     raise EngineError(
-                        f"WanVideo: timeout tras {self._GENERATE_TIMEOUT:.0f}s "
+                        f"WanVideo: timeout tras {self._generate_timeout:.0f}s "
                         f"esperando el vídeo."
                     )
                 try:
@@ -333,19 +376,33 @@ class WanVideoEngine(Engine):
                     continue
                 state = self._handle_ws_message(message, progress_callback)
                 if state == "success":
-                    return self._read_output(prompt_id)
+                    ws_prompt_id = (message.get("data") or {}).get("prompt_id")
+                    if ws_prompt_id and ws_prompt_id != prompt_id:
+                        logger.warning(
+                            "WanVideo: prompt_id del WebSocket (%s) != prompt_id "
+                            "del POST /prompt (%s); usando el del WebSocket.",
+                            ws_prompt_id,
+                            prompt_id,
+                        )
+                        prompt_id = ws_prompt_id
+                    return self._read_output(prompt_id, cancel_check)
                 if state == "error":
                     raise EngineError(
                         f"ComfyUI: error en la ejecución. "
                         f"{self._ws_error_detail(message)}".strip()
                     )
+                if state == "interrupted":
+                    raise EngineError("Cancelado por el usuario")
         finally:
             ws.close()
 
     def _handle_ws_message(
         self, message: dict, progress_callback: Callable[[int, str], None] | None
     ) -> str | None:
-        """Procesa un mensaje del WebSocket; devuelve ``'success'``, ``'error'`` o ``None``."""
+        """Procesa un mensaje del WebSocket.
+
+        Devuelve ``'success'``, ``'error'``, ``'interrupted'`` o ``None``.
+        """
         msg_type = message.get("type")
         data = message.get("data", {})
         if msg_type == "progress" and progress_callback is not None:
@@ -368,6 +425,8 @@ class WanVideoEngine(Engine):
             return "success"
         elif msg_type == "execution_error":
             return "error"
+        elif msg_type == "execution_interrupted":
+            return "interrupted"
         return None
 
     @staticmethod
@@ -378,37 +437,89 @@ class WanVideoEngine(Engine):
         detail = f"{exc_type}: {exc_message}".strip()
         return detail or "error desconocido"
 
-    def _read_output(self, prompt_id: str) -> dict:
-        """Lee ``/history/{id}`` tras el ``execution_success`` (con reintentos)."""
+    def _read_output(
+        self, prompt_id: str, cancel_check: Callable[[], bool] | None = None
+    ) -> dict:
+        """Lee ``/history/{id}`` tras el ``execution_success`` (con reintentos).
+
+        El WebSocket avisa de ``execution_success`` antes de que ``/history``
+        esté completamente actualizado (carrera conocida en ComfyUI), así que
+        reintentamos durante ``_HISTORY_RETRIES * _HISTORY_RETRY_DELAY``
+        segundos. La salida se busca en cualquier nodo y en cualquier clave
+        multimedia conocida (``videos``/``gifs``/``images``). Detecta además la
+        cancelación del usuario y las ejecuciones interrumpidas/erróneas para
+        no esperar el ciclo completo de reintentos (30 s).
+        """
+        logger.info("WanVideo: esperando salida en /history/%s", prompt_id)
         last_error = None
-        for _ in range(self._HISTORY_RETRIES):
+        for attempt in range(1, self._HISTORY_RETRIES + 1):
+            if cancel_check is not None and cancel_check():
+                raise EngineError("Cancelado por el usuario")
             try:
                 resp = requests.get(
                     f"{self._base_url}/history/{prompt_id}", timeout=self._SHORT_TIMEOUT
                 )
                 resp.raise_for_status()
-                entry = resp.json().get(prompt_id)
-                if entry is not None and entry.get("status", {}).get("completed"):
-                    return self._first_video_meta(entry)
+                payload = resp.json()
+                entry = payload.get(prompt_id)
+                logger.info(
+                    "WanVideo: /history intento %d/%d -> keys=%s, completed=%s",
+                    attempt,
+                    self._HISTORY_RETRIES,
+                    list(payload.keys()),
+                    bool(entry and entry.get("status", {}).get("completed")),
+                )
+                if entry is not None:
+                    status = entry.get("status", {})
+                    if status.get("status_str") == "error":
+                        raise EngineError(
+                            "ComfyUI: ejecución interrumpida o con error."
+                        )
+                    if status.get("completed"):
+                        media = self._find_media(entry.get("outputs", {}))
+                        if media is not None:
+                            logger.info(
+                                "WanVideo: salida encontrada en key '%s': %s",
+                                media["key"],
+                                media["data"],
+                            )
+                            return media["data"]
+                        logger.warning(
+                            "WanVideo: entrada completada pero sin salida multimedia "
+                            "(intento %d).",
+                            attempt,
+                        )
             except requests.RequestException as exc:
                 last_error = exc
-            time.sleep(0.5)
+                logger.warning(
+                    "WanVideo: error HTTP leyendo /history (intento %d): %s",
+                    attempt,
+                    exc,
+                )
+            time.sleep(self._HISTORY_RETRY_DELAY)
+        detail = (
+            f"último error: {last_error}" if last_error else "el historial no quedó disponible"
+        )
         raise EngineError(
-            f"WanVideo: no se pudo leer la salida del vídeo desde /history: {last_error}"
+            f"WanVideo: no se pudo leer la salida del vídeo desde /history/{prompt_id}: {detail}"
         )
 
     # ---- Descarga y guardado --------------------------------------
 
     @staticmethod
-    def _first_video_meta(entry: dict) -> dict:
-        outputs = entry.get("outputs", {})
+    def _find_media(outputs: dict) -> dict | None:
+        """Busca el primer clip en cualquier nodo y en cualquier clave multimedia.
+
+        ComfyUI guarda el vídeo bajo ``videos``, ``gifs`` o ``images`` (con el
+        flag ``animated``) según el nodo de salida; el nodo ``SaveVideo`` nativo
+        lo publica bajo ``gifs``. Devuelve ``{"key": key, "data": item}`` o
+        ``None`` si todavía no hay salida.
+        """
         for node_output in outputs.values():
-            # El nodo SaveVideo devuelve el clip bajo "images" (con "animated").
-            for key in ("images", "videos", "gifs"):
-                items = node_output.get(key, [])
-                if items:
-                    return items[0]
-        raise EngineError("ComfyUI terminó sin devolver ningún vídeo.")
+            for key in ("videos", "gifs", "images"):
+                if key in node_output and node_output[key]:
+                    return {"key": key, "data": node_output[key][0]}
+        return None
 
     def _download(self, video_meta: dict) -> bytes:
         params = {
