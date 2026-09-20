@@ -98,12 +98,18 @@ class VideoAssembler:
         audio_path: str | Path | None = None,
         srt_path: str | Path | None = None,
         subtitle_style: dict | None = None,
+        music_path: str | Path | None = None,
+        music_volume: float = 0.3,
+        voice_volume: float = 1.0,
+        ducking: bool = True,
     ) -> Path:
         """Ensambla el MP4 final y devuelve su ruta.
 
-        Combina hasta tres entradas: un MP4 (obligatorio), un audio (opcional)
-        y subtítulos SRT (opcional). Si hay SRT, genera un ASS temporal con el
-        estilo indicado y lo quema en el vídeo.
+        Combina hasta cuatro entradas: un MP4 (obligatorio), una voz (opcional),
+        subtítulos SRT (opcional) y una pista de música de fondo (opcional). Si
+        hay SRT, genera un ASS temporal con el estilo indicado y lo quema en el
+        vídeo. Con música, la mezcla voz+música (ducking opcional vía
+        ``sidechaincompress``) se hace con ``-filter_complex``.
         """
         video_path = Path(video_path)
         if not video_path.is_file():
@@ -116,6 +122,10 @@ class VideoAssembler:
         srt_path = Path(srt_path) if srt_path is not None else None
         if srt_path is not None and not srt_path.is_file():
             raise EngineError(f"El SRT no existe: {srt_path}")
+
+        music_path = Path(music_path) if music_path is not None else None
+        if music_path is not None and not music_path.is_file():
+            raise EngineError(f"La música no existe: {music_path}")
 
         self._output_dir.mkdir(parents=True, exist_ok=True)
         output_path = self._output_dir / self._output_name()
@@ -130,7 +140,16 @@ class VideoAssembler:
                 video_height=info.get("height"),
             )
 
-        cmd = self._build_command(video_path, audio_path, ass_path, output_path)
+        cmd = self._build_command(
+            video_path,
+            audio_path,
+            ass_path,
+            output_path,
+            music_path,
+            music_volume,
+            voice_volume,
+            ducking,
+        )
         try:
             self._run(cmd)
         finally:
@@ -146,21 +165,38 @@ class VideoAssembler:
         audio_path: Path | None,
         ass_path: Path | None,
         output_path: Path,
+        music_path: Path | None,
+        music_volume: float,
+        voice_volume: float,
+        ducking: bool,
     ) -> list[str]:
-        """Construye el comando ffmpeg según el caso (1-4)."""
+        """Construye el comando ffmpeg según el caso (1-8)."""
+        if music_path is not None:
+            return self._build_music_command(
+                video_path,
+                audio_path,
+                ass_path,
+                output_path,
+                music_path,
+                music_volume,
+                voice_volume,
+                ducking,
+            )
+
+        # Sin música: casos 1-4.
         ffmpeg = self._ffmpeg()
-        has_audio = audio_path is not None
+        has_voice = audio_path is not None
         burn = ass_path is not None
 
         cmd = [ffmpeg, "-y", "-i", str(video_path)]
-        if has_audio:
+        if has_voice:
             cmd += ["-i", str(audio_path)]
 
-        if not has_audio and not burn:
+        if not has_voice and not burn:
             # Caso 1: solo vídeo -> copia de streams.
             cmd += ["-c", "copy"]
-        elif has_audio and not burn:
-            # Caso 2: vídeo + audio -> muxing (vídeo copiado, audio AAC).
+        elif has_voice and not burn:
+            # Caso 2: vídeo + voz -> muxing (vídeo copiado, audio AAC).
             cmd += [
                 "-map", "0:v:0", "-map", "1:a:0",
                 "-c:v", "copy", "-c:a", "aac", "-shortest",
@@ -171,7 +207,7 @@ class VideoAssembler:
                 "-vf", f"subtitles='{self._filter_path(ass_path)}'",
                 "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
             ]
-            if has_audio:
+            if has_voice:
                 cmd += ["-map", "0:v:0", "-map", "1:a:0", "-c:a", "aac", "-shortest"]
             else:
                 cmd += ["-c:a", "copy"]
@@ -179,6 +215,117 @@ class VideoAssembler:
         cmd += ["-movflags", "+faststart"]
         cmd.append(str(output_path))
         return cmd
+
+    def _build_music_command(
+        self,
+        video_path: Path,
+        audio_path: Path | None,
+        ass_path: Path | None,
+        output_path: Path,
+        music_path: Path,
+        music_volume: float,
+        voice_volume: float,
+        ducking: bool,
+    ) -> list[str]:
+        """Casos 5-8: música de fondo (ducking opcional) vía ``-filter_complex``.
+
+        Cuando además hay subtítulos, el filtro ``subtitles`` se mete dentro del
+        mismo ``-filter_complex`` (no puede combinarse ``-vf`` con ``-filter_complex``).
+        """
+        ffmpeg = self._ffmpeg()
+        has_voice = audio_path is not None
+        burn = ass_path is not None
+
+        cmd = [ffmpeg, "-y", "-i", str(video_path)]
+        if has_voice:
+            cmd += ["-i", str(audio_path)]
+        # -stream_loop -1 se aplica al input siguiente (la música) para loopearla.
+        cmd += ["-stream_loop", "-1", "-i", str(music_path)]
+
+        voice_idx = 1 if has_voice else None
+        music_idx = 2 if has_voice else 1
+
+        filter_parts: list[str] = []
+        if burn:
+            vf = f"subtitles='{self._filter_path(ass_path)}'"
+            filter_parts.append(f"[0:v]{vf}[vout]")
+        filter_parts.append(
+            self._audio_filter_complex(
+                has_voice, voice_idx, music_idx, music_volume, voice_volume, ducking
+            )
+        )
+        cmd += ["-filter_complex", ";".join(filter_parts)]
+
+        if burn:
+            cmd += ["-map", "[vout]", "-c:v", "libx264", "-preset", "veryfast",
+                    "-pix_fmt", "yuv420p"]
+        else:
+            cmd += ["-map", "0:v:0", "-c:v", "copy"]
+
+        cmd += ["-map", "[mix]", "-c:a", "aac"]
+        cmd += ["-shortest", "-movflags", "+faststart"]
+        cmd.append(str(output_path))
+        return cmd
+
+    @staticmethod
+    def _audio_filter_complex(
+        has_voice: bool,
+        voice_idx: int | None,
+        music_idx: int,
+        music_volume: float,
+        voice_volume: float,
+        ducking: bool,
+    ) -> str:
+        """Devuelve la rama de audio del ``-filter_complex`` (produce ``[mix]``).
+
+        Todas las ramas normalizan formato con ``aresample=48000`` y
+        ``aformat=channel_layouts=stereo`` (incluye el upmix mono->estéreo).
+        """
+        mv = f"{music_volume:.3f}"
+        vv = f"{voice_volume:.3f}"
+
+        if not has_voice:
+            # Caso 7/8: solo música de fondo.
+            return (
+                f"[{music_idx}:a]aresample=48000,aformat=channel_layouts=stereo,"
+                f"volume={mv}[mix]"
+            )
+
+        # Caso 5/6: voz + música (ducking opcional).
+        if ducking:
+            voice_chain = (
+                f"[{voice_idx}:a]aresample=48000,aformat=channel_layouts=stereo,"
+                f"volume={vv},asplit=2[v1][vsc]"
+            )
+        else:
+            voice_chain = (
+                f"[{voice_idx}:a]aresample=48000,aformat=channel_layouts=stereo,"
+                f"volume={vv}[v1]"
+            )
+        music_chain = (
+            f"[{music_idx}:a]aresample=48000,aformat=channel_layouts=stereo,"
+            f"volume={mv}[music]"
+        )
+        if ducking:
+            mid = (
+                "[music][vsc]sidechaincompress="
+                "threshold=0.05:ratio=8:attack=10:release=250[md]"
+            )
+            mix_in = "[md]"
+        else:
+            mid = None
+            mix_in = "[music]"
+
+        amix = (
+            f"{mix_in}[v1]amix=inputs=2:duration=first:dropout_transition=3:"
+            f"normalize=0[mix]"
+        )
+
+        parts = [voice_chain, music_chain]
+        if mid:
+            parts.append(mid)
+        parts.append(amix)
+        return ";".join(parts)
 
     @staticmethod
     def _run(cmd: list[str]) -> None:

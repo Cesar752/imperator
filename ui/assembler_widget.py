@@ -2,6 +2,7 @@
 
 import logging
 import os
+from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -51,6 +52,10 @@ _DURATION_GAP_WARNING = 2.0
 # Grosor del contorno del subtítulo (px), fijo por ahora (no expuesto en la UI).
 _DEFAULT_OUTLINE = 2
 
+# Carpeta de biblioteca de música de fondo (el usuario mete sus MP3 aquí).
+MUSIC_DIR = Path(__file__).resolve().parent.parent / "music"
+MUSIC_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
+
 
 class AssemblerWorker(QThread):
     """Orquesta transcripción (Whisper) + ensamblaje (ffmpeg) fuera de la UI."""
@@ -69,6 +74,10 @@ class AssemblerWorker(QThread):
         model_size,
         language,
         subtitle_style,
+        music_path,
+        music_volume,
+        voice_volume,
+        ducking,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -80,6 +89,10 @@ class AssemblerWorker(QThread):
         self._model_size = model_size
         self._language = language
         self._subtitle_style = subtitle_style
+        self._music_path = music_path
+        self._music_volume = music_volume
+        self._voice_volume = voice_volume
+        self._ducking = ducking
 
     def run(self) -> None:
         try:
@@ -102,6 +115,10 @@ class AssemblerWorker(QThread):
                 audio_path=self._audio_path,
                 srt_path=srt_path,
                 subtitle_style=self._subtitle_style,
+                music_path=self._music_path,
+                music_volume=self._music_volume,
+                voice_volume=self._voice_volume,
+                ducking=self._ducking,
             )
             self.progress.emit(100, "Listo")
             self.result_ready.emit(str(output))
@@ -172,6 +189,43 @@ class AssemblerWidget(QWidget):
         audio_layout.addWidget(self._audio_label)
         audio_layout.addWidget(self._audio_info)
 
+        # Música de fondo
+        self._music_combo = QComboBox()
+        self._music_combo.currentIndexChanged.connect(self._on_music_changed)
+        self._music_refresh = QPushButton("Refrescar")
+        self._music_refresh.clicked.connect(self._populate_music)
+
+        music_row = QHBoxLayout()
+        music_row.addWidget(self._music_combo)
+        music_row.addWidget(self._music_refresh)
+
+        self._music_volume = QSpinBox()
+        self._music_volume.setRange(0, 100)
+        self._music_volume.setValue(30)
+        self._music_volume.setSuffix("%")
+        self._music_volume.valueChanged.connect(self._on_music_volume_changed)
+
+        self._voice_volume = QSpinBox()
+        self._voice_volume.setRange(0, 100)
+        self._voice_volume.setValue(100)
+        self._voice_volume.setSuffix("%")
+        self._voice_volume.valueChanged.connect(self._on_voice_volume_changed)
+
+        self._ducking = QCheckBox("Ducking automático")
+        self._ducking.setChecked(True)
+        self._ducking.toggled.connect(self._on_ducking_toggled)
+
+        music_form = QFormLayout()
+        music_form.addRow("Pista:", music_row)
+        music_form.addRow("Vol. música:", self._music_volume)
+        music_form.addRow("Vol. voz:", self._voice_volume)
+        music_form.addRow("", self._ducking)
+
+        music_group = QGroupBox("Música de fondo")
+        music_group.setLayout(music_form)
+
+        self._populate_music()
+
         # Subtítulos
         self._subtitles_check = QCheckBox("Generar subtítulos con Whisper")
         self._subtitles_check.setChecked(True)
@@ -240,6 +294,7 @@ class AssemblerWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(video_group)
         layout.addWidget(audio_group)
+        layout.addWidget(music_group)
         layout.addWidget(self._subtitles_check)
         layout.addWidget(self._subtitles_section)
         layout.addLayout(buttons)
@@ -323,6 +378,11 @@ class AssemblerWidget(QWidget):
             "outline": _DEFAULT_OUTLINE,
         }
 
+        music_path = self._music_combo.currentData()
+        music_volume = self._music_volume.value() / 100.0
+        voice_volume = self._voice_volume.value() / 100.0
+        ducking = self._ducking.isChecked()
+
         self._set_busy(True)
         self._progress.setValue(0)
         self._set_status("Iniciando...")
@@ -336,6 +396,10 @@ class AssemblerWidget(QWidget):
             self._model_combo.currentData(),
             self._language_combo.currentData(),
             subtitle_style,
+            music_path,
+            music_volume,
+            voice_volume,
+            ducking,
             self,
         )
         self._worker.progress.connect(self._on_progress)
@@ -394,6 +458,35 @@ class AssemblerWidget(QWidget):
     def _on_color_changed(self) -> None:
         self._save_pref("assembler_color", self._color_combo.currentData())
 
+    # ---- Música de fondo -----------------------------------------
+
+    def _populate_music(self) -> None:
+        """Rellena el combo con las pistas disponibles en music/."""
+        self._music_combo.blockSignals(True)
+        current = self._music_combo.currentData()
+        self._music_combo.clear()
+        self._music_combo.addItem("(ninguna)", None)
+        for path in sorted(MUSIC_DIR.glob("*")):
+            if path.is_file() and path.suffix.lower() in MUSIC_EXTS:
+                self._music_combo.addItem(path.stem, str(path))
+        if current is not None:
+            idx = self._music_combo.findData(current)
+            if idx >= 0:
+                self._music_combo.setCurrentIndex(idx)
+        self._music_combo.blockSignals(False)
+
+    def _on_music_changed(self) -> None:
+        self._save_pref("assembler_musica", self._music_combo.currentData() or "")
+
+    def _on_music_volume_changed(self) -> None:
+        self._save_pref("assembler_musica_vol", str(self._music_volume.value()))
+
+    def _on_voice_volume_changed(self) -> None:
+        self._save_pref("assembler_voz_vol", str(self._voice_volume.value()))
+
+    def _on_ducking_toggled(self, checked: bool) -> None:
+        self._save_pref("assembler_ducking", "1" if checked else "0")
+
     def _save_pref(self, key: str, value: str) -> None:
         if self._config_manager is not None and value is not None:
             self._config_manager.save_last_model(key, value)
@@ -409,14 +502,18 @@ class AssemblerWidget(QWidget):
             (self._position_combo, "assembler_posicion"),
             (self._color_combo, "assembler_color"),
         )
-        for combo in (
+        all_combos = (
             self._model_combo,
             self._language_combo,
             self._position_combo,
             self._color_combo,
-        ):
+            self._music_combo,
+        )
+        for combo in all_combos:
             combo.blockSignals(True)
-        self._fontsize.blockSignals(True)
+        for spin in (self._fontsize, self._music_volume, self._voice_volume):
+            spin.blockSignals(True)
+        self._ducking.blockSignals(True)
         try:
             for combo, key in combos:
                 value = last.get(key)
@@ -430,15 +527,32 @@ class AssemblerWidget(QWidget):
                     self._fontsize.setValue(int(fontsize))
                 except ValueError:
                     pass
+            music_path = last.get("assembler_musica")
+            if music_path:
+                idx = self._music_combo.findData(music_path)
+                if idx >= 0:
+                    self._music_combo.setCurrentIndex(idx)
+            music_vol = last.get("assembler_musica_vol")
+            if music_vol is not None:
+                try:
+                    self._music_volume.setValue(int(music_vol))
+                except ValueError:
+                    pass
+            voice_vol = last.get("assembler_voz_vol")
+            if voice_vol is not None:
+                try:
+                    self._voice_volume.setValue(int(voice_vol))
+                except ValueError:
+                    pass
+            ducking = last.get("assembler_ducking")
+            if ducking is not None:
+                self._ducking.setChecked(ducking == "1")
         finally:
-            for combo in (
-                self._model_combo,
-                self._language_combo,
-                self._position_combo,
-                self._color_combo,
-            ):
+            for combo in all_combos:
                 combo.blockSignals(False)
-            self._fontsize.blockSignals(False)
+            for spin in (self._fontsize, self._music_volume, self._voice_volume):
+                spin.blockSignals(False)
+            self._ducking.blockSignals(False)
 
     # ---- Utilidades ----------------------------------------------
 
@@ -446,6 +560,11 @@ class AssemblerWidget(QWidget):
         self._assemble_button.setEnabled(not busy)
         self._video_button.setEnabled(not busy)
         self._audio_button.setEnabled(not busy)
+        self._music_combo.setEnabled(not busy)
+        self._music_refresh.setEnabled(not busy)
+        self._music_volume.setEnabled(not busy)
+        self._voice_volume.setEnabled(not busy)
+        self._ducking.setEnabled(not busy)
         self._subtitles_check.setEnabled(not busy and self._whisper is not None)
         self._subtitles_section.setEnabled(not busy)
 

@@ -34,3 +34,6 @@ output/
 
 # Voces de Piper (modelos ONNX descargados, no se versionan)
 voices/
+
+# Biblioteca de música de fondo (MP3 del usuario, no se versiona)
+music/
