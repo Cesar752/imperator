@@ -281,9 +281,8 @@ class VideoWidget(QWidget):
     def _save_as(self) -> None:
         if not self._last_path:
             return
-        default_name = Path(self._last_path).name
         target, _ = QFileDialog.getSaveFileName(
-            self, "Guardar vídeo como...", default_name, "MP4 (*.mp4);;WebM (*.webm)"
+            self, "Guardar vídeo como...", self._last_path, "MP4 (*.mp4);;WebM (*.webm)"
         )
         if not target:
             return

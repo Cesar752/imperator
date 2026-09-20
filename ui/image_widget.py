@@ -2,7 +2,6 @@
 
 import logging
 import shutil
-from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QPixmap
@@ -242,9 +241,8 @@ class ImageWidget(QWidget):
     def _save_as(self) -> None:
         if not self._last_path:
             return
-        default_name = Path(self._last_path).name
         target, _ = QFileDialog.getSaveFileName(
-            self, "Guardar imagen como...", default_name, "PNG (*.png)"
+            self, "Guardar imagen como...", self._last_path, "PNG (*.png)"
         )
         if not target:
             return
