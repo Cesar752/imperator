@@ -9,6 +9,7 @@ from engines.ollama import OllamaEngine
 from engines.ollama_vision import OllamaVisionEngine
 from engines.piper_tts import PiperTTSEngine
 from engines.wanvideo import WanVideoEngine
+from engines.whisper_engine import WhisperEngine
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ ENGINE_FACTORY: dict[str, type[Engine]] = {
     "comfyui": ComfyUIEngine,
     "wanvideo": WanVideoEngine,
     "piper_tts": PiperTTSEngine,
+    "whisper": WhisperEngine,
 }
 
 # Defaults por tipo de motor (si faltan en la configuración).
@@ -30,6 +32,9 @@ _OLLAMA_VISION_DEFAULT_MODEL = "qwen2.5vl:7b"
 _COMFYUI_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
 _WANVIDEO_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
 _PIPER_DEFAULT_VOICES_DIR = "voices"
+_WHISPER_DEFAULT_MODEL = "small"
+_WHISPER_DEFAULT_DEVICE = "cpu"
+_WHISPER_DEFAULT_COMPUTE_TYPE = "int8"
 
 
 class EngineManager:
@@ -103,6 +108,12 @@ class EngineManager:
             return PiperTTSEngine(
                 voices_dir=params.get("voices_dir", entry.get("ruta", _PIPER_DEFAULT_VOICES_DIR)),
                 default_voice=params.get("default_voice"),
+            )
+        if engine_id == "whisper":
+            return WhisperEngine(
+                model_size=params.get("model", _WHISPER_DEFAULT_MODEL),
+                device=params.get("device", _WHISPER_DEFAULT_DEVICE),
+                compute_type=params.get("compute_type", _WHISPER_DEFAULT_COMPUTE_TYPE),
             )
         # Genérico para futuros motores: los parametros se pasan tal cual.
         cls = ENGINE_FACTORY[engine_id]

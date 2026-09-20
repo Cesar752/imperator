@@ -4,6 +4,7 @@ import logging
 
 from core.engine_manager import EngineManager
 from tasks.base_task import Task
+from tasks.assembler import AssemblerTask
 from tasks.chat import ChatTask
 from tasks.document import DocumentTask
 from tasks.audio import AudioTask
@@ -25,6 +26,7 @@ TASK_FACTORY: dict[str, type[Task]] = {
     "image": ImageTask,
     "video": VideoTask,
     "audio": AudioTask,
+    "assembler": AssemblerTask,
 }
 
 

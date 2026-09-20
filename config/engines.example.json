@@ -63,5 +63,16 @@
       "voices_dir": "voices",
       "default_voice": "es_ES-davefx-medium"
     }
+  },
+  {
+    "id": "whisper",
+    "nombre": "Whisper",
+    "ruta": "local",
+    "enabled": true,
+    "parametros": {
+      "model": "small",
+      "device": "cpu",
+      "compute_type": "int8"
+    }
   }
 ]

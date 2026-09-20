@@ -117,6 +117,17 @@ DEFAULT_ENGINES: list[dict[str, Any]] = [
             "default_voice": "es_ES-davefx-medium",
         },
     },
+    {
+        "id": "whisper",
+        "nombre": "Whisper",
+        "ruta": "local",
+        "enabled": True,
+        "parametros": {
+            "model": "small",
+            "device": "cpu",
+            "compute_type": "int8",
+        },
+    },
 ]
 DEFAULT_APIS: list[dict[str, Any]] = []
 DEFAULT_SETTINGS: dict[str, Any] = {"log_level": "INFO", "rutas": {}, "last_models": {}}
