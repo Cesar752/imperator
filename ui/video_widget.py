@@ -68,7 +68,14 @@ class VideoWidget(QWidget):
         "rapido": ("Rápido", 832, 480, 2, "832×480 · 2 s (~69 s)"),
         "equilibrado": ("Equilibrado", 832, 480, 4, "832×480 · 4 s (~140 s)"),
         "calidad": ("Calidad", 1024, 576, 5, "1024×576 · 5 s (~250 s)"),
+        "tiktok_rapido": ("TikTok Rápido", 480, 832, 2, "480×832 · 2 s (~55 s)"),
+        "tiktok_calidad": ("TikTok Calidad", 720, 1280, 3, "720×1280 · 3 s (~120 s)"),
+        "tiktok_alto": ("TikTok Alto", 896, 1600, 4, "896×1600 · 4 s (~200 s, mucha VRAM)"),
     }
+
+    # Orden de visualización de cada grupo.
+    _HORIZONTAL_KEYS = ("rapido", "equilibrado", "calidad")
+    _VERTICAL_KEYS = ("tiktok_rapido", "tiktok_calidad", "tiktok_alto")
 
     # Etiquetas de los modos (clave del workflow -> texto legible).
     _MODE_LABELS = {
@@ -168,9 +175,19 @@ class VideoWidget(QWidget):
 
         self._status = QLabel("")
 
-        presets_row = QHBoxLayout()
-        for key in self._PRESETS:
-            presets_row.addWidget(self._preset_buttons[key])
+        horizontal_row = QHBoxLayout()
+        for key in self._HORIZONTAL_KEYS:
+            horizontal_row.addWidget(self._preset_buttons[key])
+
+        vertical_row = QHBoxLayout()
+        for key in self._VERTICAL_KEYS:
+            vertical_row.addWidget(self._preset_buttons[key])
+
+        presets_group = QVBoxLayout()
+        presets_group.addWidget(QLabel("Horizontal:"))
+        presets_group.addLayout(horizontal_row)
+        presets_group.addWidget(QLabel("Vertical (TikTok):"))
+        presets_group.addLayout(vertical_row)
 
         form = QFormLayout()
         form.addRow("Modo", self._mode)
@@ -180,7 +197,7 @@ class VideoWidget(QWidget):
         form.addRow("Alto", self._height)
         form.addRow("Duración", self._duration)
         form.addRow("FPS", self._fps)
-        form.addRow("Presets", presets_row)
+        form.addRow("Presets", presets_group)
         form.addRow("Seed", self._seed)
         form.addRow("", self._random_seed)
 

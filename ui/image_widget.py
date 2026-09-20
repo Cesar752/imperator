@@ -54,6 +54,13 @@ class ImageWorker(QThread):
 class ImageWidget(QWidget):
     """Formulario de generación con preview de la imagen resultante."""
 
+    # Presets: clave -> (label, width, height, tooltip).
+    _PRESETS = {
+        "vertical": ("Vertical 9:16", 768, 1344, "768×1344 · vertical para TikTok/Reels"),
+        "cuadrado": ("Cuadrado 1:1", 1024, 1024, "1024×1024 · default"),
+        "horizontal": ("Horizontal 16:9", 1344, 768, "1344×768 · panorámico"),
+    }
+
     def __init__(self, engine: Engine | None, config_manager=None, parent=None) -> None:
         super().__init__(parent)
         self._engine: Engine | None = engine
@@ -86,6 +93,13 @@ class ImageWidget(QWidget):
         self._height.setRange(256, 2048)
         self._height.setValue(1024)
 
+        self._preset_buttons: dict[str, QPushButton] = {}
+        for key, (label, _w, _h, tooltip) in self._PRESETS.items():
+            btn = QPushButton(label)
+            btn.setToolTip(tooltip)
+            btn.clicked.connect(lambda _checked=False, k=key: self._apply_preset(k))
+            self._preset_buttons[key] = btn
+
         self._steps = QSpinBox()
         self._steps.setRange(1, 150)
         self._steps.setValue(20)
@@ -113,12 +127,17 @@ class ImageWidget(QWidget):
         self._preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._preview.setMinimumSize(480, 320)
 
+        presets_row = QHBoxLayout()
+        for key in self._PRESETS:
+            presets_row.addWidget(self._preset_buttons[key])
+
         form = QFormLayout()
         form.addRow("Modelo:", self._model)
         form.addRow("Prompt:", self._prompt)
         form.addRow("Prompt negativo:", self._negative_prompt)
         form.addRow("Ancho:", self._width)
         form.addRow("Alto:", self._height)
+        form.addRow("Presets:", presets_row)
         form.addRow("Steps:", self._steps)
         form.addRow("Guidance:", self._guidance)
 
@@ -168,6 +187,12 @@ class ImageWidget(QWidget):
     def _on_model_changed(self) -> None:
         if self._config_manager is not None and self._model.currentData():
             self._config_manager.save_last_model("image", self._model.currentData())
+
+    def _apply_preset(self, key: str) -> None:
+        label, width, height, _tooltip = self._PRESETS[key]
+        self._width.setValue(width)
+        self._height.setValue(height)
+        self._set_status(f"Preset aplicado: {label}")
 
     def _generate(self) -> None:
         if self._engine is None:
@@ -263,6 +288,8 @@ class ImageWidget(QWidget):
         self._steps.setEnabled(not busy)
         self._guidance.setEnabled(not busy)
         self._random_seed.setEnabled(not busy)
+        for btn in self._preset_buttons.values():
+            btn.setEnabled(not busy)
         # El campo de seed solo se habilita si no está marcado "Aleatorio".
         self._seed.setEnabled(not busy and not self._random_seed.isChecked())
 
