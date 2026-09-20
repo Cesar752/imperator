@@ -93,7 +93,11 @@ DEFAULT_ENGINES: list[dict[str, Any]] = [
         "ruta": "http://127.0.0.1:8188",
         "enabled": False,
         "parametros": {
-            "workflow_path": "C:/CComfyUI/wan22_t2v_workflow_api.json",
+            "workflows": {
+                "t2v": "C:/CComfyUI/wan22_t2v_workflow_api.json",
+                "i2v": "C:/CComfyUI/wan22_i2v_workflow_api.json",
+            },
+            "default_model": "t2v",
         },
     },
 ]

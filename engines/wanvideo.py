@@ -1,4 +1,4 @@
-"""Motor local Wan Video (ComfyUI + Wan2.2-Lightning T2V)."""
+"""Motor local Wan Video (ComfyUI + Wan2.2-Lightning T2V/I2V)."""
 
 import json
 import logging
@@ -24,12 +24,16 @@ logger = logging.getLogger(__name__)
 class WanVideoEngine(Engine):
     """Motor de generación de vídeo con Wan2.2-Lightning vía ComfyUI.
 
-    Genera clips a partir del workflow ``wan22_t2v_workflow_api.json``. El flujo
-    replica a :class:`engines.comfyui.ComfyUIEngine` (cargar, parchear, ``/prompt``
-    y descargar vía ``/view``). A diferencia del motor de imagen, la finalización
-    y el progreso se detectan por el WebSocket ``/ws`` (fuente única de verdad);
-    ``/history`` solo se lee una vez tras el ``execution_success`` para obtener la
-    salida. Si el WebSocket falla, la generación falla (no hay fallback).
+    Soporta varios modos (``t2v``, ``i2v``...) seleccionados por la clave del
+    diccionario ``workflows``. Cada modo es un workflow JSON que embebe sus
+    propios modelos; el dict puede crecer en el futuro (``t2v_q5``, ``i2v_q4``...)
+    sin tocar el motor. ``image_path`` activa el modo imagen-a-vídeo (``i2v``).
+
+    El flujo replica a :class:`engines.comfyui.ComfyUIEngine` (cargar, parchear,
+    ``/prompt`` y descargar vía ``/view``). La finalización y el progreso se
+    detectan por el WebSocket ``/ws`` (fuente única de verdad); ``/history`` solo
+    se lee una vez tras ``execution_success``. Si el WebSocket falla, la
+    generación falla (no hay fallback).
     """
 
     # Timeouts en segundos.
@@ -39,23 +43,27 @@ class WanVideoEngine(Engine):
     _VIEW_TIMEOUT = 120.0       # GET /view (descarga del MP4)
     _GENERATE_TIMEOUT = 600.0   # espera máxima total por clip
     _HISTORY_RETRIES = 10       # reintentos al leer /history tras el éxito
+    _UPLOAD_TIMEOUT = 60.0      # POST /upload/image
 
     # IDs de los KSampler en el workflow Lightning (para mapear el progreso).
     _KSAMPLER_HIGH = "57"       # etapa high-noise (pasos 0→2)
     _KSAMPLER_LOW = "58"        # etapa low-noise (pasos 2→4)
 
+    # class_types del nodo de latent en cada modo.
+    _LATENT_TYPES = ("EmptyHunyuanLatentVideo", "WanImageToVideo")
+
     def __init__(
         self,
         base_url: str = "http://127.0.0.1:8188",
-        workflow_path: str | None = None,
+        workflows: dict[str, str] | None = None,
+        default_model: str = "t2v",
         output_dir: str | Path | None = None,
     ) -> None:
-        if not workflow_path:
-            raise EngineError(
-                "WanVideo: falta 'workflow_path' en la config de engines.json"
-            )
+        if not workflows:
+            raise EngineError("WanVideo: falta 'workflows' en la config de engines.json")
         self._base_url = base_url.rstrip("/")
-        self._workflow_path = Path(workflow_path)
+        self._workflows = {name: Path(path) for name, path in workflows.items()}
+        self._default_model = default_model or next(iter(self._workflows))
         # Carpeta de salida por defecto: <raíz del proyecto>/output.
         self._output_dir = (
             Path(output_dir)
@@ -82,15 +90,8 @@ class WanVideoEngine(Engine):
         return True
 
     def list_models(self) -> list[str]:
-        # El workflow Lightning carga los UNet con UnetLoaderGGUF; su input
-        # "unet_name" expone los .gguf de models/unet.
-        resp = requests.get(
-            f"{self._base_url}/object_info/UnetLoaderGGUF", timeout=self._SHORT_TIMEOUT
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        unet_name = data["UnetLoaderGGUF"]["input"]["required"]["unet_name"]
-        return list(unet_name[0])
+        # Cada modelo es una clave del diccionario "workflows" (t2v, i2v, ...).
+        return list(self._workflows.keys())
 
     def chat(self, messages: list[dict]) -> str:
         raise EngineError("WanVideo es un motor de generación de vídeo, no de chat.")
@@ -99,23 +100,37 @@ class WanVideoEngine(Engine):
         self,
         prompt: str,
         negative_prompt: str = "",
+        image_path: str | Path | None = None,
+        model: str | None = None,
         width: int = 832,
         height: int = 480,
         length: int = 33,
         fps: int = 16,
         seed: int | None = None,
-        model: str | None = None,
         progress_callback: Callable[[int, str], None] | None = None,
     ) -> Path:
         """Genera un clip y devuelve la ruta del MP4 guardado en ``output/``.
 
-        ``progress_callback`` recibe ``(porcentaje, mensaje)`` y se invoca desde
-        el hilo que ejecuta esta llamada (el worker de la UI).
+        ``model`` es el modo (``t2v``/``i2v``); ``image_path`` activa el modo
+        imagen-a-vídeo. ``progress_callback`` recibe ``(porcentaje, mensaje)``
+        y se invoca desde el hilo que ejecuta esta llamada (el worker de la UI).
         """
         if seed is None:
             seed = random.randint(0, 2**31 - 1)
 
-        workflow = self._load_workflow()
+        model = model or self._default_model
+        if image_path is not None and model == "t2v":
+            logger.warning("WanVideo: image_path con modo 't2v'; cambiando a 'i2v'.")
+            model = "i2v"
+        if model == "i2v" and image_path is None:
+            raise EngineError("WanVideo: el modo 'i2v' requiere image_path")
+
+        workflow = self._load_workflow(model)
+
+        image_name = None
+        if image_path is not None:
+            image_name = self._upload_image(Path(image_path))
+
         self._patch_workflow(
             workflow,
             prompt=prompt,
@@ -125,7 +140,7 @@ class WanVideoEngine(Engine):
             length=length,
             fps=fps,
             seed=seed,
-            model=model,
+            image_name=image_name,
         )
 
         client_id = str(uuid4())
@@ -135,16 +150,70 @@ class WanVideoEngine(Engine):
         content = self._download(video_meta)
         return self._save(content, video_meta, seed)
 
+    # ---- Subida de imagen -----------------------------------------
+
+    def _upload_image(self, image_path: Path) -> str:
+        """Sube la imagen a ComfyUI (``POST /upload/image``) y devuelve su nombre."""
+        if not image_path.exists():
+            raise EngineError(f"WanVideo: la imagen no existe: {image_path}")
+        ext = image_path.suffix.lower()
+        mime = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+        }.get(ext, "image/png")
+        with image_path.open("rb") as fh:
+            data = fh.read()
+        try:
+            resp = requests.post(
+                f"{self._base_url}/upload/image",
+                files={"image": (image_path.name, data, mime)},
+                data={"overwrite": "true"},
+                timeout=self._UPLOAD_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            raise EngineError(f"WanVideo: error subiendo la imagen: {exc}") from exc
+        resp.raise_for_status()
+        try:
+            info = resp.json()
+        except ValueError as exc:
+            raise EngineError("WanVideo: respuesta inválida al subir la imagen.") from exc
+        name = info.get("name")
+        if not name:
+            raise EngineError("WanVideo: ComfyUI no devolvió el nombre de la imagen subida.")
+        return name
+
     # ---- Carga y parcheo del workflow -----------------------------
 
-    def _load_workflow(self) -> dict:
+    def _load_workflow(self, model: str) -> dict:
+        path = self._workflows.get(model)
+        if path is None:
+            raise EngineError(f"WanVideo: modo desconocido '{model}'")
+        if not path.exists():
+            raise EngineError(f"WanVideo: workflow no encontrado: {path}")
         try:
-            with self._workflow_path.open("r", encoding="utf-8") as fh:
-                return json.load(fh)
+            with path.open("r", encoding="utf-8") as fh:
+                wf = json.load(fh)
         except (OSError, json.JSONDecodeError) as exc:
             raise EngineError(
-                f"WanVideo: no se pudo cargar el workflow '{self._workflow_path}': {exc}"
+                f"WanVideo: no se pudo cargar el workflow '{path}': {exc}"
             ) from exc
+        self._validate_workflow(wf, path)
+        return wf
+
+    def _validate_workflow(self, wf: dict, path: Path) -> None:
+        """Valida que el workflow tenga los nodos que el motor va a parchear."""
+        required = {"6": "CLIPTextEncode", "7": "CLIPTextEncode"}
+        for node_id, expected_ct in required.items():
+            node = wf.get(node_id)
+            if node is None:
+                raise EngineError(f"WanVideo: workflow '{path.name}' no tiene el nodo {node_id}")
+            if node.get("class_type") != expected_ct:
+                raise EngineError(
+                    f"WanVideo: nodo {node_id} es '{node.get('class_type')}', esperado '{expected_ct}'"
+                )
+        if not any(n.get("class_type") in self._LATENT_TYPES for n in wf.values()):
+            raise EngineError(f"WanVideo: workflow '{path.name}' no tiene nodo de latent")
 
     def _patch_workflow(
         self,
@@ -157,27 +226,30 @@ class WanVideoEngine(Engine):
         length: int,
         fps: int,
         seed: int,
-        model: str | None = None,
+        image_name: str | None = None,
     ) -> None:
-        """Parchea los nodos del workflow con los parámetros de la petición.
-
-        Los IDs corresponden al workflow exportado (``wan22_t2v_workflow_api.json``).
-        """
+        """Parchea por ID (nodos estables) y por class_type (nodos que difieren)."""
+        # Prompt: IDs 6 (positivo) / 7 (negativo), idénticos en t2v e i2v.
         workflow["6"]["inputs"]["text"] = prompt
         workflow["7"]["inputs"]["text"] = negative_prompt
-        workflow["59"]["inputs"]["width"] = width
-        workflow["59"]["inputs"]["height"] = height
-        workflow["59"]["inputs"]["length"] = length
-        workflow["60"]["inputs"]["fps"] = fps
-        # La misma semilla en ambas etapas (high y low) para un clip coherente.
+
+        # Latent + LoadImage: por class_type (difieren entre modos).
+        for node in workflow.values():
+            inputs = node.get("inputs")
+            if not isinstance(inputs, dict):
+                continue
+            ct = node.get("class_type")
+            if ct in self._LATENT_TYPES:
+                inputs["width"] = width
+                inputs["height"] = height
+                inputs["length"] = length
+            elif ct == "LoadImage" and image_name is not None:
+                inputs["image"] = image_name
+
+        # Samplers y fps: IDs estables.
         workflow["57"]["inputs"]["noise_seed"] = seed
         workflow["58"]["inputs"]["noise_seed"] = seed
-        # ``model`` es el GGUF high-noise; el low-noise se deriva por nombre.
-        if model is not None:
-            workflow["37"]["inputs"]["unet_name"] = model
-            workflow["56"]["inputs"]["unet_name"] = model.replace(
-                "HighNoise", "LowNoise"
-            )
+        workflow["60"]["inputs"]["fps"] = fps
 
     # ---- Envío ----------------------------------------------------
 
@@ -361,5 +433,8 @@ class WanVideoEngine(Engine):
             fh.write(content)
         logger.info("WanVideo: vídeo guardado en '%s'.", path)
         return path
+
+
+
 
 

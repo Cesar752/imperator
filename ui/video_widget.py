@@ -4,8 +4,8 @@ import logging
 import shutil
 from pathlib import Path
 
-from PyQt6.QtCore import QThread, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtCore import Qt, QThread, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -41,7 +41,7 @@ class VideoWorker(QThread):
         self._params = params
 
     def run(self) -> None:
-        # El progreso llega desde el WebSocket (hilo auxiliar) vía este callback.
+        # El progreso llega desde el WebSocket vía este callback.
         params = dict(self._params)
         params["progress_callback"] = self._on_progress
         try:
@@ -70,14 +70,23 @@ class VideoWidget(QWidget):
         "calidad": ("Calidad", 1024, 576, 5, "1024×576 · 5 s (~250 s)"),
     }
 
+    # Etiquetas de los modos (clave del workflow -> texto legible).
+    _MODE_LABELS = {
+        "t2v": "Texto a vídeo",
+        "i2v": "Imagen a vídeo",
+    }
+
+    _PREVIEW_SIZE = 256
+
     def __init__(self, engine: Engine | None, config_manager=None, parent=None) -> None:
         super().__init__(parent)
         self._engine: Engine | None = engine
         self._config_manager = config_manager
         self._worker: VideoWorker | None = None
         self._last_path: str | None = None
+        self._image_path: str | None = None
         self._build_ui()
-        self._populate_models()
+        self._populate_modes()
         if self._engine is None:
             self._set_status("Wan Video no está configurado o deshabilitado.")
 
@@ -88,8 +97,8 @@ class VideoWidget(QWidget):
         self._negative_prompt = QLineEdit()
         self._negative_prompt.setPlaceholderText("(opcional)")
 
-        self._model = QComboBox()
-        self._model.currentIndexChanged.connect(self._on_model_changed)
+        self._mode = QComboBox()
+        self._mode.currentIndexChanged.connect(self._on_mode_changed)
 
         self._width = QSpinBox()
         self._width.setRange(256, 2048)
@@ -124,6 +133,29 @@ class VideoWidget(QWidget):
             btn.clicked.connect(lambda _checked=False, k=key: self._apply_preset(k))
             self._preset_buttons[key] = btn
 
+        # --- Controles de imagen (modo I2V) ---
+        self._image_preview = QLabel("Sin imagen")
+        self._image_preview.setFixedSize(self._PREVIEW_SIZE, self._PREVIEW_SIZE)
+        self._image_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._image_preview.setStyleSheet("border: 1px solid #888;")
+
+        self._use_last_button = QPushButton("Usar última imagen generada")
+        self._use_last_button.clicked.connect(self._use_last_image)
+        self._select_button = QPushButton("Seleccionar imagen...")
+        self._select_button.clicked.connect(self._select_image)
+        self._image_path_label = QLabel("")
+
+        image_buttons = QHBoxLayout()
+        image_buttons.addWidget(self._use_last_button)
+        image_buttons.addWidget(self._select_button)
+
+        self._image_section = QWidget()
+        image_layout = QVBoxLayout(self._image_section)
+        image_layout.setContentsMargins(0, 0, 0, 0)
+        image_layout.addWidget(self._image_preview, alignment=Qt.AlignmentFlag.AlignLeft)
+        image_layout.addLayout(image_buttons)
+        image_layout.addWidget(self._image_path_label)
+
         self._generate_button = QPushButton("Generar")
         self._save_button = QPushButton("Guardar como...")
         self._save_button.setEnabled(False)
@@ -141,7 +173,7 @@ class VideoWidget(QWidget):
             presets_row.addWidget(self._preset_buttons[key])
 
         form = QFormLayout()
-        form.addRow("Modelo", self._model)
+        form.addRow("Modo", self._mode)
         form.addRow("Prompt", self._prompt)
         form.addRow("Negativo", self._negative_prompt)
         form.addRow("Ancho", self._width)
@@ -159,6 +191,7 @@ class VideoWidget(QWidget):
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
+        layout.addWidget(self._image_section)
         layout.addLayout(buttons)
         layout.addWidget(self._progress)
         layout.addWidget(self._status)
@@ -167,6 +200,9 @@ class VideoWidget(QWidget):
         self._generate_button.clicked.connect(self._generate)
         self._save_button.clicked.connect(self._save_as)
         self._open_button.clicked.connect(self._open_folder)
+
+        # Mostrar/ocultar la sección de imagen según el modo inicial.
+        self._update_image_section()
 
     def _apply_preset(self, key: str) -> None:
         label, width, height, duration, _tooltip = self._PRESETS[key]
@@ -186,7 +222,12 @@ class VideoWidget(QWidget):
         if self._worker is not None and self._worker.isRunning():
             return
 
-        # length = duración * fps (+1 para el último frame), ej. 2s*16+1 = 33.
+        mode = self._mode.currentData() or "t2v"
+        if mode == "i2v" and not self._image_path:
+            self._set_status("Selecciona una imagen para el modo Imagen a vídeo.")
+            return
+
+        # length = duración * fps (+1 para el último frame).
         length = round(self._duration.value() * self._fps.value()) + 1
         params = {
             "prompt": prompt,
@@ -195,7 +236,8 @@ class VideoWidget(QWidget):
             "height": self._height.value(),
             "length": length,
             "fps": self._fps.value(),
-            "model": self._model.currentData(),
+            "model": mode,
+            "image_path": self._image_path if mode == "i2v" else None,
         }
         if not self._random_seed.isChecked():
             try:
@@ -257,11 +299,86 @@ class VideoWidget(QWidget):
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(self._last_path).parent)))
 
+    # ---- Modo (t2v/i2v) e imagen ---------------------------------
+
+    def _populate_modes(self) -> None:
+        """Rellena el selector de modo con los workflows del motor."""
+        self._mode.blockSignals(True)
+        self._mode.clear()
+        if self._engine is not None:
+            for model_id in self._engine.list_models():
+                self._mode.addItem(self._MODE_LABELS.get(model_id, model_id), model_id)
+        last = None
+        if self._config_manager is not None:
+            last = self._config_manager.load_last_models().get("video")
+        if last is not None:
+            idx = self._mode.findData(last)
+            if idx >= 0:
+                self._mode.setCurrentIndex(idx)
+        self._mode.blockSignals(False)
+        # Sincronizar la visibilidad de la sección de imagen con el modo restaurado.
+        self._update_image_section()
+        # Restaurar la última imagen usada.
+        if self._config_manager is not None:
+            last_image = self._config_manager.load_last_models().get("video_last_image")
+            if last_image:
+                self._set_image(last_image)
+
+    def _on_mode_changed(self) -> None:
+        mode = self._mode.currentData()
+        if self._config_manager is not None and mode:
+            self._config_manager.save_last_model("video", mode)
+        self._update_image_section()
+
+    def _update_image_section(self) -> None:
+        is_i2v = self._mode.currentData() == "i2v"
+        self._image_section.setVisible(is_i2v)
+
+    def _use_last_image(self) -> None:
+        output_dir = Path(__file__).resolve().parent.parent / "output"
+        pngs = sorted(
+            (p for p in output_dir.glob("*.png") if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if not pngs:
+            self._set_status("No hay imágenes generadas en output/.")
+            return
+        self._set_image(str(pngs[0]))
+
+    def _select_image(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Seleccionar imagen", "", "Imágenes (*.png *.jpg *.jpeg)"
+        )
+        if not path:
+            return
+        self._set_image(path)
+
+    def _set_image(self, path: str) -> None:
+        self._image_path = path
+        self._image_path_label.setText(path)
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            self._image_preview.setText("No se pudo cargar la imagen.")
+        else:
+            self._image_preview.setPixmap(
+                pixmap.scaled(
+                    self._PREVIEW_SIZE,
+                    self._PREVIEW_SIZE,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        if self._config_manager is not None:
+            self._config_manager.save_last_model("video_last_image", path)
+
+    # ---- Utilidades -----------------------------------------------
+
     def _set_busy(self, busy: bool) -> None:
         self._generate_button.setEnabled(not busy)
         self._prompt.setEnabled(not busy)
         self._negative_prompt.setEnabled(not busy)
-        self._model.setEnabled(not busy)
+        self._mode.setEnabled(not busy)
         self._width.setEnabled(not busy)
         self._height.setEnabled(not busy)
         self._duration.setEnabled(not busy)
@@ -269,6 +386,8 @@ class VideoWidget(QWidget):
         self._random_seed.setEnabled(not busy)
         for btn in self._preset_buttons.values():
             btn.setEnabled(not busy)
+        self._use_last_button.setEnabled(not busy)
+        self._select_button.setEnabled(not busy)
         self._seed.setEnabled(not busy and not self._random_seed.isChecked())
 
     def _set_status(self, text: str) -> None:
@@ -276,32 +395,9 @@ class VideoWidget(QWidget):
 
     def set_engine(self, engine: Engine | None) -> None:
         self._engine = engine
-        self._populate_models()
+        self._populate_modes()
         if engine is None:
             self._set_status("Wan Video no está configurado o deshabilitado.")
 
-    def _populate_models(self) -> None:
-        """Rellena el selector con los GGUF del motor y restaura el último."""
-        if self._engine is None:
-            return
-        models = list(self._engine.list_models())
-        self._model.blockSignals(True)
-        self._model.clear()
-        for model_id in models:
-            self._model.addItem(model_id, model_id)
-        last = None
-        if self._config_manager is not None:
-            last = self._config_manager.load_last_models().get("video")
-        if last in models:
-            self._model.setCurrentIndex(models.index(last))
-        else:
-            # Por defecto, el GGUF high-noise (el primero que contenga "HighNoise").
-            default = next((m for m in models if "HighNoise" in m), None)
-            if default is not None:
-                self._model.setCurrentIndex(models.index(default))
-        self._model.blockSignals(False)
 
-    def _on_model_changed(self) -> None:
-        if self._config_manager is not None and self._model.currentData():
-            self._config_manager.save_last_model("video", self._model.currentData())
 

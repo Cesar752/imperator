@@ -78,9 +78,14 @@ class EngineManager:
                 default_model=params.get("default_model"),
             )
         if engine_id == "wanvideo":
+            workflows = params.get("workflows")
+            if not workflows and params.get("workflow_path"):
+                # Backward-compat: formato antiguo con un solo workflow_path (T2V).
+                workflows = {"t2v": params["workflow_path"]}
             return WanVideoEngine(
                 base_url=entry.get("ruta", _WANVIDEO_DEFAULT_BASE_URL),
-                workflow_path=params.get("workflow_path"),
+                workflows=workflows,
+                default_model=params.get("default_model", "t2v"),
             )
         # Genérico para futuros motores: los parametros se pasan tal cual.
         cls = ENGINE_FACTORY[engine_id]
