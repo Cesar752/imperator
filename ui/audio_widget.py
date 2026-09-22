@@ -1,4 +1,4 @@
-"""Widget de audio: texto a voz con Piper TTS y reproductor embebido."""
+"""Widget de audio: texto a voz (Piper / Kokoro) con reproductor embebido."""
 
 import logging
 import os
@@ -39,10 +39,16 @@ from engines.base_engine import Engine, EngineError
 
 logger = logging.getLogger(__name__)
 
-# Rango y valor por defecto del control de velocidad (length_scale de Piper).
+# Rango y valor por defecto de la velocidad. Semántica común (Piper): >1 = más
+# lento, <1 = más rápido. KokoroTTSEngine invierte internamente el valor.
 _SPEED_MIN = 0.5
 _SPEED_MAX = 2.0
 _SPEED_DEFAULT = 1.0
+
+# Persistencia: motor activo y voz por motor.
+_ENGINE_KEY = "audio_engine"
+_VOICE_KEYS = {"piper": "audio_voice_piper", "kokoro": "audio_voice_kokoro"}
+_DEFAULT_VOICES = {"piper": "es_ES-davefx-medium", "kokoro": "ef_dora"}
 
 
 class AudioWorker(QThread):
@@ -51,18 +57,16 @@ class AudioWorker(QThread):
     audio_ready = pyqtSignal(str)   # ruta del WAV generado
     failed = pyqtSignal(str)
 
-    def __init__(self, engine, text, voice, length_scale, parent=None) -> None:
+    def __init__(self, engine, text, voice, speed, parent=None) -> None:
         super().__init__(parent)
         self._engine = engine
         self._text = text
         self._voice = voice
-        self._length_scale = length_scale
+        self._speed = speed
 
     def run(self) -> None:
         try:
-            path = self._engine.synthesize(
-                self._text, self._voice, self._length_scale
-            )
+            path = self._engine.synthesize(self._text, self._voice, self._speed)
         except EngineError as exc:
             self.failed.emit(str(exc))
         except Exception as exc:  # noqa: BLE001 - red/IO inesperados
@@ -76,28 +80,33 @@ class AudioWorker(QThread):
 
 
 class AudioWidget(QWidget):
-    """Formulario de texto a voz con reproductor embebido y guardado WAV/MP3."""
+    """Formulario de texto a voz (Piper/Kokoro) con reproductor y guardado."""
 
     def __init__(
-        self, engine: Engine | None, config_manager=None, parent=None
+        self, piper_engine=None, kokoro_engine=None, config_manager=None, parent=None
     ) -> None:
         super().__init__(parent)
-        self._engine = engine
+        self._engines = {"piper": piper_engine, "kokoro": kokoro_engine}
+        self._engine = None
+        self._current_motor = None
         self._config_manager = config_manager
         self._worker: AudioWorker | None = None
         self._last_path: str | None = None
         self._build_ui()
         self._setup_player()
-        self._populate_voices()
-        if engine is None:
-            self._set_status("Piper TTS no está configurado o deshabilitado.")
-            self._generate_button.setEnabled(False)
+        self._populate_motors()
 
     def _build_ui(self) -> None:
         self._text_area = QPlainTextEdit()
         self._text_area.setPlaceholderText(
             "Escribe el texto que quieres convertir a voz..."
         )
+
+        self._motor = QComboBox()
+        self._motor.setToolTip(
+            "Kokoro no soporta euskera. Para leyendas en euskera, usa Piper."
+        )
+        self._motor.currentIndexChanged.connect(self._on_motor_changed)
 
         self._voice = QComboBox()
         self._voice.currentIndexChanged.connect(self._on_voice_changed)
@@ -109,6 +118,7 @@ class AudioWidget(QWidget):
         self._speed.setSuffix(" ×")
 
         form = QFormLayout()
+        form.addRow("Motor:", self._motor)
         form.addRow("Voz:", self._voice)
         form.addRow("Velocidad:", self._speed)
 
@@ -162,7 +172,40 @@ class AudioWidget(QWidget):
         playing = state == QMediaPlayer.PlaybackState.PlayingState
         self._play_button.setText("Pausa" if playing else "Reproducir")
 
-    # ---- Voces y persistencia ------------------------------------
+    # ---- Motores y voces -----------------------------------------
+
+    def _populate_motors(self) -> None:
+        self._motor.blockSignals(True)
+        self._motor.clear()
+        self._motor.addItem("Piper", "piper")
+        self._motor.addItem("Kokoro", "kokoro")
+        last = "piper"
+        if self._config_manager is not None:
+            last = self._config_manager.load_last_models().get(_ENGINE_KEY, "piper")
+        idx = self._motor.findData(last)
+        if idx < 0:
+            idx = self._motor.findData("piper")
+        self._motor.setCurrentIndex(idx)
+        self._motor.blockSignals(False)
+        self._on_motor_changed()
+
+    def _on_motor_changed(self) -> None:
+        motor = self._motor.currentData()
+        if not motor or motor == self._current_motor:
+            return
+        # Guardar la voz actual en la clave del motor que se abandona.
+        if self._current_motor and self._voice.currentData():
+            self._config_manager.save_last_model(
+                _VOICE_KEYS[self._current_motor], self._voice.currentData()
+            )
+        self._current_motor = motor
+        self._engine = self._engines.get(motor)
+        if self._config_manager is not None:
+            self._config_manager.save_last_model(_ENGINE_KEY, motor)
+        self._populate_voices()
+        self._generate_button.setEnabled(self._engine is not None)
+        if self._engine is None:
+            self._set_status(f"El motor '{motor}' no está disponible.")
 
     def _populate_voices(self) -> None:
         self._voice.blockSignals(True)
@@ -173,27 +216,38 @@ class AudioWidget(QWidget):
                 voices = list(self._engine.list_voices())
             except EngineError as exc:
                 logger.warning("No se pudieron listar las voces: %s", exc)
-                self._set_status(f"Piper TTS no disponible: {exc}")
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Error listando voces: %r", exc, exc_info=True)
         for voice_name in voices:
             self._voice.addItem(voice_name, voice_name)
         last = None
-        if self._config_manager is not None:
-            last = self._config_manager.load_last_models().get("audio")
+        if self._config_manager is not None and self._current_motor:
+            last = self._config_manager.load_last_models().get(
+                _VOICE_KEYS[self._current_motor]
+            )
+        if last not in voices:
+            last = _DEFAULT_VOICES.get(self._current_motor)
+        if last not in voices and voices:
+            last = voices[0]
         if last in voices:
             self._voice.setCurrentIndex(voices.index(last))
         self._voice.blockSignals(False)
 
     def _on_voice_changed(self) -> None:
-        if self._config_manager is not None and self._voice.currentData():
-            self._config_manager.save_last_model("audio", self._voice.currentData())
+        if (
+            self._config_manager is not None
+            and self._current_motor
+            and self._voice.currentData()
+        ):
+            self._config_manager.save_last_model(
+                _VOICE_KEYS[self._current_motor], self._voice.currentData()
+            )
 
     # ---- Generación ----------------------------------------------
 
     def _generate(self) -> None:
         if self._engine is None:
-            self._set_status("Error: no hay motor Piper TTS configurado.")
+            self._set_status("Error: no hay motor TTS configurado.")
             return
         text = self._text_area.toPlainText().strip()
         if not text:
@@ -203,12 +257,12 @@ class AudioWidget(QWidget):
             return
 
         voice = self._voice.currentData() or None
-        length_scale = self._speed.value()
+        speed = self._speed.value()
 
         self._set_busy(True)
         self._set_status("Generando voz...")
 
-        self._worker = AudioWorker(self._engine, text, voice, length_scale, self)
+        self._worker = AudioWorker(self._engine, text, voice, speed, self)
         self._worker.audio_ready.connect(self._on_audio_ready)
         self._worker.failed.connect(self._on_error)
         self._worker.finished.connect(self._on_finished)
@@ -306,15 +360,18 @@ class AudioWidget(QWidget):
         self._generate_button.setEnabled(not busy and self._engine is not None)
         self._cancel_button.setEnabled(busy)
         self._text_area.setEnabled(not busy)
+        self._motor.setEnabled(not busy)
         self._voice.setEnabled(not busy)
         self._speed.setEnabled(not busy)
 
     def _set_status(self, text: str) -> None:
         self._status.setText(text)
 
-    def set_engine(self, engine: Engine | None) -> None:
-        self._engine = engine
-        self._populate_voices()
-        if engine is None:
-            self._set_status("Piper TTS no está configurado o deshabilitado.")
-        self._generate_button.setEnabled(engine is not None)
+    def set_engines(self, piper_engine=None, kokoro_engine=None) -> None:
+        self._engines = {"piper": piper_engine, "kokoro": kokoro_engine}
+        if self._current_motor:
+            self._engine = self._engines.get(self._current_motor)
+            self._populate_voices()
+        self._generate_button.setEnabled(self._engine is not None)
+
+

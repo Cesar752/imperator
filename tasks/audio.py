@@ -1,4 +1,4 @@
-"""Tarea de audio: texto a voz local con Piper TTS."""
+"""Tarea de audio: texto a voz local con Piper TTS y Kokoro TTS."""
 
 import logging
 
@@ -12,10 +12,10 @@ logger = logging.getLogger(__name__)
 
 
 class AudioTask(Task):
-    """Tarea de síntesis de voz con el motor Piper TTS local.
+    """Tarea de síntesis de voz con los motores Piper TTS y Kokoro TTS locales.
 
-    Construye un :class:`ui.audio_widget.AudioWidget` con el motor
-    ``piper_tts`` actual y lo expone como widget de tarea.
+    Construye un :class:`ui.audio_widget.AudioWidget` con ambos motores
+    (``piper_tts`` y ``kokoro_tts``) y lo expone como widget de tarea.
     """
 
     def __init__(self, engine_manager: EngineManager) -> None:
@@ -31,11 +31,18 @@ class AudioTask(Task):
         return "Audio"
 
     def build_widget(self, parent: QWidget | None = None) -> QWidget:
-        engine = self._engine_manager.get_engine("piper_tts")
-        self._widget = AudioWidget(engine, self._engine_manager.config_manager, parent)
+        piper = self._engine_manager.get_engine("piper_tts")
+        kokoro = self._engine_manager.get_engine("kokoro_tts")
+        self._widget = AudioWidget(
+            piper, kokoro, self._engine_manager.config_manager, parent
+        )
         return self._widget
 
     def refresh_engine(self) -> None:
-        """Relee el motor Piper TTS y lo propaga al widget de audio."""
+        """Relee los motores de voz y los propaga al widget de audio."""
         if self._widget is not None:
-            self._widget.set_engine(self._engine_manager.get_engine("piper_tts"))
+            self._widget.set_engines(
+                self._engine_manager.get_engine("piper_tts"),
+                self._engine_manager.get_engine("kokoro_tts"),
+            )
+

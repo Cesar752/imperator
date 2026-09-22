@@ -65,6 +65,15 @@
     }
   },
   {
+    "id": "kokoro_tts",
+    "nombre": "Kokoro TTS",
+    "ruta": "local",
+    "enabled": true,
+    "parametros": {
+      "default_voice": "ef_dora"
+    }
+  },
+  {
     "id": "whisper",
     "nombre": "Whisper",
     "ruta": "local",

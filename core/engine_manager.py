@@ -5,6 +5,7 @@ import logging
 from core.config_manager import ConfigManager
 from engines.base_engine import Engine
 from engines.comfyui import ComfyUIEngine
+from engines.kokoro_tts import KokoroTTSEngine
 from engines.ollama import OllamaEngine
 from engines.ollama_vision import OllamaVisionEngine
 from engines.piper_tts import PiperTTSEngine
@@ -19,6 +20,7 @@ ENGINE_FACTORY: dict[str, type[Engine]] = {
     "ollama": OllamaEngine,
     "ollama_vision": OllamaVisionEngine,
     "comfyui": ComfyUIEngine,
+    "kokoro_tts": KokoroTTSEngine,
     "wanvideo": WanVideoEngine,
     "piper_tts": PiperTTSEngine,
     "whisper": WhisperEngine,
@@ -32,6 +34,7 @@ _OLLAMA_VISION_DEFAULT_MODEL = "qwen2.5vl:7b"
 _COMFYUI_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
 _WANVIDEO_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
 _PIPER_DEFAULT_VOICES_DIR = "voices"
+_KOKORO_DEFAULT_VOICE = "ef_dora"
 _WHISPER_DEFAULT_MODEL = "small"
 _WHISPER_DEFAULT_DEVICE = "cpu"
 _WHISPER_DEFAULT_COMPUTE_TYPE = "int8"
@@ -114,6 +117,10 @@ class EngineManager:
                 model_size=params.get("model", _WHISPER_DEFAULT_MODEL),
                 device=params.get("device", _WHISPER_DEFAULT_DEVICE),
                 compute_type=params.get("compute_type", _WHISPER_DEFAULT_COMPUTE_TYPE),
+            )
+        if engine_id == "kokoro_tts":
+            return KokoroTTSEngine(
+                default_voice=params.get("default_voice", _KOKORO_DEFAULT_VOICE),
             )
         # Genérico para futuros motores: los parametros se pasan tal cual.
         cls = ENGINE_FACTORY[engine_id]

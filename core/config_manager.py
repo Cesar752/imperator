@@ -119,6 +119,15 @@ DEFAULT_ENGINES: list[dict[str, Any]] = [
         },
     },
     {
+        "id": "kokoro_tts",
+        "nombre": "Kokoro TTS",
+        "ruta": "local",
+        "enabled": True,
+        "parametros": {
+            "default_voice": "ef_dora",
+        },
+    },
+    {
         "id": "whisper",
         "nombre": "Whisper",
         "ruta": "local",
