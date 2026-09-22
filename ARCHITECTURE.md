@@ -1,0 +1,227 @@
+# Arquitectura — Imperator
+
+Documento de referencia de la arquitectura real de **Imperator**: plataforma
+local de IA para crear vídeos y TikToks, con backend Python y GUI PyQt6.
+Describe cómo está construido el sistema hoy, cómo fluyen los datos y cómo
+extenderlo.
+
+## 1. Visión general
+
+Imperator unifica en una única app de escritorio los motores de IA locales
+(Ollama, ComfyUI, Piper, Kokoro, faster-whisper) y las tareas de alto nivel
+que el usuario ve como pestañas: Chat, Documentos, Imagen, Vídeo, Audio y
+Ensamblador.
+
+### Hardware objetivo
+
+- GPU: NVIDIA RTX 5080 (16 GB VRAM, `sm_120`).
+- RAM: 32 GB.
+
+### Stack tecnológico
+
+| Capa | Tecnología |
+|------|------------|
+| UI | PyQt6 (señales/slots, `QThread`, `QTabWidget`) |
+| Lenguaje | Python 3.12 |
+| Motores | Ollama (HTTP), ComfyUI (HTTP + WebSocket), Piper TTS (ONNX), Kokoro TTS (PyTorch CPU), faster-whisper (CTranslate2) |
+| Utilidades | `requests`, `websocket-client`, `imageio-ffmpeg`, `PyMuPDF`, `python-dotenv` |
+
+### Principios de diseño
+
+- **Plugins, no núcleo monolítico.** Añadir un motor o una tarea no exige
+  tocar el núcleo: se registra en un mapa de fábrica.
+- **Configuración en `config/*.json`.** Motores, APIs y ajustes en archivos
+  separados, validados por esquema e ignorados por git (solo se versionan las
+  plantillas `*.example.json`).
+- **Secretos fuera del código.** Las claves de API se leen de `.env`.
+- **UI desacoplada de la inferencia.** La UI orquesta `QThread`s; los motores
+  son bloqueantes y no conocen Qt.
+
+## 2. Estructura de carpetas
+
+```
+C:\Imperator\
+├── main.py                 # Punto de entrada: QApplication + MainWindow
+├── ARCHITECTURE.md         # Este documento
+├── PLAN.md                 # Histórico de decisiones (parcialmente obsoleto)
+├── README.md
+├── requirements.txt
+├── .gitignore
+├── core/                   # Núcleo (sin Qt, salvo task_manager)
+│   ├── config_manager.py   # Lectura/escritura de config/*.json + validación
+│   ├── engine_manager.py   # Registro y ciclo de vida de motores (ENGINE_FACTORY)
+│   ├── task_manager.py     # Registro de tareas (TASK_FACTORY)
+│   └── video_assembler.py  # Ensamblado de vídeo con ffmpeg (no es un Engine)
+├── engines/                # Un motor por fichero
+│   ├── base_engine.py      # Contrato Engine + EngineError
+│   ├── ollama.py           # Chat LLM
+│   ├── ollama_vision.py    # Visión (OCR/resumen/tablas)
+│   ├── comfyui.py          # Generación de imagen (Flux)
+│   ├── wanvideo.py         # Generación de vídeo (Wan 2.2)
+│   ├── piper_tts.py        # TTS rápido (ONNX)
+│   ├── kokoro_tts.py       # TTS de calidad (CPU)
+│   └── whisper_engine.py   # Transcripción a SRT
+├── tasks/                  # Una tarea por fichero
+│   ├── base_task.py        # Contrato Task
+│   ├── chat.py             # Chat
+│   ├── document.py         # Documentos
+│   ├── image.py            # Imagen
+│   ├── video.py            # Vídeo
+│   ├── audio.py            # Audio (Piper + Kokoro)
+│   └── assembler.py        # Ensamblador
+├── ui/                     # Un widget por tarea
+│   ├── main_window.py      # Ventana principal (QTabWidget + menú de motores)
+│   ├── engines_dialog.py   # Gestión CRUD de motores
+│   ├── chat_widget.py
+│   ├── document_widget.py
+│   ├── image_widget.py
+│   ├── video_widget.py
+│   ├── audio_widget.py
+│   └── assembler_widget.py
+├── config/                 # Config real (gitignored) + plantillas (versionadas)
+│   ├── engines.json        # Motores (real)
+│   ├── apis.json           # APIs externas (aún sin usar)
+│   ├── settings.json       # settings + last_models + unload_on_tab_change
+│   ├── engines.example.json
+│   ├── apis.example.json
+│   └── settings.example.json
+├── voices/                 # Voces ONNX de Piper (gitignored)
+├── music/                  # Música de fondo para el ensamblador (gitignored)
+├── output/                 # Imágenes, vídeos y audios generados (gitignored)
+├── tools/                  # Scripts auxiliares
+│   ├── generar_narracion_basajaun.py  # Narración con Piper
+│   └── make_icon.py
+└── assets/                 # Icono, splash y logo (versionado)
+```
+
+## 3. Arquitectura de motores
+
+### Interfaz `Engine`
+
+`engines/base_engine.py` define el contrato que todo motor debe cumplir:
+
+```python
+class Engine(ABC):
+    id              -> str         # identificador único (ej. "ollama")
+    nombre          -> str         # nombre legible (ej. "Ollama")
+    is_available()  -> bool        # ¿responde el motor en su endpoint?
+    list_models()   -> list[str]   # modelos expuestos
+    chat(messages)  -> str         # stub para motores no-chat (lanza EngineError)
+```
+
+`EngineError` es la excepción de dominio (conexión, timeout, respuesta
+inválida).
+
+### `ENGINE_FACTORY`
+
+`core/engine_manager.py` registra cada motor en un mapa `id -> clase`:
+
+```python
+ENGINE_FACTORY = {
+    "ollama": OllamaEngine,
+    "ollama_vision": OllamaVisionEngine,
+    "comfyui": ComfyUIEngine,
+    "wanvideo": WanVideoEngine,
+    "piper_tts": PiperTTSEngine,
+    "kokoro_tts": KokoroTTSEngine,
+    "whisper": WhisperEngine,
+}
+```
+
+`EngineManager` carga `engines.json`, construye las instancias y expone
+`get_engine(id)` (instancia construida y habilitada).
+
+### Motores actuales
+
+| Motor | Responsabilidad | Backend / modelos |
+|-------|-----------------|-------------------|
+| `ollama` | Chat | Ollama (qwen3.5:9b, deepseek-r1, …) |
+| `ollama_vision` | OCR / resumen / tablas | Ollama (qwen2.5vl:7b) |
+| `comfyui` | Imágenes | ComfyUI (Flux Dev / Schnell / Z-Image) |
+| `wanvideo` | Vídeo T2V/I2V | ComfyUI (Wan 2.2 + Lightx2v) |
+| `piper_tts` | TTS rápido | ONNX (6 voces ES/EU) |
+| `kokoro_tts` | TTS de calidad | PyTorch CPU (ef_dora, em_alex, em_santa) |
+| `whisper` | Transcripción a SRT | faster-whisper (CTranslate2) |
+
+## 4. Arquitectura de tareas
+
+### Interfaz `Task`
+
+`tasks/base_task.py`:
+
+```python
+class Task(ABC):
+    id            -> str
+    nombre        -> str
+    build_widget(parent) -> QWidget
+```
+
+### `TASK_FACTORY`
+
+`core/task_manager.py` registra cada tarea en un mapa `id -> clase`:
+
+```python
+TASK_FACTORY = {
+    "chat": ChatTask,
+    "document": DocumentTask,
+    "image": ImageTask,
+    "video": VideoTask,
+    "audio": AudioTask,
+    "assembler": AssemblerTask,
+}
+```
+
+Cada tarea construye su widget (`ui/<nombre>_widget.py`) y se muestra como
+**pestaña** en el `QTabWidget` de `MainWindow`. El orden de pestañas es el
+orden de registro en `TASK_FACTORY`.
+
+## 5. Configuración
+
+`core/config_manager.py` centraliza la configuración en 3 archivos JSON dentro
+de `config/`:
+
+- `engines.json` → lista de motores.
+- `apis.json` → APIs externas (aún sin usar).
+- `settings.json` → `log_level`, `last_models` (persistencia de UI) y
+  `unload_on_tab_change`.
+
+Cada archivo se valida con un esquema propio (`ENGINE_SCHEMA`, `API_SCHEMA`,
+`SETTINGS_SCHEMA`). Los archivos reales (`*.json`) están **ignorados por git**;
+solo se versionan las plantillas (`*.example.json`).
+
+Los secretos se leen de variables de entorno vía `.env` (`_ensure_dotenv()`),
+nunca del JSON versionado.
+
+## 6. Flujo de una generación (ejemplo: vídeo I2V)
+
+1. El usuario selecciona una imagen + prompt en `VideoWidget`.
+2. `VideoWorker` (`QThread`) llama a `WanVideoEngine.generate_video()`.
+3. `WanVideoEngine`:
+   - Sube la imagen a ComfyUI (`POST /upload/image`).
+   - Carga el workflow (`t2v` o `i2v`) y lo parchea con imagen/prompt.
+   - Envía `POST /prompt`.
+   - Espera por el **WebSocket `/ws`** (fuente única de verdad):
+     `execution_start` → progreso → `execution_success`.
+   - Lee la salida una vez tras el éxito (`GET /history/{id}`).
+   - Descarga el MP4 (`GET /view`).
+4. Al terminar, libera VRAM con `POST /free` (`unload_models`, `free_memory`).
+5. El MP4 se guarda en `output/`.
+
+## 7. Convenciones
+
+- Un motor = un archivo en `engines/`.
+- Una tarea = un archivo en `tasks/` + un widget en `ui/`.
+- Un cambio = un commit.
+- Verificación: `py_compile` + arranque de la app + prueba manual.
+- **F5-TTS**: intentado y descartado (watermarking ElevenLabs + sin euskera).
+- **Kokoro**: sin euskera (solo cubre 9 idiomas); para euskera se usa Piper.
+
+## 8. Estado actual
+
+- 6 pestañas: Chat, Documentos, Imagen, Vídeo, Audio, Ensamblador.
+- 20 tags (de v0.1-skeleton a v0.14-kokoro).
+- Sin refactor de configuración: se mantiene la arquitectura legacy
+  (`config/*.json`) y se descartó el intento de config unificada
+  (`~/.imperator/config.json`).
+
+
