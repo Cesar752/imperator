@@ -15,13 +15,13 @@ from typing import Callable
 
 from PyQt6.QtCore import QObject, QRunnable, QThread, QThreadPool, pyqtSignal
 
-from engines.base_engine import EngineError
+from engines.base_engine import CANCEL_MESSAGE, EngineError
 
 logger = logging.getLogger(__name__)
 
-#: Mensaje estándar de cancelación (los widgets lo comparan para no mostrarlo
-#: como error).
-CANCEL_MESSAGE = "Cancelado por el usuario"
+# ``CANCEL_MESSAGE`` se reexporta desde ``engines.base_engine`` para que motores
+# y widgets compartan el mismo mensaje sin invertir el sentido de las
+# dependencias (la UI depende de los motores, nunca al contrario).
 
 
 class ThreadWorker(QThread):

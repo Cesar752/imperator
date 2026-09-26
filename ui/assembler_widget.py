@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.video_assembler import VideoAssembler
-from engines.base_engine import Engine, EngineError
+from engines.base_engine import CANCEL_MESSAGE, Engine, EngineError
 from engines.whisper_engine import WHISPER_MODELS
 from services import assembler_params as asp
 from services import preferences as prefs
@@ -92,7 +92,7 @@ class AssemblerWorker(ThreadWorker):
                 progress_callback=self._on_transcribe_progress,
             )
         if self.isInterruptionRequested():
-            raise EngineError("Cancelado por el usuario")
+            raise EngineError(CANCEL_MESSAGE)
         self.progress.emit(40, "Ensamblando vídeo...")
         output = self._assembler.assemble(
             self._video_path,
@@ -462,7 +462,7 @@ class AssemblerWidget(QWidget):
         self._set_status(f"Listo: {path}")
 
     def _on_error(self, message: str) -> None:
-        if message == "Cancelado por el usuario":
+        if message == CANCEL_MESSAGE:
             self._set_status(message)
         else:
             self._set_status(f"Error: {message}")

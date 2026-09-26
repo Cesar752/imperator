@@ -16,6 +16,12 @@ class EngineError(Exception):
     """Error producido por un motor (conexión, timeout, respuesta inválida)."""
 
 
+#: Mensaje estándar de cancelación. Vive en la capa de motores (y no en la UI)
+#: porque los motores deben poder lanzarlo sin depender de la presentación; los
+#: widgets lo importan para no mostrarlo como error. Ver ``ui.workers``.
+CANCEL_MESSAGE = "Cancelado por el usuario"
+
+
 class Engine(ABC):
     """Contrato común a todo motor: identidad, disponibilidad y modelos."""
 

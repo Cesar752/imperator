@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from engines.base_engine import Engine, EngineError
+from engines.base_engine import CANCEL_MESSAGE, Engine, EngineError
 from services import document_params as dp
 from services import preferences as prefs
 from ui.workers import ThreadWorker, run_pool_task
@@ -68,7 +68,7 @@ class DocumentWorker(ThreadWorker):
             blocks: list[str] = []
             for index, page in enumerate(doc):
                 if self.isInterruptionRequested():
-                    raise EngineError("Cancelado por el usuario")
+                    raise EngineError(CANCEL_MESSAGE)
                 self.page_progress.emit(index + 1, total)
                 text = (page.get_text() or "").strip()
                 if dp.has_native_text(text):
@@ -290,7 +290,7 @@ class DocumentWidget(QWidget):
         self._set_status("Listo.")
 
     def _on_error(self, message: str) -> None:
-        if message == "Cancelado por el usuario":
+        if message == CANCEL_MESSAGE:
             self._set_status(message)
         else:
             self._set_status(f"Error: {message}")

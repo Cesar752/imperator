@@ -11,7 +11,7 @@ from typing import Callable
 import requests
 from dotenv import load_dotenv
 
-from engines.base_engine import EngineError, ImageEngine
+from engines.base_engine import CANCEL_MESSAGE, EngineError, ImageEngine
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +173,7 @@ class BFLApiEngine(ImageEngine):
         start = time.monotonic()
         while True:
             if cancel_check is not None and cancel_check():
-                raise EngineError("Cancelado por el usuario")
+                raise EngineError(CANCEL_MESSAGE)
             if time.monotonic() - start >= self._GENERATE_TIMEOUT:
                 raise EngineError("Black Forest Labs: timeout esperando el resultado.")
             try:

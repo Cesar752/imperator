@@ -35,7 +35,7 @@ try:
 except ImportError:  # pragma: no cover - dependencia declarada en requirements.txt
     imageio_ffmpeg = None
 
-from engines.base_engine import Engine, EngineError
+from engines.base_engine import CANCEL_MESSAGE, Engine, EngineError
 from services import audio_params as ap
 from services import preferences as prefs
 from ui.workers import ThreadWorker
@@ -244,7 +244,7 @@ class AudioWidget(QWidget):
         self._set_status(f"Listo: {path}")
 
     def _on_error(self, message: str) -> None:
-        if message == "Cancelado por el usuario":
+        if message == CANCEL_MESSAGE:
             self._set_status(message)
         else:
             self._set_status(f"Error: {message}")

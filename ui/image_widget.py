@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from engines.base_engine import Engine
+from engines.base_engine import CANCEL_MESSAGE, Engine
 from services import image_params as ip
 from services import preferences as prefs
 from ui.workers import ThreadWorker, run_pool_task
@@ -334,7 +334,7 @@ class ImageWidget(QWidget):
         self._set_status(f"Listo: {path}")
 
     def _on_error(self, message: str) -> None:
-        if message == "Cancelado por el usuario":
+        if message == CANCEL_MESSAGE:
             self._set_status(message)
         else:
             self._set_status(f"Error: {message}")

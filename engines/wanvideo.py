@@ -15,7 +15,7 @@ try:
 except ImportError:  # pragma: no cover - dependencia declarada en requirements.txt
     websocket = None
 
-from engines.base_engine import EngineError, VideoEngine
+from engines.base_engine import CANCEL_MESSAGE, EngineError, VideoEngine
 from engines.comfyui_base import ComfyUIBaseEngine
 
 logger = logging.getLogger(__name__)
@@ -233,7 +233,7 @@ class WanVideoEngine(ComfyUIBaseEngine, VideoEngine):
         try:
             while True:
                 if cancel_check is not None and cancel_check():
-                    raise EngineError("Cancelado por el usuario")
+                    raise EngineError(CANCEL_MESSAGE)
                 elapsed = time.monotonic() - start
                 if elapsed >= self._generate_timeout:
                     raise EngineError(
@@ -272,7 +272,7 @@ class WanVideoEngine(ComfyUIBaseEngine, VideoEngine):
                         f"{self._ws_error_detail(message)}".strip()
                     )
                 if state == "interrupted":
-                    raise EngineError("Cancelado por el usuario")
+                    raise EngineError(CANCEL_MESSAGE)
         finally:
             ws.close()
 
@@ -338,7 +338,7 @@ class WanVideoEngine(ComfyUIBaseEngine, VideoEngine):
         last_error = None
         for attempt in range(1, self._HISTORY_RETRIES + 1):
             if cancel_check is not None and cancel_check():
-                raise EngineError("Cancelado por el usuario")
+                raise EngineError(CANCEL_MESSAGE)
             try:
                 resp = requests.get(
                     f"{self._base_url}/history/{prompt_id}", timeout=self._SHORT_TIMEOUT

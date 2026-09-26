@@ -38,7 +38,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.video_assembler import VideoAssembler
-from engines.base_engine import Engine, EngineError
+from engines.base_engine import CANCEL_MESSAGE, Engine, EngineError
 from services import preferences as prefs
 from services import video_params as vp
 from ui.workers import ThreadWorker, run_pool_task
@@ -74,7 +74,7 @@ class VideoWorker(ThreadWorker):
         clips: list[str] = []
         for i, image in enumerate(images):
             if self.isInterruptionRequested():
-                raise EngineError("Cancelado por el usuario")
+                raise EngineError(CANCEL_MESSAGE)
             clip_params = dict(params)
             clip_params["image_path"] = image
             clip_params["prompt"] = self._prompt_for(i, prompts)
@@ -411,7 +411,7 @@ class VideoWidget(QWidget):
         self._set_status(f"Listo: {path}")
 
     def _on_error(self, message: str) -> None:
-        if message == "Cancelado por el usuario":
+        if message == CANCEL_MESSAGE:
             self._set_status(message)
         else:
             self._set_status(f"Error: {message}")

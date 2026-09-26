@@ -8,7 +8,7 @@ from typing import Callable
 
 import requests
 
-from engines.base_engine import EngineError, ImageEngine
+from engines.base_engine import CANCEL_MESSAGE, EngineError, ImageEngine
 from engines.comfyui_base import ComfyUIBaseEngine
 
 logger = logging.getLogger(__name__)
@@ -154,7 +154,7 @@ class ComfyUIEngine(ComfyUIBaseEngine, ImageEngine):
         last_log = 0.0
         while True:
             if cancel_check is not None and cancel_check():
-                raise EngineError("Cancelado por el usuario")
+                raise EngineError(CANCEL_MESSAGE)
             elapsed = time.monotonic() - start
             if elapsed >= timeout:
                 raise EngineError(
