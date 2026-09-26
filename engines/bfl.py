@@ -11,7 +11,7 @@ from typing import Callable
 import requests
 from dotenv import load_dotenv
 
-from engines.base_engine import Engine, EngineError
+from engines.base_engine import EngineError, ImageEngine
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ _IMAGE_FIELD = {
 }
 
 
-class BFLApiEngine(Engine):
+class BFLApiEngine(ImageEngine):
     """Genera imágenes llamando a la API de pago de Black Forest Labs."""
 
     _SHORT_TIMEOUT = 5.0
@@ -99,9 +99,6 @@ class BFLApiEngine(Engine):
         except (requests.RequestException, ValueError) as exc:
             logger.warning("Black Forest Labs: no se pudo consultar los créditos: %s", exc)
             return None
-
-    def chat(self, messages: list[dict], model: str | None = None) -> str:
-        raise EngineError("Black Forest Labs es un motor de imagen, no de chat.")
 
     def generate_image(
         self,

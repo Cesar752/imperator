@@ -12,7 +12,7 @@ except ImportError:  # pragma: no cover - dependencia declarada en requirements.
     PiperVoice = None
     SynthesisConfig = None
 
-from engines.base_engine import Engine, EngineError
+from engines.base_engine import AudioEngine, EngineError
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # usuarios nuevos (p. ej. `python -m piper.download_voices es_ES-davefx-medium`).
 
 
-class PiperTTSEngine(Engine):
+class PiperTTSEngine(AudioEngine):
     """Sintetiza texto a WAV usando voces de Piper (ONNX locales en voices/)."""
 
     def __init__(
@@ -71,9 +71,6 @@ class PiperTTSEngine(Engine):
         return sorted(
             p.stem for p in self._voices_dir.glob("*.onnx") if p.is_file()
         )
-
-    def chat(self, messages: list[dict], model: str | None = None) -> str:
-        raise EngineError("Piper TTS es un motor de texto a voz, no de chat.")
 
     def synthesize(
         self,

@@ -14,7 +14,7 @@ except Exception:  # noqa: BLE001 - cadena de imports (torch/misaki/espeak)
 
 import numpy as np
 
-from engines.base_engine import Engine, EngineError
+from engines.base_engine import AudioEngine, EngineError
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ _SAMPLE_RATE = 24000
 _REPO_ID = "hexgrad/Kokoro-82M"
 
 
-class KokoroTTSEngine(Engine):
+class KokoroTTSEngine(AudioEngine):
     """Sintetiza texto a voz con Kokoro (voces en español, CPU)."""
 
     def __init__(self, default_voice: str = "ef_dora", output_dir=None) -> None:
@@ -54,9 +54,6 @@ class KokoroTTSEngine(Engine):
 
     def list_voices(self) -> list[str]:
         return list(KOKORO_VOICES)
-
-    def chat(self, messages: list[dict], model: str | None = None) -> str:
-        raise EngineError("Kokoro TTS es un motor de texto a voz, no de chat.")
 
     def synthesize(
         self,

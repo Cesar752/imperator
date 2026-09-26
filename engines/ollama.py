@@ -4,13 +4,13 @@ import logging
 
 import requests
 
-from engines.base_engine import Engine, EngineError
+from engines.base_engine import ChatEngine, EngineError
 from engines.ollama_api import fetch_tags
 
 logger = logging.getLogger(__name__)
 
 
-class OllamaEngine(Engine):
+class OllamaEngine(ChatEngine):
     """Implementación de :class:`Engine` para un servidor local de Ollama."""
 
     def __init__(

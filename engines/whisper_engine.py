@@ -9,7 +9,7 @@ try:
 except ImportError:  # pragma: no cover - dependencia declarada en requirements.txt
     WhisperModel = None
 
-from engines.base_engine import Engine, EngineError
+from engines.base_engine import EngineError, TranscriptionEngine
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
 
 
-class WhisperEngine(Engine):
+class WhisperEngine(TranscriptionEngine):
     """Transcribe audio a SRT con faster-whisper (backend CTranslate2).
 
     Por defecto usa ``device="cpu"`` y ``compute_type="int8"``: CTranslate2 puede
@@ -51,9 +51,6 @@ class WhisperEngine(Engine):
 
     def list_models(self) -> list[str]:
         return list(WHISPER_MODELS)
-
-    def chat(self, messages: list[dict], model: str | None = None) -> str:
-        raise EngineError("Whisper es un motor de transcripción, no de chat.")
 
     def transcribe(
         self,

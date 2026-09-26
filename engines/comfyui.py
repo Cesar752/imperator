@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import requests
 
-from engines.base_engine import Engine, EngineError
+from engines.base_engine import EngineError, ImageEngine
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ def _flatten_messages(messages: list) -> str:
     return " ".join(parts)
 
 
-class ComfyUIEngine(Engine):
+class ComfyUIEngine(ImageEngine):
     """Implementación de :class:`Engine` para un servidor local de ComfyUI.
 
     Genera imágenes vía la API HTTP de ComfyUI a partir de un workflow JSON
@@ -113,9 +113,6 @@ class ComfyUIEngine(Engine):
         # Cada modelo es una clave del diccionario "workflows" (un workflow
         # JSON por modelo); la config es la fuente de verdad.
         return list(self._workflows.keys())
-
-    def chat(self, messages: list[dict], model: str | None = None) -> str:
-        raise EngineError("ComfyUI es un motor de generación de imagen, no de chat.")
 
     def generate_image(
         self,

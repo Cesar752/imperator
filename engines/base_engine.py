@@ -1,18 +1,23 @@
-"""Interfaz común para motores locales de la plataforma."""
+"""Interfaces comunes para motores de la plataforma.
+
+Antes existía un único ABC ``Engine`` que obligaba a TODOS los motores (imagen,
+vídeo, audio...) a implementar ``chat()`` (los no-textuales solo podían lanzar
+una excepción). Ahora ``Engine`` define únicamente el contrato común (identidad,
+disponibilidad y catálogo de modelos) y cada familia de motor añade su método de
+generación. Así cada motor declara exactamente lo que sabe hacer y el sistema de
+tipos lo refleja.
+"""
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 
 class EngineError(Exception):
-    """Error producido por un motor local (conexión, timeout, respuesta inválida)."""
+    """Error producido por un motor (conexión, timeout, respuesta inválida)."""
 
 
 class Engine(ABC):
-    """Contrato que debe cumplir todo motor local.
-
-    La generación es bloqueante por ahora; el threading es responsabilidad
-    de la capa de UI (ver ``ui/chat_widget.py``).
-    """
+    """Contrato común a todo motor: identidad, disponibilidad y modelos."""
 
     @property
     @abstractmethod
@@ -32,12 +37,55 @@ class Engine(ABC):
     def list_models(self) -> list[str]:
         """Devuelve los nombres de los modelos expuestos por el motor."""
 
-    # TODO(fase N): separar Engine (texto) de ImageEngine/VideoEngine/AudioEngine
-    # para no forzar a los motores multimodales a implementar chat().
+
+class ChatEngine(Engine):
+    """Motor de conversación (LLM de texto)."""
+
     @abstractmethod
     def chat(self, messages: list[dict], model: str | None = None) -> str:
         """Ejecuta una conversación y devuelve la respuesta completa.
 
-        ``model`` permite elegir el modelo sin reconstruir el motor. Los motores
-        que no sean de texto pueden ignorarlo (y lanzar ``EngineError``).
+        ``model`` permite elegir el modelo sin reconstruir el motor.
         """
+
+
+class VisionEngine(Engine):
+    """Motor multimodal de visión (analiza una imagen y devuelve texto)."""
+
+    @abstractmethod
+    def analyze_image(
+        self, image_path: Path, prompt: str, model: str | None = None
+    ) -> str:
+        """Analiza ``image_path`` según ``prompt`` y devuelve el texto resultante."""
+
+
+class ImageEngine(Engine):
+    """Motor de generación/edición de imagen."""
+
+    @abstractmethod
+    def generate_image(self, prompt: str, **kwargs) -> Path:
+        """Genera una imagen y devuelve la ruta del fichero creado."""
+
+
+class VideoEngine(Engine):
+    """Motor de generación de vídeo."""
+
+    @abstractmethod
+    def generate_video(self, prompt: str, **kwargs) -> Path:
+        """Genera un vídeo y devuelve la ruta del fichero creado."""
+
+
+class AudioEngine(Engine):
+    """Motor de texto a voz (TTS)."""
+
+    @abstractmethod
+    def synthesize(self, text: str, voice: str | None = None, **kwargs) -> Path:
+        """Sintetiza ``text`` y devuelve la ruta del audio generado."""
+
+
+class TranscriptionEngine(Engine):
+    """Motor de transcripción de audio a subtítulos (STT)."""
+
+    @abstractmethod
+    def transcribe(self, audio_path: str | Path, **kwargs) -> Path:
+        """Transcribe ``audio_path`` y devuelve la ruta del SRT generado."""

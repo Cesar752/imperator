@@ -6,7 +6,7 @@ from pathlib import Path
 
 import requests
 
-from engines.base_engine import Engine, EngineError
+from engines.base_engine import EngineError, VisionEngine
 from engines.ollama_api import fetch_tags
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ VISION_MODEL_MARKERS = (
 )
 
 
-class OllamaVisionEngine(Engine):
+class OllamaVisionEngine(VisionEngine):
     """Motor multimodal de Ollama: analiza una imagen y devuelve texto.
 
     Expone ``analyze_image()``, que codifica la imagen en base64 y la envía a
@@ -80,9 +80,6 @@ class OllamaVisionEngine(Engine):
     def _is_vision_model(name: str) -> bool:
         lowered = name.lower()
         return any(marker in lowered for marker in VISION_MODEL_MARKERS)
-
-    def chat(self, messages: list[dict], model: str | None = None) -> str:
-        raise EngineError("Ollama Vision es un motor de visión, no de chat.")
 
     def analyze_image(
         self, image_path: Path, prompt: str, model: str | None = None

@@ -50,6 +50,7 @@ C:\Imperator\
 ├── core/                   # Núcleo (sin Qt, salvo task_manager)
 │   ├── config_manager.py   # Lectura/escritura de config/*.json + validación
 │   ├── engine_manager.py   # Registro y ciclo de vida de motores (ENGINE_FACTORY)
+│   ├── api_manager.py      # Registro de APIs externas + claves desde .env
 │   ├── task_manager.py     # Registro de tareas (TASK_FACTORY)
 │   ├── paths.py            # Rutas compartidas (PROJECT_ROOT, ASSETS)
 │   └── video_assembler.py  # Ensamblado de vídeo con ffmpeg (no es un Engine)
@@ -100,17 +101,20 @@ C:\Imperator\
 
 ## 3. Arquitectura de motores
 
-### Interfaz `Engine`
+### Interfaces de motor (familias)
 
-`engines/base_engine.py` define el contrato que todo motor debe cumplir:
+`engines/base_engine.py` define un ABC base y una familia por tipo de motor, de
+modo que cada motor declare solo lo que sabe hacer (un motor de imagen ya no
+finge implementar `chat()`):
 
 ```python
-class Engine(ABC):
-    id              -> str         # identificador único (ej. "ollama")
-    nombre          -> str         # nombre legible (ej. "Ollama")
-    is_available()  -> bool        # ¿responde el motor en su endpoint?
-    list_models()   -> list[str]   # modelos expuestos
-    chat(messages)  -> str         # stub para motores no-chat (lanza EngineError)
+class Engine(ABC):          # común: id, nombre, is_available(), list_models()
+class ChatEngine(Engine):   # chat(messages, model=None) -> str
+class VisionEngine(Engine): # analyze_image(image_path, prompt, model=None) -> str
+class ImageEngine(Engine):  # generate_image(prompt, **kwargs) -> Path
+class VideoEngine(Engine):  # generate_video(prompt, **kwargs) -> Path
+class AudioEngine(Engine):  # synthesize(text, voice=None, **kwargs) -> Path
+class TranscriptionEngine(Engine):  # transcribe(audio_path, **kwargs) -> Path
 ```
 
 `EngineError` es la excepción de dominio (conexión, timeout, respuesta
@@ -242,4 +246,8 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   (`config/*.json`) y se descartó el intento de config unificada
   (`~/.imperator/config.json`).
 - `bfl` incluido en `DEFAULT_ENGINES` (antes solo existía en el factory).
-- Suite de tests (stdlib `unittest`) + CI en GitHub Actions.
+- Suite de tests (stdlib `unittest`) + CI en GitHub Actions. Incluye un smoke
+  test de la `MainWindow` opt-in (`IMPERATOR_GUI_SMOKE=1`), que el CI activa.
+- Motores divididos por familias (`Chat`/`Vision`/`Image`/`Video`/`Audio`/
+  `Transcription`) en `engines/base_engine.py`.
+- `ApiManager` (`core/api_manager.py`) da un consumidor real a `apis.json`.

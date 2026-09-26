@@ -16,12 +16,12 @@ try:
 except ImportError:  # pragma: no cover - dependencia declarada en requirements.txt
     websocket = None
 
-from engines.base_engine import Engine, EngineError
+from engines.base_engine import EngineError, VideoEngine
 
 logger = logging.getLogger(__name__)
 
 
-class WanVideoEngine(Engine):
+class WanVideoEngine(VideoEngine):
     """Motor de generación de vídeo con Wan2.2-Lightning vía ComfyUI.
 
     Soporta varios modos (``t2v``, ``i2v``...) seleccionados por la clave del
@@ -46,7 +46,13 @@ class WanVideoEngine(Engine):
     _HISTORY_RETRY_DELAY = 1.0  # segundos entre reintentos de /history
     _UPLOAD_TIMEOUT = 60.0      # POST /upload/image
 
-    # IDs de los KSampler en el workflow Lightning (para mapear el progreso).
+    # IDs de los nodos de prompt (positivo/negativo) del workflow Wan 2.2. Son
+    # estables entre t2v e i2v; el resto de nodos se localizan por class_type.
+    _NODE_PROMPT_POS = "6"
+    _NODE_PROMPT_NEG = "7"
+
+    # IDs de los KSampler (solo para mapear el progreso que llega por WebSocket,
+    # que referencia los nodos por id).
     _KSAMPLER_HIGH = "57"       # etapa high-noise (pasos 0→2)
     _KSAMPLER_LOW = "58"        # etapa low-noise (pasos 2→4)
 
@@ -127,9 +133,6 @@ class WanVideoEngine(Engine):
     def list_models(self) -> list[str]:
         # Cada modelo es una clave del diccionario "workflows" (t2v, i2v, ...).
         return list(self._workflows.keys())
-
-    def chat(self, messages: list[dict], model: str | None = None) -> str:
-        raise EngineError("WanVideo es un motor de generación de vídeo, no de chat.")
 
     def generate_video(
         self,
@@ -244,7 +247,10 @@ class WanVideoEngine(Engine):
 
     def _validate_workflow(self, wf: dict, path: Path) -> None:
         """Valida que el workflow tenga los nodos que el motor va a parchear."""
-        required = {"6": "CLIPTextEncode", "7": "CLIPTextEncode"}
+        required = {
+            self._NODE_PROMPT_POS: "CLIPTextEncode",
+            self._NODE_PROMPT_NEG: "CLIPTextEncode",
+        }
         for node_id, expected_ct in required.items():
             node = wf.get(node_id)
             if node is None:
@@ -255,6 +261,8 @@ class WanVideoEngine(Engine):
                 )
         if not any(n.get("class_type") in self._LATENT_TYPES for n in wf.values()):
             raise EngineError(f"WanVideo: workflow '{path.name}' no tiene nodo de latent")
+        if not any(n.get("class_type") == "KSampler" for n in wf.values()):
+            raise EngineError(f"WanVideo: workflow '{path.name}' no tiene ningún KSampler")
 
     def _patch_workflow(
         self,
@@ -270,11 +278,12 @@ class WanVideoEngine(Engine):
         image_name: str | None = None,
     ) -> None:
         """Parchea por ID (nodos estables) y por class_type (nodos que difieren)."""
-        # Prompt: IDs 6 (positivo) / 7 (negativo), idénticos en t2v e i2v.
-        workflow["6"]["inputs"]["text"] = prompt
-        workflow["7"]["inputs"]["text"] = negative_prompt
+        # Prompt: nodos CLIPTextEncode positivo/negativo (IDs estables).
+        workflow[self._NODE_PROMPT_POS]["inputs"]["text"] = prompt
+        workflow[self._NODE_PROMPT_NEG]["inputs"]["text"] = negative_prompt
 
-        # Latent + LoadImage: por class_type (difieren entre modos).
+        # Latent, LoadImage, seed y fps se localizan por class_type/inputs para no
+        # depender de IDs concretos de nodos (menos frágil ante cambios de workflow).
         for node in workflow.values():
             inputs = node.get("inputs")
             if not isinstance(inputs, dict):
@@ -286,11 +295,10 @@ class WanVideoEngine(Engine):
                 inputs["length"] = length
             elif ct == "LoadImage" and image_name is not None:
                 inputs["image"] = image_name
-
-        # Samplers y fps: IDs estables.
-        workflow["57"]["inputs"]["noise_seed"] = seed
-        workflow["58"]["inputs"]["noise_seed"] = seed
-        workflow["60"]["inputs"]["fps"] = fps
+            elif ct == "KSampler":
+                inputs["noise_seed"] = seed
+            if "fps" in inputs:
+                inputs["fps"] = fps
 
     # ---- Envío ----------------------------------------------------
 
