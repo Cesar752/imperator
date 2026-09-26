@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import assembler_params as ap  # noqa: E402
 from services import audio_params as audio  # noqa: E402
+from services import chat_params as cp  # noqa: E402
 from services import document_params as dp  # noqa: E402
 from services import image_params as ip  # noqa: E402
 from services import preferences as prefs  # noqa: E402
@@ -224,6 +225,33 @@ class DocumentParamsTest(unittest.TestCase):
             self.assertTrue(ext.startswith("."))
             self.assertEqual(ext, ext.lower())
             self.assertIn(f"*{ext}", dp.FILE_FILTER)
+
+
+class ChatParamsTest(unittest.TestCase):
+    def _history(self, count: int) -> list[dict]:
+        return [{"role": "user", "content": str(i)} for i in range(count)]
+
+    def test_limite_por_defecto_es_positivo(self) -> None:
+        self.assertGreater(cp.MAX_HISTORY_MESSAGES, 0)
+
+    def test_sin_recorte_si_cabe_entero(self) -> None:
+        history = self._history(3)
+        self.assertEqual(cp.trim_history(history, 5), history)
+
+    def test_conserva_los_ultimos(self) -> None:
+        history = self._history(10)
+        esperado = [{"role": "user", "content": c} for c in ("7", "8", "9")]
+        self.assertEqual(cp.trim_history(history, 3), esperado)
+
+    def test_no_muta_el_original(self) -> None:
+        history = self._history(5)
+        cp.trim_history(history, 2)
+        self.assertEqual(len(history), 5)
+
+    def test_limite_cero_o_negativo_no_recorta(self) -> None:
+        history = self._history(5)
+        self.assertEqual(cp.trim_history(history, 0), history)
+        self.assertEqual(cp.trim_history(history, -1), history)
 
 
 if __name__ == "__main__":

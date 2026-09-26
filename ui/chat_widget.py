@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 )
 
 from engines.base_engine import ChatEngine
+from services import chat_params as cp
 from services import preferences as prefs
 from ui.workers import ThreadWorker, run_pool_task
 
@@ -43,7 +44,8 @@ class ChatWidget(QWidget):
         self._engine: ChatEngine | None = engine
         self._config_manager = config_manager
         self._prefs = prefs.PrefsStore(config_manager)
-        # TODO(fase 5): limitar el historial a N mensajes.
+        # Historial completo (lo que ve el usuario). Al motor solo se le envía
+        # una ventana reciente: ver services.chat_params.MAX_HISTORY_MESSAGES.
         self._messages: list[dict] = []
         self._worker: ChatWorker | None = None
         self._model_task = None
@@ -192,7 +194,10 @@ class ChatWidget(QWidget):
         self._set_busy(True)
 
         self._worker = ChatWorker(
-            self._engine, list(self._messages), self._model.currentData(), self
+            self._engine,
+            cp.trim_history(self._messages),
+            self._model.currentData(),
+            self,
         )
         self._worker.result.connect(self._on_reply)
         self._worker.failed.connect(self._on_error)
