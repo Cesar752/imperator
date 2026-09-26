@@ -3,7 +3,6 @@
 import logging
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QShowEvent
 from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -210,7 +209,7 @@ class ChatWidget(TaskWidget):
         self._set_busy(False)
         self._append_line(f"Ollama: {reply}")
         self._worker = None
-        self._focus_input()
+        self._restore_focus()
 
     def _close_turn(self, text: str) -> None:
         """Cierra el turno mostrando ``text`` (error o cancelación)."""
@@ -218,22 +217,7 @@ class ChatWidget(TaskWidget):
         self._set_busy(False)
         self._append_line(text)
         self._worker = None
-        self._focus_input()
-
-    def _focus_input(self) -> None:
-        """Devuelve el cursor a la barra de escritura.
-
-        Al bloquear la barra mientras el motor piensa, Qt le retira el foco; sin
-        esto hay que volver a pinchar en ella para escribir el siguiente mensaje.
-        Se restaura solo cuando ya está habilitada (si no, Qt lo ignoraría).
-        """
-        if self._input.isEnabled():
-            self._input.setFocus()
-
-    def showEvent(self, event: QShowEvent) -> None:
-        """Al entrar en la pestaña, deja el cursor listo para escribir."""
-        super().showEvent(event)
-        self._focus_input()
+        self._restore_focus()
 
     def _on_cancelled(self, message: str) -> None:
         self._close_turn(message)
@@ -246,3 +230,7 @@ class ChatWidget(TaskWidget):
 
     def _busy_widgets(self) -> tuple:
         return (self._model, self._input, self._send_button)
+
+    def _focus_widget(self):
+        """La barra de escritura es el control que debe recuperar el foco."""
+        return self._input

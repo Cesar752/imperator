@@ -246,6 +246,9 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
 - Los widgets de tarea heredan de `ui/task_widget.py` y declaran sus controles
   en `_busy_widgets()`/`_busy_only_widgets()` en vez de reimplementar
   `_set_busy()`; usan `engines.base_engine.CANCEL_MESSAGE` para la cancelación.
+  Declaran además su campo de escritura en `_focus_widget()`: la base le
+  devuelve el foco al acabar la tarea y al entrar en la pestaña (deshabilitar el
+  control lo pierde y Qt no lo recupera solo).
 - Un cambio = un commit.
 - Verificación automática: `python -m compileall -q .` +
   `python -m unittest discover -s tests` (CI en `.github/workflows/ci.yml`).

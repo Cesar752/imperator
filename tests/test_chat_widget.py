@@ -72,11 +72,14 @@ class ChatFocusTest(unittest.TestCase):
         barra = self.widget._input
         self.widget._set_busy(True)
         with mock.patch.object(barra, "setFocus") as set_focus:
-            self.widget._focus_input()
+            self.widget._restore_focus()
         set_focus.assert_not_called()
 
+    def test_declara_la_barra_como_control_principal(self) -> None:
+        self.assertIs(self.widget._focus_widget(), self.widget._input)
+
     def test_al_mostrar_la_pestana_prepara_la_barra(self) -> None:
-        with mock.patch.object(self.widget, "_focus_input") as focus:
+        with mock.patch.object(self.widget, "_restore_focus") as focus:
             self.widget.showEvent(QShowEvent())
         focus.assert_called_once()
 

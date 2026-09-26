@@ -7,6 +7,7 @@ el worker. Aquí se escribe una sola vez; cada widget declara qué controles se
 bloquean y, si lo necesita, afina el resto con los hooks.
 """
 
+from PyQt6.QtGui import QShowEvent
 from PyQt6.QtWidgets import QWidget
 
 from engines.base_engine import CANCEL_MESSAGE
@@ -83,3 +84,32 @@ class TaskWidget(QWidget):
         if self._worker is not None:
             self._worker.deleteLater()
             self._worker = None
+        self._restore_focus()
+
+    # ---- Foco ------------------------------------------------------
+
+    def _focus_widget(self):
+        """Control que debe recuperar el foco al acabar la tarea, o ``None``.
+
+        Lo sobrescriben las tareas con un campo de escritura (chat, audio,
+        imagen, vídeo). Documentos y Ensamblador empiezan eligiendo archivo, así
+        que no tienen un control principal que enfocar.
+        """
+        return None
+
+    def _restore_focus(self) -> None:
+        """Devuelve el foco al control principal de la tarea.
+
+        Mientras hay trabajo en curso los controles se deshabilitan y Qt retira
+        el foco; al rehabilitarlos no lo devuelve, de modo que había que volver a
+        pinchar para seguir escribiendo. Solo se enfoca si el control está
+        habilitado (si no, Qt ignoraría la llamada).
+        """
+        widget = self._focus_widget()
+        if widget is not None and widget.isEnabled():
+            widget.setFocus()
+
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802 - override de Qt
+        """Al entrar en la pestaña, deja el foco listo para escribir."""
+        super().showEvent(event)
+        self._restore_focus()

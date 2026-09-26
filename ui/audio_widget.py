@@ -325,6 +325,10 @@ class AudioWidget(TaskWidget):
     def _on_busy_changed(self, busy: bool) -> None:
         self._generate_button.setEnabled(not busy and self._engine is not None)
 
+    def _focus_widget(self):
+        """El área de texto es el control que debe recuperar el foco."""
+        return self._text_area
+
     def set_engines(self, piper_engine=None, kokoro_engine=None) -> None:
         self._engines = {"piper": piper_engine, "kokoro": kokoro_engine}
         if self._current_motor:

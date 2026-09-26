@@ -411,3 +411,7 @@ class ImageWidget(TaskWidget):
         # El campo de seed solo se habilita si no está marcado "Aleatorio".
         self._seed.setEnabled(not busy and not self._random_seed.isChecked())
         self._update_ref_enabled(busy=busy)
+
+    def _focus_widget(self):
+        """El prompt es el control que debe recuperar el foco."""
+        return self._prompt

@@ -623,6 +623,10 @@ class VideoWidget(TaskWidget):
         # El seed solo se habilita si no está marcado "Aleatorio".
         self._seed.setEnabled(not busy and not self._random_seed.isChecked())
 
+    def _focus_widget(self):
+        """El prompt es el control que debe recuperar el foco."""
+        return self._prompt
+
     def _refresh_system_stats(self) -> None:
         """Pide la RAM libre en segundo plano (no bloquea la UI, M5).
 
