@@ -41,11 +41,14 @@ ENGINE_SCHEMA: dict[str, dict[str, Any]] = {
     "parametros": {"type": dict, "required": True},
 }
 
+# NOTA: 'key' es opcional y está DEPRECADO. Las claves de API se leen SIEMPRE
+# de variables de entorno (.env); nunca de este JSON en claro (ver
+# :meth:`ConfigManager.resolve_api_key`).
 API_SCHEMA: dict[str, dict[str, Any]] = {
     "id": {"type": str, "required": True, "min_len": 1},
     "nombre": {"type": str, "required": True, "min_len": 1},
     "enabled": {"type": bool, "required": True},
-    "key": {"type": str, "required": True},
+    "key": {"type": str, "required": False},
     "base_url": {"type": str, "required": True, "min_len": 1},
     "tipo": {
         "type": str,
@@ -63,6 +66,9 @@ SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
     "rutas": {"type": dict, "required": True},
     "last_models": {"type": dict, "required": False},
     "unload_on_tab_change": {"type": bool, "required": False},
+    "theme": {"type": str, "required": False, "allowed": ("dark", "light")},
+    "geometry": {"type": dict, "required": False},
+    "font_size": {"type": int, "required": False},
 }
 
 # Valores por defecto (se escriben en disco cuando el archivo no existe).
@@ -79,7 +85,7 @@ DEFAULT_ENGINES: list[dict[str, Any]] = [
         "nombre": "Ollama Vision",
         "ruta": "http://localhost:11434",
         "enabled": True,
-        "parametros": {"model": "qwen2.5vl:7b"},
+        "parametros": {"model": "qwen3-vl:8b"},
     },
     {
         "id": "comfyui",
@@ -106,6 +112,15 @@ DEFAULT_ENGINES: list[dict[str, Any]] = [
                 "i2v": "C:/CComfyUI/wan22_i2v_workflow_api.json",
             },
             "default_model": "t2v",
+        },
+    },
+    {
+        "id": "bfl",
+        "nombre": "Black Forest Labs (API de pago)",
+        "ruta": "https://api.bfl.ai",
+        "enabled": False,
+        "parametros": {
+            "models": ["flux-kontext-pro", "flux-kontext-max", "flux-2-pro"],
         },
     },
     {
@@ -145,6 +160,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "rutas": {},
     "last_models": {},
     "unload_on_tab_change": True,
+    "theme": "dark",
+    "font_size": 11,
 }
 
 
@@ -186,9 +203,11 @@ def _validate_object(obj: Any, schema: dict[str, dict[str, Any]], source: str) -
         min_len = spec.get("min_len")
         if min_len is not None and isinstance(value, (str, list, dict, tuple)):
             if len(value) < min_len:
-                raise ConfigError(
-                    f"{source}: el campo '{field}' no puede estar vacío."
-                )
+                if min_len <= 1:
+                    detalle = "no puede estar vacío"
+                else:
+                    detalle = f"debe tener al menos {min_len} elementos"
+                raise ConfigError(f"{source}: el campo '{field}' {detalle}.")
 
 
 def _validate_list(data: Any, schema: dict[str, dict[str, Any]], source: str) -> None:
@@ -277,10 +296,12 @@ class ConfigManager:
     # ---- Resolución de clave de API ------------------------------
 
     def resolve_api_key(self, api: dict[str, Any]) -> str:
-        """Devuelve la clave efectiva: la del JSON si existe, o la del entorno."""
-        key = api.get("key", "")
-        if key:
-            return key
+        """Devuelve la clave de API, leída SIEMPRE del entorno (nunca del JSON).
+
+        El campo ``key`` de ``apis.json`` está deprecado y se ignora: los secretos
+        viven solo en ``.env`` (p. ej. ``BFL_API_KEY``). Así se evita guardar
+        claves en claro en disco.
+        """
         api_id = api.get("id")
         if not api_id:
             return ""
@@ -348,6 +369,8 @@ class ConfigManager:
                 json.dump(data, fh, ensure_ascii=False, indent=2)
                 fh.write("\n")
             os.replace(tmp, path)
-        except OSError as exc:
+        except (OSError, TypeError, ValueError) as exc:
+            # Limpiar el temporal ante cualquier fallo (I/O o datos no
+            # serializables) para no dejar basura en config/.
             tmp.unlink(missing_ok=True)
             raise ConfigError(f"No se pudo escribir el archivo '{path}': {exc}") from exc

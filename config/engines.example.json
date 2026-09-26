@@ -14,17 +14,7 @@
     "ruta": "http://localhost:11434",
     "enabled": true,
     "parametros": {
-      "model": "qwen2.5vl:7b"
-    }
-  },
-  {
-    "id": "llama_cpp",
-    "nombre": "llama.cpp",
-    "ruta": "C:/ruta/a/llama.cpp/server.exe",
-    "enabled": false,
-    "parametros": {
-      "modelo": "models/mistral-7b.Q4_K_M.gguf",
-      "n_ctx": 4096
+      "model": "qwen3-vl:8b"
     }
   },
   {
@@ -36,9 +26,19 @@
       "workflows": {
         "flux_dev": "C:/CComfyUI/flux_dev_workflow_api.json",
         "flux_schnell": "C:/CComfyUI/flux_schnell_workflow_api.json",
-        "z_image_turbo": "C:/CComfyUI/z_image_turbo_workflow_api.json"
+        "z_image_turbo": "C:/CComfyUI/z_image_turbo_workflow_api.json",
+        "flux_kontext": "C:/CComfyUI/flux_kontext_workflow_api.json"
       },
       "default_model": "flux_dev"
+    }
+  },
+  {
+    "id": "bfl",
+    "nombre": "Black Forest Labs (API de pago)",
+    "ruta": "https://api.bfl.ai",
+    "enabled": false,
+    "parametros": {
+      "models": ["flux-kontext-pro", "flux-kontext-max", "flux-2-pro"]
     }
   },
   {

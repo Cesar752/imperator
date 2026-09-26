@@ -20,7 +20,7 @@ Ensamblador.
 ### Stack tecnológico
 
 | Capa | Tecnología |
-|------|------------|
+| ------ | ------------ |
 | UI | PyQt6 (señales/slots, `QThread`, `QTabWidget`) |
 | Lenguaje | Python 3.12 |
 | Motores | Ollama (HTTP), ComfyUI (HTTP + WebSocket), Piper TTS (ONNX), Kokoro TTS (PyTorch CPU), faster-whisper (CTranslate2) |
@@ -51,12 +51,14 @@ C:\Imperator\
 │   ├── config_manager.py   # Lectura/escritura de config/*.json + validación
 │   ├── engine_manager.py   # Registro y ciclo de vida de motores (ENGINE_FACTORY)
 │   ├── task_manager.py     # Registro de tareas (TASK_FACTORY)
+│   ├── paths.py            # Rutas compartidas (PROJECT_ROOT, ASSETS)
 │   └── video_assembler.py  # Ensamblado de vídeo con ffmpeg (no es un Engine)
 ├── engines/                # Un motor por fichero
 │   ├── base_engine.py      # Contrato Engine + EngineError
 │   ├── ollama.py           # Chat LLM
 │   ├── ollama_vision.py    # Visión (OCR/resumen/tablas)
-│   ├── comfyui.py          # Generación de imagen (Flux)
+│   ├── comfyui.py          # Generación de imagen (Flux / Kontext)
+│   ├── bfl.py              # Generación de imagen (Black Forest Labs, API de pago)
 │   ├── wanvideo.py         # Generación de vídeo (Wan 2.2)
 │   ├── piper_tts.py        # TTS rápido (ONNX)
 │   ├── kokoro_tts.py       # TTS de calidad (CPU)
@@ -90,7 +92,9 @@ C:\Imperator\
 ├── output/                 # Imágenes, vídeos y audios generados (gitignored)
 ├── tools/                  # Scripts auxiliares
 │   ├── generar_narracion_basajaun.py  # Narración con Piper
-│   └── make_icon.py
+│   └── make_icon.py        # Regenera el icono (requiere Pillow; ver uso)
+├── tests/                  # Tests (stdlib unittest; sin deps de runtime)
+├── .github/workflows/      # CI: compileall + unittest
 └── assets/                 # Icono, splash y logo (versionado)
 ```
 
@@ -121,6 +125,7 @@ ENGINE_FACTORY = {
     "ollama": OllamaEngine,
     "ollama_vision": OllamaVisionEngine,
     "comfyui": ComfyUIEngine,
+    "bfl": BFLApiEngine,
     "wanvideo": WanVideoEngine,
     "piper_tts": PiperTTSEngine,
     "kokoro_tts": KokoroTTSEngine,
@@ -134,10 +139,11 @@ ENGINE_FACTORY = {
 ### Motores actuales
 
 | Motor | Responsabilidad | Backend / modelos |
-|-------|-----------------|-------------------|
+| ------- | ----------------- | ------------------- |
 | `ollama` | Chat | Ollama (qwen3.5:9b, deepseek-r1, …) |
 | `ollama_vision` | OCR / resumen / tablas | Ollama (qwen2.5vl:7b) |
-| `comfyui` | Imágenes | ComfyUI (Flux Dev / Schnell / Z-Image) |
+| `comfyui` | Imágenes | ComfyUI (Flux Dev / Schnell / Z-Image / Kontext) |
+| `bfl` | Imágenes | Black Forest Labs API de pago (FLUX.1 Kontext Pro/Max, FLUX.2 Pro) |
 | `wanvideo` | Vídeo T2V/I2V | ComfyUI (Wan 2.2 + Lightx2v) |
 | `piper_tts` | TTS rápido | ONNX (6 voces ES/EU) |
 | `kokoro_tts` | TTS de calidad | PyTorch CPU (ef_dora, em_alex, em_santa) |
@@ -175,6 +181,10 @@ Cada tarea construye su widget (`ui/<nombre>_widget.py`) y se muestra como
 **pestaña** en el `QTabWidget` de `MainWindow`. El orden de pestañas es el
 orden de registro en `TASK_FACTORY`.
 
+Cada tarea declara además `Task.engine_id` (motor cuyo modelo se descarga al
+abandonar su pestaña); `MainWindow` deriva de ahí su mapa pestaña→motor, de modo
+que no hay que mantener una lista paralela al registro de tareas.
+
 ## 5. Configuración
 
 `core/config_manager.py` centraliza la configuración en 3 archivos JSON dentro
@@ -189,8 +199,11 @@ Cada archivo se valida con un esquema propio (`ENGINE_SCHEMA`, `API_SCHEMA`,
 `SETTINGS_SCHEMA`). Los archivos reales (`*.json`) están **ignorados por git**;
 solo se versionan las plantillas (`*.example.json`).
 
-Los secretos se leen de variables de entorno vía `.env` (`_ensure_dotenv()`),
-nunca del JSON versionado.
+Los secretos se leen **siempre** de variables de entorno vía `.env`
+(`_ensure_dotenv()`): el campo `key` de `apis.json` está **deprecado** y se
+ignora (`resolve_api_key` no lo usa), para no guardar claves en claro en disco.
+La carga de `settings.json`/`engines.json` es tolerante a fallos: un JSON
+corrupto cae a los valores por defecto en lugar de impedir el arranque.
 
 ## 6. Flujo de una generación (ejemplo: vídeo I2V)
 
@@ -212,7 +225,12 @@ nunca del JSON versionado.
 - Un motor = un archivo en `engines/`.
 - Una tarea = un archivo en `tasks/` + un widget en `ui/`.
 - Un cambio = un commit.
-- Verificación: `py_compile` + arranque de la app + prueba manual.
+- Verificación automática: `python -m compileall -q .` +
+  `python -m unittest discover -s tests` (CI en `.github/workflows/ci.yml`).
+  Además, arranque de la app + prueba manual.
+- Las peticiones de red no deben ejecutarse en el hilo de la UI (usar
+  `QThread`/`QThreadPool`); el logging se configura desde `settings.json`
+  (`log_level` y `rutas.logs`).
 - **F5-TTS**: intentado y descartado (watermarking ElevenLabs + sin euskera).
 - **Kokoro**: sin euskera (solo cubre 9 idiomas); para euskera se usa Piper.
 
@@ -223,5 +241,5 @@ nunca del JSON versionado.
 - Sin refactor de configuración: se mantiene la arquitectura legacy
   (`config/*.json`) y se descartó el intento de config unificada
   (`~/.imperator/config.json`).
-
-
+- `bfl` incluido en `DEFAULT_ENGINES` (antes solo existía en el factory).
+- Suite de tests (stdlib `unittest`) + CI en GitHub Actions.
