@@ -1,0 +1,16 @@
+# Dependencias mínimas para ejecutar la suite de tests (y el CI).
+#
+# No incluye los motores locales pesados (piper-tts, faster-whisper, kokoro,
+# PyMuPDF, imageio-ffmpeg): sus imports están protegidos con
+# ``try/except ImportError`` en cada módulo, de modo que la app arranca y los
+# tests corren sin ellos. Solo se listan las dependencias cuyo import es
+# obligatorio en la cadena que recorren los tests:
+#
+#   - PyQt6          -> widgets, workers (QThread/QRunnable) y smoke test de la GUI
+#   - requests       -> motores HTTP (ollama, comfyui, bfl, wanvideo)
+#   - python-dotenv  -> core.config_manager y engines.bfl (import de nivel de módulo)
+#   - numpy          -> engines.kokoro_tts (import de nivel de módulo)
+PyQt6>=6.6.0,<7
+requests>=2.31.0,<3
+python-dotenv>=1.0.0,<2
+numpy>=1.26.0,<3

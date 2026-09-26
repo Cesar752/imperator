@@ -21,8 +21,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Instalar dependencias
-        run: pip install "PyQt6>=6.6,<7"
+      - name: Instalar dependencias de test
+        run: pip install -r requirements-test.txt
 
       - name: Compilar todo el árbol
         run: python -m compileall -q .
