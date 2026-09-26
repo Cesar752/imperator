@@ -7,7 +7,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import assembler_params as ap  # noqa: E402
+from services import audio_params as audio  # noqa: E402
 from services import image_params as ip  # noqa: E402
+from services import preferences as prefs  # noqa: E402
 from services import video_params as vp  # noqa: E402
 
 
@@ -133,6 +135,49 @@ class AssemblerParamsTest(unittest.TestCase):
     def test_offset_too_late(self) -> None:
         self.assertTrue(ap.offset_too_late(9.8, 10.0))
         self.assertFalse(ap.offset_too_late(2.0, 10.0))
+
+
+class AudioParamsTest(unittest.TestCase):
+    def test_speed_range_is_sane(self) -> None:
+        self.assertLess(audio.SPEED_MIN, audio.SPEED_DEFAULT)
+        self.assertLess(audio.SPEED_DEFAULT, audio.SPEED_MAX)
+        self.assertGreater(audio.SPEED_STEP, 0)
+
+    def test_motors_are_unique_and_include_default(self) -> None:
+        ids = [motor_id for _label, motor_id in audio.MOTORS]
+        self.assertIn(audio.DEFAULT_MOTOR, ids)
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_default_voices_cover_motors(self) -> None:
+        for _label, motor_id in audio.MOTORS:
+            self.assertIn(motor_id, audio.DEFAULT_VOICES)
+
+    def test_voice_keys_match_preferences(self) -> None:
+        self.assertEqual(audio.voice_key("piper"), prefs.AUDIO_VOICE_PIPER)
+        self.assertEqual(audio.voice_key("kokoro"), prefs.AUDIO_VOICE_KOKORO)
+        self.assertIsNone(audio.voice_key(None))
+        self.assertIsNone(audio.voice_key("desconocido"))
+
+    def test_resolve_voice_prefers_saved(self) -> None:
+        self.assertEqual(
+            audio.resolve_voice("piper", "guardada", ["guardada", "otra"]),
+            "guardada",
+        )
+
+    def test_resolve_voice_falls_back_to_default(self) -> None:
+        default = audio.DEFAULT_VOICES["piper"]
+        self.assertEqual(
+            audio.resolve_voice("piper", "no-existe", ["x", default]), default
+        )
+
+    def test_resolve_voice_falls_back_to_first(self) -> None:
+        self.assertEqual(
+            audio.resolve_voice("piper", "no-existe", ["primera"]), "primera"
+        )
+
+    def test_resolve_voice_none_without_voices(self) -> None:
+        self.assertIsNone(audio.resolve_voice("piper", None, []))
+        self.assertIsNone(audio.resolve_voice(None, None, []))
 
 
 if __name__ == "__main__":

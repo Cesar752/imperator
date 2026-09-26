@@ -36,23 +36,11 @@ except ImportError:  # pragma: no cover - dependencia declarada en requirements.
     imageio_ffmpeg = None
 
 from engines.base_engine import Engine, EngineError
+from services import audio_params as ap
 from services import preferences as prefs
 from ui.workers import ThreadWorker
 
 logger = logging.getLogger(__name__)
-
-# Rango y valor por defecto de la velocidad. Semántica común (Piper): >1 = más
-# lento, <1 = más rápido. KokoroTTSEngine invierte internamente el valor.
-_SPEED_MIN = 0.5
-_SPEED_MAX = 2.0
-_SPEED_DEFAULT = 1.0
-
-# Persistencia: motor activo y voz por motor.
-_VOICE_KEYS = {
-    "piper": prefs.AUDIO_VOICE_PIPER,
-    "kokoro": prefs.AUDIO_VOICE_KOKORO,
-}
-_DEFAULT_VOICES = {"piper": "es_ES-davefx-medium", "kokoro": "ef_dora"}
 
 
 class AudioWorker(ThreadWorker):
@@ -98,18 +86,16 @@ class AudioWidget(QWidget):
         )
 
         self._motor = QComboBox()
-        self._motor.setToolTip(
-            "Kokoro no soporta euskera. Para leyendas en euskera, usa Piper."
-        )
+        self._motor.setToolTip(ap.MOTOR_TOOLTIP)
         self._motor.currentIndexChanged.connect(self._on_motor_changed)
 
         self._voice = QComboBox()
         self._voice.currentIndexChanged.connect(self._on_voice_changed)
 
         self._speed = QDoubleSpinBox()
-        self._speed.setRange(_SPEED_MIN, _SPEED_MAX)
-        self._speed.setSingleStep(0.1)
-        self._speed.setValue(_SPEED_DEFAULT)
+        self._speed.setRange(ap.SPEED_MIN, ap.SPEED_MAX)
+        self._speed.setSingleStep(ap.SPEED_STEP)
+        self._speed.setValue(ap.SPEED_DEFAULT)
         self._speed.setSuffix(" ×")
 
         form = QFormLayout()
@@ -172,12 +158,12 @@ class AudioWidget(QWidget):
     def _populate_motors(self) -> None:
         self._motor.blockSignals(True)
         self._motor.clear()
-        self._motor.addItem("Piper", "piper")
-        self._motor.addItem("Kokoro", "kokoro")
+        for label, motor_id in ap.MOTORS:
+            self._motor.addItem(label, motor_id)
         last = prefs.AudioPrefs.from_store(self._prefs).engine
         idx = self._motor.findData(last)
         if idx < 0:
-            idx = self._motor.findData("piper")
+            idx = self._motor.findData(ap.DEFAULT_MOTOR)
         self._motor.setCurrentIndex(idx)
         self._motor.blockSignals(False)
         self._on_motor_changed()
@@ -187,10 +173,9 @@ class AudioWidget(QWidget):
         if not motor or motor == self._current_motor:
             return
         # Guardar la voz actual en la clave del motor que se abandona.
-        if self._current_motor and self._voice.currentData():
-            self._prefs.set(
-                _VOICE_KEYS[self._current_motor], self._voice.currentData()
-            )
+        previous_key = ap.voice_key(self._current_motor)
+        if previous_key and self._voice.currentData():
+            self._prefs.set(previous_key, self._voice.currentData())
         self._current_motor = motor
         self._engine = self._engines.get(motor)
         self._prefs.set(prefs.AUDIO_ENGINE, motor)
@@ -212,22 +197,17 @@ class AudioWidget(QWidget):
                 logger.debug("Error listando voces: %r", exc, exc_info=True)
         for voice_name in voices:
             self._voice.addItem(voice_name, voice_name)
-        last = None
-        if self._current_motor:
-            last = self._prefs.get_str(_VOICE_KEYS[self._current_motor])
-        if last not in voices:
-            last = _DEFAULT_VOICES.get(self._current_motor)
-        if last not in voices and voices:
-            last = voices[0]
-        if last in voices:
-            self._voice.setCurrentIndex(voices.index(last))
+        key = ap.voice_key(self._current_motor)
+        saved = self._prefs.get_str(key) if key else None
+        selected = ap.resolve_voice(self._current_motor, saved, voices)
+        if selected is not None:
+            self._voice.setCurrentIndex(voices.index(selected))
         self._voice.blockSignals(False)
 
     def _on_voice_changed(self) -> None:
-        if self._current_motor and self._voice.currentData():
-            self._prefs.set(
-                _VOICE_KEYS[self._current_motor], self._voice.currentData()
-            )
+        key = ap.voice_key(self._current_motor)
+        if key and self._voice.currentData():
+            self._prefs.set(key, self._voice.currentData())
 
     # ---- Generación ----------------------------------------------
 
