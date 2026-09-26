@@ -196,6 +196,27 @@ class DocumentParamsTest(unittest.TestCase):
         self.assertEqual(dp.prompt_for("desconocido"), dp.PROMPTS["ocr"])
         self.assertEqual(dp.prompt_for(None), dp.PROMPTS["ocr"])
 
+    def test_los_prompts_de_imagen_difieren_por_modo(self) -> None:
+        prompts = {mode: dp.prompt_for(mode) for mode in dp.MODE_LABELS}
+        self.assertEqual(len(set(prompts.values())), len(prompts))
+
+    def test_resumen_y_tablas_analizan_el_texto_nativo(self) -> None:
+        for mode in ("resumen", "tablas"):
+            self.assertTrue(dp.needs_text_analysis(mode))
+            prompt = dp.text_prompt_for(mode)
+            self.assertIsNotNone(prompt)
+            self.assertNotEqual(prompt, dp.prompt_for(mode))
+        self.assertNotEqual(
+            dp.text_prompt_for("resumen"), dp.text_prompt_for("tablas")
+        )
+
+    def test_ocr_no_necesita_analisis_de_texto(self) -> None:
+        # En OCR la capa de texto del PDF ya es la transcripción.
+        self.assertIsNone(dp.text_prompt_for("ocr"))
+        self.assertFalse(dp.needs_text_analysis("ocr"))
+        self.assertFalse(dp.needs_text_analysis(None))
+        self.assertFalse(dp.needs_text_analysis("desconocido"))
+
     def test_file_kind(self) -> None:
         self.assertEqual(dp.file_kind(".PDF"), "PDF")
         self.assertEqual(dp.file_kind(".png"), "Imagen")

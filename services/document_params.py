@@ -31,6 +31,19 @@ PROMPTS = {
     ),
 }
 
+# Prompts para texto *ya extraído* (p. ej. la capa de texto de un PDF nativo).
+# En ``ocr`` no hacen falta: el texto extraído ya es la transcripción.
+TEXT_PROMPTS = {
+    "resumen": (
+        "Summarize the following document content in 3-5 sentences. Focus on the "
+        "key information and main points."
+    ),
+    "tablas": (
+        "Extract all tables from the following text and return them as HTML tables. "
+        "If there is no table, return 'No tables found'."
+    ),
+}
+
 # Etiquetas legibles por modo.
 MODE_LABELS = {
     "ocr": "OCR",
@@ -48,6 +61,20 @@ TEXT_THRESHOLD = 50
 def prompt_for(mode: str | None) -> str:
     """Prompt del modo indicado (cae a OCR si el modo falta o es desconocido)."""
     return PROMPTS.get(mode or "", PROMPTS["ocr"])
+
+
+def text_prompt_for(mode: str | None) -> str | None:
+    """Prompt para analizar texto ya extraído, o ``None`` si el modo no lo necesita.
+
+    ``ocr`` no necesita modelo cuando el documento ya trae capa de texto: esa
+    capa *es* la transcripción. Resumen y tablas, en cambio, deben analizarla.
+    """
+    return TEXT_PROMPTS.get(mode or "")
+
+
+def needs_text_analysis(mode: str | None) -> bool:
+    """¿El modo debe analizar el texto nativo en vez de devolverlo tal cual?"""
+    return text_prompt_for(mode) is not None
 
 
 def is_pdf(suffix: str) -> bool:

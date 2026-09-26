@@ -48,20 +48,28 @@ class DocumentWorker(ThreadWorker):
         self._model = model
 
     def work(self) -> str:
-        prompt = dp.prompt_for(self._mode)
+        image_prompt = dp.prompt_for(self._mode)
         if dp.is_pdf(self._file_path.suffix):
-            return self._process_pdf(prompt)
-        return self._process_image(prompt)
+            return self._process_pdf(image_prompt)
+        return self._process_image(image_prompt)
 
     def _process_image(self, prompt: str) -> str:
         self.page_progress.emit(1, 1)
         return self._engine.analyze_image(self._file_path, prompt, self._model)
 
-    def _process_pdf(self, prompt: str) -> str:
+    def _process_pdf(self, image_prompt: str) -> str:
+        """Procesa el PDF página a página según el modo elegido.
+
+        Con capa de texto nativa, en ``ocr`` se devuelve tal cual (esa capa *es*
+        la transcripción y no hace falta modelo); en ``resumen``/``tablas`` el
+        texto es la *entrada* del análisis, así que también pasa por el modelo
+        con su prompt de texto. Si no, los tres modos devolvían el mismo texto.
+        """
         if pymupdf is None:
             raise EngineError(
                 "PyMuPDF no está instalado. Instálalo con: pip install PyMuPDF>=1.24.0"
             )
+        text_prompt = dp.text_prompt_for(self._mode)
         doc = pymupdf.open(str(self._file_path))
         try:
             total = doc.page_count
@@ -72,9 +80,17 @@ class DocumentWorker(ThreadWorker):
                 self.page_progress.emit(index + 1, total)
                 text = (page.get_text() or "").strip()
                 if dp.has_native_text(text):
-                    blocks.append(f"--- Página {index + 1} (texto) ---\n\n{text}")
+                    if text_prompt is None:
+                        blocks.append(f"--- Página {index + 1} (texto) ---\n\n{text}")
+                    else:
+                        analysed = self._engine.analyze_text(
+                            text, text_prompt, self._model
+                        )
+                        blocks.append(
+                            f"--- Página {index + 1} (texto) ---\n\n{analysed}"
+                        )
                 else:
-                    ocr = self._ocr_page(page, prompt)
+                    ocr = self._ocr_page(page, image_prompt)
                     blocks.append(f"--- Página {index + 1} (OCR) ---\n\n{ocr}")
             return "\n\n".join(blocks)
         finally:

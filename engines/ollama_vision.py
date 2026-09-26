@@ -95,16 +95,27 @@ class OllamaVisionEngine(VisionEngine):
                 f"Ollama Vision: no se pudo leer la imagen: {exc}"
             ) from exc
 
+        logger.debug("Ollama Vision: analizando '%s'", image_path.name)
+        return self._chat(
+            [{"role": "user", "content": prompt, "images": [encoded]}], model
+        )
+
+    def analyze_text(self, text: str, prompt: str, model: str | None = None) -> str:
+        """Analiza texto ya extraído (capa de texto de un PDF) sin OCR.
+
+        Mismo endpoint que :meth:`analyze_image` pero sin ``images``: resumir o
+        extraer tablas de un PDF nativo no necesita rasterizar la página.
+        """
+        text = (text or "").strip()
+        if not text:
+            raise EngineError("Ollama Vision: no hay texto que analizar.")
+        return self._chat([{"role": "user", "content": f"{prompt}\n\n{text}"}], model)
+
+    def _chat(self, messages: list[dict], model: str | None) -> str:
+        """Envía ``messages`` a ``/api/chat`` y devuelve el contenido de la respuesta."""
         model = model or self._default_model
         self._last_used_model = model
-        payload = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt, "images": [encoded]}],
-            "stream": False,
-        }
-        logger.debug(
-            "Ollama Vision: analizando '%s' con '%s'", image_path.name, model
-        )
+        payload = {"model": model, "messages": messages, "stream": False}
         try:
             resp = requests.post(
                 f"{self._base_url}/api/chat",
@@ -118,7 +129,7 @@ class OllamaVisionEngine(VisionEngine):
             ) from exc
         except requests.exceptions.Timeout as exc:
             raise EngineError(
-                "Ollama Vision: timeout al procesar la imagen."
+                "Ollama Vision: timeout al procesar el documento."
             ) from exc
         except requests.RequestException as exc:
             raise EngineError(f"Error al hablar con Ollama: {exc}") from exc

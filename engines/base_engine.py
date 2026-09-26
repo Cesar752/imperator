@@ -64,6 +64,15 @@ class VisionEngine(Engine):
     ) -> str:
         """Analiza ``image_path`` según ``prompt`` y devuelve el texto resultante."""
 
+    def analyze_text(self, text: str, prompt: str, model: str | None = None) -> str:
+        """Analiza ``text`` según ``prompt`` (sin imagen) y devuelve el resultado.
+
+        Lo usan los documentos con capa de texto propia (PDF nativo): resumir o
+        extraer tablas no requiere OCR, pero sí pasar por el modelo. Por defecto
+        no está soportado; los motores que puedan hacerlo lo sobrescriben.
+        """
+        raise EngineError(f"{self.nombre}: no soporta análisis de texto sin imagen.")
+
 
 class ImageEngine(Engine):
     """Motor de generación/edición de imagen."""
