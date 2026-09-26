@@ -95,7 +95,7 @@ def main() -> int:
             set_app_id = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID
             set_app_id.argtypes = [ctypes.c_wchar_p]
             set_app_id("imperator.plataformaia.1.0")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - shell32 puede no exponer el símbolo
             logger.warning("No se pudo fijar el AppUserModelID: %s", exc)
     app = QApplication(sys.argv)
     app.setApplicationName("Imperator")

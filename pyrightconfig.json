@@ -1,0 +1,18 @@
+{
+    "pythonVersion": "3.12",
+    "typeCheckingMode": "basic",
+    "extraPaths": [
+        "."
+    ],
+    "venvPath": ".",
+    "venv": "venv",
+    "reportMissingTypeStubs": false,
+    "exclude": [
+        "venv",
+        "**/__pycache__",
+        "output",
+        "assets",
+        "voices",
+        "**/*.mcp.json"
+    ]
+}
