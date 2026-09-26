@@ -4,7 +4,6 @@ import json
 import logging
 import random
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Callable
 from uuid import uuid4
@@ -17,34 +16,35 @@ except ImportError:  # pragma: no cover - dependencia declarada en requirements.
     websocket = None
 
 from engines.base_engine import EngineError, VideoEngine
+from engines.comfyui_base import ComfyUIBaseEngine
 
 logger = logging.getLogger(__name__)
 
 
-class WanVideoEngine(VideoEngine):
-    """Motor de generación de vídeo con Wan2.2-Lightning vía ComfyUI.
+class WanVideoEngine(ComfyUIBaseEngine, VideoEngine):
+    """Generación de vídeo con Wan2.2-Lightning vía ComfyUI.
 
     Soporta varios modos (``t2v``, ``i2v``...) seleccionados por la clave del
     diccionario ``workflows``. Cada modo es un workflow JSON que embebe sus
     propios modelos; el dict puede crecer en el futuro (``t2v_q5``, ``i2v_q4``...)
     sin tocar el motor. ``image_path`` activa el modo imagen-a-vídeo (``i2v``).
 
-    El flujo replica a :class:`engines.comfyui.ComfyUIEngine` (cargar, parchear,
-    ``/prompt`` y descargar vía ``/view``). La finalización y el progreso se
-    detectan por el WebSocket ``/ws`` (fuente única de verdad); ``/history`` solo
-    se lee una vez tras ``execution_success``. Si el WebSocket falla, la
-    generación falla (no hay fallback).
+    Reutiliza el tronco HTTP de :class:`engines.comfyui_base.ComfyUIBaseEngine`.
+    La finalización y el progreso se detectan por el WebSocket ``/ws`` (fuente
+    única de verdad); ``/history`` solo se lee una vez tras
+    ``execution_success``. Si el WebSocket falla, la generación falla.
     """
 
-    # Timeouts en segundos.
+    _LABEL = "WanVideo"
+
     _SHORT_TIMEOUT = 2.0        # /system_stats, /object_info, /history (lectura)
     _SUBMIT_TIMEOUT = 30.0      # POST /prompt
-    _WS_TIMEOUT = 5.0           # recv() del WebSocket
     _VIEW_TIMEOUT = 120.0       # GET /view (descarga del MP4)
+    _UPLOAD_TIMEOUT = 60.0      # POST /upload/image
+    _WS_TIMEOUT = 5.0           # recv() del WebSocket
     _GENERATE_TIMEOUT = 1800.0  # espera máxima total por clip (default)
     _HISTORY_RETRIES = 30       # reintentos al leer /history tras el éxito (30 s)
     _HISTORY_RETRY_DELAY = 1.0  # segundos entre reintentos de /history
-    _UPLOAD_TIMEOUT = 60.0      # POST /upload/image
 
     # IDs de los nodos de prompt (positivo/negativo) del workflow Wan 2.2. Son
     # estables entre t2v e i2v; el resto de nodos se localizan por class_type.
@@ -67,18 +67,8 @@ class WanVideoEngine(VideoEngine):
         output_dir: str | Path | None = None,
         timeout: float = 1800.0,
     ) -> None:
-        if not workflows:
-            raise EngineError("WanVideo: falta 'workflows' en la config de engines.json")
-        self._base_url = base_url.rstrip("/")
-        self._workflows = {name: Path(path) for name, path in workflows.items()}
-        self._default_model = default_model or next(iter(self._workflows))
+        super().__init__(base_url, workflows, default_model, output_dir)
         self._generate_timeout = float(timeout)
-        # Carpeta de salida por defecto: <raíz del proyecto>/output.
-        self._output_dir = (
-            Path(output_dir)
-            if output_dir is not None
-            else Path(__file__).resolve().parent.parent / "output"
-        )
 
     @property
     def id(self) -> str:
@@ -88,51 +78,9 @@ class WanVideoEngine(VideoEngine):
     def nombre(self) -> str:
         return "Wan Video"
 
-    @property
-    def base_url(self) -> str:
-        return self._base_url
-
     def set_timeout(self, timeout: float) -> None:
         """Actualiza el tiempo máximo de espera por clip (segundos)."""
         self._generate_timeout = float(timeout)
-
-    def cancel_remote(self) -> None:
-        """Solicita a ComfyUI detener la ejecución en curso (POST /interrupt)."""
-        try:
-            requests.post(f"{self._base_url}/interrupt", timeout=2)
-            logger.info("ComfyUI: interrupción solicitada")
-        except requests.RequestException as exc:
-            logger.warning("No se pudo interrumpir ComfyUI: %s", exc)
-
-    def _free_models(self) -> None:
-        """Libera VRAM/RAM de ComfyUI tras finalizar una generación (POST /free)."""
-        try:
-            requests.post(
-                f"{self._base_url}/free",
-                json={"unload_models": True, "free_memory": True},
-                timeout=5,
-            )
-            logger.info("ComfyUI: modelos liberados")
-        except requests.RequestException as exc:
-            logger.warning("No se pudo liberar ComfyUI: %s", exc)
-
-    def unload_model(self) -> bool:
-        """WanVideo ya libera tras cada generación; no-op para consistencia."""
-        return True
-
-    def is_available(self) -> bool:
-        try:
-            resp = requests.get(
-                f"{self._base_url}/system_stats", timeout=self._SHORT_TIMEOUT
-            )
-            resp.raise_for_status()
-        except requests.RequestException:
-            return False
-        return True
-
-    def list_models(self) -> list[str]:
-        # Cada modelo es una clave del diccionario "workflows" (t2v, i2v, ...).
-        return list(self._workflows.keys())
 
     def generate_video(
         self,
@@ -190,78 +138,33 @@ class WanVideoEngine(VideoEngine):
 
         try:
             content = self._download(video_meta)
-            return self._save(content, video_meta, seed)
+            ext = Path(video_meta.get("filename", "video.mp4")).suffix or ".mp4"
+            return self._save(content, seed, ext)
         finally:
-            self._free_models()
+            self.unload_model()
 
-    # ---- Subida de imagen -----------------------------------------
+    # ---- Validación y parcheo del workflow -----------------------
 
-    def _upload_image(self, image_path: Path) -> str:
-        """Sube la imagen a ComfyUI (``POST /upload/image``) y devuelve su nombre."""
-        if not image_path.exists():
-            raise EngineError(f"WanVideo: la imagen no existe: {image_path}")
-        ext = image_path.suffix.lower()
-        mime = {
-            ".png": "image/png",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-        }.get(ext, "image/png")
-        with image_path.open("rb") as fh:
-            data = fh.read()
-        try:
-            resp = requests.post(
-                f"{self._base_url}/upload/image",
-                files={"image": (image_path.name, data, mime)},
-                data={"overwrite": "true"},
-                timeout=self._UPLOAD_TIMEOUT,
-            )
-        except requests.RequestException as exc:
-            raise EngineError(f"WanVideo: error subiendo la imagen: {exc}") from exc
-        resp.raise_for_status()
-        try:
-            info = resp.json()
-        except ValueError as exc:
-            raise EngineError("WanVideo: respuesta inválida al subir la imagen.") from exc
-        name = info.get("name")
-        if not name:
-            raise EngineError("WanVideo: ComfyUI no devolvió el nombre de la imagen subida.")
-        return name
-
-    # ---- Carga y parcheo del workflow -----------------------------
-
-    def _load_workflow(self, model: str) -> dict:
-        path = self._workflows.get(model)
-        if path is None:
-            raise EngineError(f"WanVideo: modo desconocido '{model}'")
-        if not path.exists():
-            raise EngineError(f"WanVideo: workflow no encontrado: {path}")
-        try:
-            with path.open("r", encoding="utf-8") as fh:
-                wf = json.load(fh)
-        except (OSError, json.JSONDecodeError) as exc:
-            raise EngineError(
-                f"WanVideo: no se pudo cargar el workflow '{path}': {exc}"
-            ) from exc
-        self._validate_workflow(wf, path)
-        return wf
-
-    def _validate_workflow(self, wf: dict, path: Path) -> None:
+    def _validate_workflow(self, workflow: dict, path: Path) -> None:
         """Valida que el workflow tenga los nodos que el motor va a parchear."""
         required = {
             self._NODE_PROMPT_POS: "CLIPTextEncode",
             self._NODE_PROMPT_NEG: "CLIPTextEncode",
         }
         for node_id, expected_ct in required.items():
-            node = wf.get(node_id)
+            node = workflow.get(node_id)
             if node is None:
-                raise EngineError(f"WanVideo: workflow '{path.name}' no tiene el nodo {node_id}")
+                raise EngineError(
+                    f"WanVideo: workflow '{path.name}' no tiene el nodo {node_id}"
+                )
             if node.get("class_type") != expected_ct:
                 raise EngineError(
-                    f"WanVideo: nodo {node_id} es '{node.get('class_type')}', esperado '{expected_ct}'"
+                    f"WanVideo: nodo {node_id} es '{node.get('class_type')}', "
+                    f"esperado '{expected_ct}'"
                 )
-        if not any(n.get("class_type") in self._LATENT_TYPES for n in wf.values()):
+        if not any(n.get("class_type") in self._LATENT_TYPES for n in workflow.values()):
             raise EngineError(f"WanVideo: workflow '{path.name}' no tiene nodo de latent")
-        if not any(n.get("class_type") == "KSampler" for n in wf.values()):
+        if not any(n.get("class_type") == "KSampler" for n in workflow.values()):
             raise EngineError(f"WanVideo: workflow '{path.name}' no tiene ningún KSampler")
 
     def _patch_workflow(
@@ -299,41 +202,6 @@ class WanVideoEngine(VideoEngine):
                 inputs["noise_seed"] = seed
             if "fps" in inputs:
                 inputs["fps"] = fps
-
-    # ---- Envío ----------------------------------------------------
-
-    def _submit(self, workflow: dict, client_id: str) -> str:
-        payload = {"prompt": workflow, "client_id": client_id}
-        try:
-            resp = requests.post(
-                f"{self._base_url}/prompt", json=payload, timeout=self._SUBMIT_TIMEOUT
-            )
-        except requests.RequestException as exc:
-            raise EngineError(f"WanVideo: error al enviar el prompt: {exc}") from exc
-
-        logger.info("ComfyUI POST /prompt status=%d", resp.status_code)
-        if resp.status_code >= 400:
-            try:
-                data = resp.json()
-                err = data.get("error") or {}
-                msg = err.get("message") or err.get("type") or resp.text
-            except ValueError:
-                msg = resp.text
-            raise EngineError(f"ComfyUI rechazó el workflow: {msg}")
-
-        try:
-            data = resp.json()
-        except ValueError as exc:
-            raise EngineError(
-                "ComfyUI devolvió una respuesta inválida al enviar el prompt."
-            ) from exc
-
-        logger.info("ComfyUI response: %s", json.dumps(data)[:500])
-        prompt_id = data.get("prompt_id")
-        logger.info("ComfyUI prompt_id: %s", prompt_id)
-        if not prompt_id:
-            raise EngineError(f"ComfyUI no devolvió 'prompt_id' al enviar el prompt: {data}")
-        return prompt_id
 
     # ---- Espera vía WebSocket (sin polling de /history) ----------
 
@@ -520,7 +388,7 @@ class WanVideoEngine(VideoEngine):
             f"WanVideo: no se pudo leer la salida del vídeo desde /history/{prompt_id}: {detail}"
         )
 
-    # ---- Descarga y guardado --------------------------------------
+    # ---- Búsqueda de la salida multimedia ------------------------
 
     @staticmethod
     def _find_media(outputs: dict) -> dict | None:
@@ -536,28 +404,3 @@ class WanVideoEngine(VideoEngine):
                 if key in node_output and node_output[key]:
                     return {"key": key, "data": node_output[key][0]}
         return None
-
-    def _download(self, video_meta: dict) -> bytes:
-        params = {
-            "filename": video_meta["filename"],
-            "type": video_meta.get("type", "output"),
-        }
-        subfolder = video_meta.get("subfolder", "")
-        if subfolder:
-            params["subfolder"] = subfolder
-        resp = requests.get(
-            f"{self._base_url}/view", params=params, timeout=self._VIEW_TIMEOUT
-        )
-        resp.raise_for_status()
-        return resp.content
-
-    def _save(self, content: bytes, video_meta: dict, seed: int) -> Path:
-        self._output_dir.mkdir(parents=True, exist_ok=True)
-        ext = Path(video_meta.get("filename", "video.mp4")).suffix or ".mp4"
-        filename = f"plataformaia_{datetime.now():%Y%m%d_%H%M%S}_{seed}{ext}"
-        path = self._output_dir / filename
-        with path.open("wb") as fh:
-            fh.write(content)
-        logger.info("WanVideo: vídeo guardado en '%s'.", path)
-        return path
-
