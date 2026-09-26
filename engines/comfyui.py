@@ -48,6 +48,7 @@ class ComfyUIEngine(Engine):
     _POLL_TIMEOUT = 5.0         # GET /history/{id}
     _VIEW_TIMEOUT = 60.0        # GET /view (descarga del PNG)
     _GENERATE_TIMEOUT = 300.0   # espera máxima total por imagen
+    _UPLOAD_TIMEOUT = 60.0      # POST /upload/image
 
     def __init__(
         self,
@@ -113,7 +114,7 @@ class ComfyUIEngine(Engine):
         # JSON por modelo); la config es la fuente de verdad.
         return list(self._workflows.keys())
 
-    def chat(self, messages: list[dict]) -> str:
+    def chat(self, messages: list[dict], model: str | None = None) -> str:
         raise EngineError("ComfyUI es un motor de generación de imagen, no de chat.")
 
     def generate_image(
@@ -126,13 +127,24 @@ class ComfyUIEngine(Engine):
         seed: int | None = None,
         guidance: float = 3.5,
         model: str | None = None,
+        image_path: str | Path | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> Path:
-        """Genera una imagen y devuelve la ruta del PNG guardado en ``output/``."""
+        """Genera una imagen y devuelve la ruta del PNG guardado en ``output/``.
+
+        ``image_path`` (opcional) activa la imagen de referencia para modelos de
+        edición como ``flux_kontext``: se sube a ComfyUI y se parchea en el nodo
+        ``LoadImage`` del workflow.
+        """
         if seed is None:
             seed = random.randint(0, 2**31 - 1)
 
         workflow = self._load_workflow(model or self._default_model)
+
+        image_name = None
+        if image_path is not None:
+            image_name = self._upload_image(Path(image_path))
+
         self._patch_workflow(
             workflow,
             prompt=prompt,
@@ -142,6 +154,7 @@ class ComfyUIEngine(Engine):
             steps=steps,
             seed=seed,
             guidance=guidance,
+            image_name=image_name,
         )
 
         prompt_id = self._submit(workflow)
@@ -179,12 +192,14 @@ class ComfyUIEngine(Engine):
         steps: int,
         seed: int,
         guidance: float,
+        image_name: str | None = None,
     ) -> None:
         """Parchea los nodos por tipo (los workflows Flux tienen IDs distintos).
 
         - CLIPTextEncode con texto = prompt positivo; vacío = negativo.
         - FluxGuidance (solo Flux Dev) = guidance.
         - EmptySD3LatentImage = dimensiones; KSampler = seed/steps.
+        - LoadImage (flux_kontext) = imagen de referencia subida.
         El ``unet_name`` ya está embebido en cada workflow (no se parchea).
         """
         for node in workflow.values():
@@ -205,6 +220,39 @@ class ComfyUIEngine(Engine):
             elif class_type == "KSampler":
                 inputs["seed"] = seed
                 inputs["steps"] = steps
+            elif class_type == "LoadImage" and image_name is not None:
+                inputs["image"] = image_name
+
+    def _upload_image(self, image_path: Path) -> str:
+        """Sube la imagen de referencia a ComfyUI (``POST /upload/image``)."""
+        if not image_path.exists():
+            raise EngineError(f"ComfyUI: la imagen de referencia no existe: {image_path}")
+        ext = image_path.suffix.lower()
+        mime = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+        }.get(ext, "image/png")
+        with image_path.open("rb") as fh:
+            data = fh.read()
+        try:
+            resp = requests.post(
+                f"{self._base_url}/upload/image",
+                files={"image": (image_path.name, data, mime)},
+                data={"overwrite": "true"},
+                timeout=self._UPLOAD_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            raise EngineError(f"ComfyUI: error subiendo la imagen: {exc}") from exc
+        resp.raise_for_status()
+        try:
+            info = resp.json()
+        except ValueError as exc:
+            raise EngineError("ComfyUI: respuesta inválida al subir la imagen.") from exc
+        name = info.get("name")
+        if not name:
+            raise EngineError("ComfyUI: no devolvió el nombre de la imagen subida.")
+        return name
 
     # ---- Envío, polling y descarga --------------------------------
 

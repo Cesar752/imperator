@@ -5,6 +5,7 @@ import logging
 import requests
 
 from engines.base_engine import Engine, EngineError
+from engines.ollama_api import fetch_tags
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +39,7 @@ class OllamaEngine(Engine):
 
     def is_available(self) -> bool:
         try:
-            resp = requests.get(
-                f"{self._base_url}/api/tags", timeout=self._short_timeout
-            )
-            resp.raise_for_status()
+            fetch_tags(self._base_url, self._short_timeout)
         except requests.RequestException:
             return False
         return True
@@ -59,11 +57,7 @@ class OllamaEngine(Engine):
 
     def _fetch_models(self) -> list[dict]:
         """Modelos de ``/api/tags`` excluyendo los de embeddings."""
-        resp = requests.get(
-            f"{self._base_url}/api/tags", timeout=self._short_timeout
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        data = fetch_tags(self._base_url, self._short_timeout)
         return [
             model
             for model in data.get("models", [])

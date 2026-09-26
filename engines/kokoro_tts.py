@@ -55,7 +55,7 @@ class KokoroTTSEngine(Engine):
     def list_voices(self) -> list[str]:
         return list(KOKORO_VOICES)
 
-    def chat(self, messages: list[dict]) -> str:
+    def chat(self, messages: list[dict], model: str | None = None) -> str:
         raise EngineError("Kokoro TTS es un motor de texto a voz, no de chat.")
 
     def synthesize(

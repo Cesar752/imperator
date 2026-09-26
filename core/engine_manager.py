@@ -1,9 +1,11 @@
 """Registro y ciclo de vida de los motores locales de la plataforma."""
 
 import logging
+from copy import deepcopy
 
-from core.config_manager import ConfigManager
+from core.config_manager import DEFAULT_ENGINES, ConfigManager
 from engines.base_engine import Engine
+from engines.bfl import BFLApiEngine
 from engines.comfyui import ComfyUIEngine
 from engines.kokoro_tts import KokoroTTSEngine
 from engines.ollama import OllamaEngine
@@ -20,6 +22,7 @@ ENGINE_FACTORY: dict[str, type[Engine]] = {
     "ollama": OllamaEngine,
     "ollama_vision": OllamaVisionEngine,
     "comfyui": ComfyUIEngine,
+    "bfl": BFLApiEngine,
     "kokoro_tts": KokoroTTSEngine,
     "wanvideo": WanVideoEngine,
     "piper_tts": PiperTTSEngine,
@@ -30,9 +33,10 @@ ENGINE_FACTORY: dict[str, type[Engine]] = {
 _OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
 _OLLAMA_DEFAULT_MODEL = "qwen3.5:9b"
 _OLLAMA_VISION_DEFAULT_BASE_URL = "http://localhost:11434"
-_OLLAMA_VISION_DEFAULT_MODEL = "qwen2.5vl:7b"
+_OLLAMA_VISION_DEFAULT_MODEL = "qwen3-vl:8b"
 _COMFYUI_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
 _WANVIDEO_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
+_BFL_DEFAULT_BASE_URL = "https://api.bfl.ai"
 _PIPER_DEFAULT_VOICES_DIR = "voices"
 _KOKORO_DEFAULT_VOICE = "ef_dora"
 _WHISPER_DEFAULT_MODEL = "small"
@@ -66,7 +70,16 @@ class EngineManager:
         """Recarga los motores desde la configuración, tolerante a fallos por entrada."""
         self._configs = {}
         self._instances = {}
-        for entry in self._config.load_engines():
+        try:
+            entries = self._config.load_engines()
+        except Exception as exc:  # noqa: BLE001 - config corrupta no debe romper el arranque
+            logger.error(
+                "No se pudo cargar engines.json (%s); se usan los motores por "
+                "defecto. Corrige o borra config/engines.json.",
+                exc,
+            )
+            entries = deepcopy(DEFAULT_ENGINES)
+        for entry in entries:
             engine_id = entry["id"]
             if ENGINE_FACTORY.get(engine_id) is None:
                 logger.warning("Motor '%s' no soportado; se ignora.", engine_id)
@@ -96,6 +109,11 @@ class EngineManager:
                 base_url=entry.get("ruta", _COMFYUI_DEFAULT_BASE_URL),
                 workflows=params.get("workflows", {}),
                 default_model=params.get("default_model"),
+            )
+        if engine_id == "bfl":
+            return BFLApiEngine(
+                base_url=entry.get("ruta", _BFL_DEFAULT_BASE_URL),
+                models=params.get("models"),
             )
         if engine_id == "wanvideo":
             workflows = params.get("workflows")

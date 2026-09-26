@@ -128,7 +128,7 @@ class WanVideoEngine(Engine):
         # Cada modelo es una clave del diccionario "workflows" (t2v, i2v, ...).
         return list(self._workflows.keys())
 
-    def chat(self, messages: list[dict]) -> str:
+    def chat(self, messages: list[dict], model: str | None = None) -> str:
         raise EngineError("WanVideo es un motor de generación de vídeo, no de chat.")
 
     def generate_video(
@@ -425,7 +425,11 @@ class WanVideoEngine(Engine):
                 progress_callback(0, "Iniciando etapa high-noise")
             elif node == self._KSAMPLER_LOW:
                 progress_callback(50, "Iniciando etapa low-noise")
-        elif msg_type in ("execution_success", "execution_cached"):
+        elif msg_type == "execution_success":
+            # Solo execution_success marca el final de la generación.
+            # execution_cached se emite al INICIO (ComfyUI >=0.3.x, tras
+            # execution_start) indicando qué nodos salen de caché; tratarlo
+            # como éxito hacía leer /history demasiado pronto (historial vacío).
             return "success"
         elif msg_type == "execution_error":
             return "error"
@@ -548,8 +552,4 @@ class WanVideoEngine(Engine):
             fh.write(content)
         logger.info("WanVideo: vídeo guardado en '%s'.", path)
         return path
-
-
-
-
 

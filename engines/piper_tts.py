@@ -72,7 +72,7 @@ class PiperTTSEngine(Engine):
             p.stem for p in self._voices_dir.glob("*.onnx") if p.is_file()
         )
 
-    def chat(self, messages: list[dict]) -> str:
+    def chat(self, messages: list[dict], model: str | None = None) -> str:
         raise EngineError("Piper TTS es un motor de texto a voz, no de chat.")
 
     def synthesize(

@@ -35,5 +35,9 @@ class Engine(ABC):
     # TODO(fase N): separar Engine (texto) de ImageEngine/VideoEngine/AudioEngine
     # para no forzar a los motores multimodales a implementar chat().
     @abstractmethod
-    def chat(self, messages: list[dict]) -> str:
-        """Ejecuta una conversación y devuelve la respuesta completa."""
+    def chat(self, messages: list[dict], model: str | None = None) -> str:
+        """Ejecuta una conversación y devuelve la respuesta completa.
+
+        ``model`` permite elegir el modelo sin reconstruir el motor. Los motores
+        que no sean de texto pueden ignorarlo (y lanzar ``EngineError``).
+        """

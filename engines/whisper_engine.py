@@ -52,7 +52,7 @@ class WhisperEngine(Engine):
     def list_models(self) -> list[str]:
         return list(WHISPER_MODELS)
 
-    def chat(self, messages: list[dict]) -> str:
+    def chat(self, messages: list[dict], model: str | None = None) -> str:
         raise EngineError("Whisper es un motor de transcripción, no de chat.")
 
     def transcribe(
@@ -81,9 +81,7 @@ class WhisperEngine(Engine):
         if not audio_path.is_file():
             raise EngineError(f"El audio a transcribir no existe: {audio_path}")
 
-        if model_size is not None:
-            self._model_size = model_size
-        model = self._get_model()
+        model = self._get_model(model_size)
 
         logger.info(
             "Whisper: transcribiendo '%s' (modelo=%s, idioma=%s)...",
@@ -112,24 +110,30 @@ class WhisperEngine(Engine):
 
     # ---- Internos ------------------------------------------------
 
-    def _get_model(self):
-        if self._model is not None and self._loaded_size == self._model_size:
+    def _get_model(self, model_size: str | None = None):
+        """Carga (y cachea) el modelo; ``model_size`` permite cambiarlo sin
+        reconstruir el motor. El estado solo se actualiza si la carga tiene éxito,
+        para no dejar ``self._model_size`` apuntando a un modelo no cargado."""
+        target = model_size or self._model_size
+        if self._model is not None and self._loaded_size == target:
             return self._model
         logger.info(
             "Whisper: cargando modelo '%s' (device=%s, compute_type=%s)...",
-            self._model_size, self._device, self._compute_type,
+            target, self._device, self._compute_type,
         )
         try:
-            self._model = WhisperModel(
-                self._model_size,
+            loaded = WhisperModel(
+                target,
                 device=self._device,
                 compute_type=self._compute_type,
             )
         except Exception as exc:  # noqa: BLE001
             raise EngineError(
-                f"Whisper: no se pudo cargar el modelo '{self._model_size}': {exc}"
+                f"Whisper: no se pudo cargar el modelo '{target}': {exc}"
             ) from exc
-        self._loaded_size = self._model_size
+        self._model = loaded
+        self._loaded_size = target
+        self._model_size = target
         return self._model
 
     @staticmethod

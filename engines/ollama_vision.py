@@ -7,20 +7,26 @@ from pathlib import Path
 import requests
 
 from engines.base_engine import Engine, EngineError
+from engines.ollama_api import fetch_tags
 
 logger = logging.getLogger(__name__)
 
 # Marcadores (subcadenas, en minúsculas) para detectar modelos con capacidad de
 # visión entre los expuestos por /api/tags.
 VISION_MODEL_MARKERS = (
+    "qwen3-vl",
     "qwen2.5vl",
     "qwen2-vl",
     "qwen-vl",
+    "glm4v",
+    "glm-4v",
     "glm-ocr",
     "minicpm-v",
     "llava",
     "gemma3",
     "llama3.2-vision",
+    "deepseek-vl",
+    "moondream",
     "vision",
 )
 
@@ -41,7 +47,7 @@ class OllamaVisionEngine(Engine):
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
-        default_model: str = "qwen2.5vl:7b",
+        default_model: str = "qwen3-vl:8b",
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._default_model = default_model
@@ -57,20 +63,13 @@ class OllamaVisionEngine(Engine):
 
     def is_available(self) -> bool:
         try:
-            resp = requests.get(
-                f"{self._base_url}/api/tags", timeout=self._SHORT_TIMEOUT
-            )
-            resp.raise_for_status()
+            fetch_tags(self._base_url, self._SHORT_TIMEOUT)
         except requests.RequestException:
             return False
         return True
 
     def list_models(self) -> list[str]:
-        resp = requests.get(
-            f"{self._base_url}/api/tags", timeout=self._SHORT_TIMEOUT
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        data = fetch_tags(self._base_url, self._SHORT_TIMEOUT)
         return [
             model["name"]
             for model in data.get("models", [])
@@ -82,7 +81,7 @@ class OllamaVisionEngine(Engine):
         lowered = name.lower()
         return any(marker in lowered for marker in VISION_MODEL_MARKERS)
 
-    def chat(self, messages: list[dict]) -> str:
+    def chat(self, messages: list[dict], model: str | None = None) -> str:
         raise EngineError("Ollama Vision es un motor de visión, no de chat.")
 
     def analyze_image(
