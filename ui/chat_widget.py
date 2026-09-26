@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 )
 
 from engines.base_engine import ChatEngine
+from services import preferences as prefs
 from ui.workers import ThreadWorker, run_pool_task
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ class ChatWidget(QWidget):
         super().__init__(parent)
         self._engine: ChatEngine | None = engine
         self._config_manager = config_manager
+        self._prefs = prefs.PrefsStore(config_manager)
         # TODO(fase 5): limitar el historial a N mensajes.
         self._messages: list[dict] = []
         self._worker: ChatWorker | None = None
@@ -136,9 +138,7 @@ class ChatWidget(QWidget):
                 self._model.count() - 1, tooltip, Qt.ItemDataRole.ToolTipRole
             )
 
-        last = None
-        if self._config_manager is not None:
-            last = self._config_manager.load_last_models().get("chat")
+        last = self._prefs.get_str(prefs.CHAT)
         if last is not None:
             idx = self._model.findData(last)
             if idx >= 0:
@@ -160,8 +160,7 @@ class ChatWidget(QWidget):
         model = self._model.currentData()
         if not model:
             return
-        if self._config_manager is not None:
-            self._config_manager.save_last_model("chat", model)
+        self._prefs.set(prefs.CHAT, model)
         if self._messages:
             answer = QMessageBox.question(
                 self,

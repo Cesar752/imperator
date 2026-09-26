@@ -36,6 +36,7 @@ except ImportError:  # pragma: no cover - dependencia declarada en requirements.
     imageio_ffmpeg = None
 
 from engines.base_engine import Engine, EngineError
+from services import preferences as prefs
 from ui.workers import ThreadWorker
 
 logger = logging.getLogger(__name__)
@@ -47,8 +48,10 @@ _SPEED_MAX = 2.0
 _SPEED_DEFAULT = 1.0
 
 # Persistencia: motor activo y voz por motor.
-_ENGINE_KEY = "audio_engine"
-_VOICE_KEYS = {"piper": "audio_voice_piper", "kokoro": "audio_voice_kokoro"}
+_VOICE_KEYS = {
+    "piper": prefs.AUDIO_VOICE_PIPER,
+    "kokoro": prefs.AUDIO_VOICE_KOKORO,
+}
 _DEFAULT_VOICES = {"piper": "es_ES-davefx-medium", "kokoro": "ef_dora"}
 
 
@@ -81,6 +84,7 @@ class AudioWidget(QWidget):
         self._engine = None
         self._current_motor = None
         self._config_manager = config_manager
+        self._prefs = prefs.PrefsStore(config_manager)
         self._worker: AudioWorker | None = None
         self._last_path: str | None = None
         self._build_ui()
@@ -170,9 +174,7 @@ class AudioWidget(QWidget):
         self._motor.clear()
         self._motor.addItem("Piper", "piper")
         self._motor.addItem("Kokoro", "kokoro")
-        last = "piper"
-        if self._config_manager is not None:
-            last = self._config_manager.load_last_models().get(_ENGINE_KEY, "piper")
+        last = prefs.AudioPrefs.from_store(self._prefs).engine
         idx = self._motor.findData(last)
         if idx < 0:
             idx = self._motor.findData("piper")
@@ -186,13 +188,12 @@ class AudioWidget(QWidget):
             return
         # Guardar la voz actual en la clave del motor que se abandona.
         if self._current_motor and self._voice.currentData():
-            self._config_manager.save_last_model(
+            self._prefs.set(
                 _VOICE_KEYS[self._current_motor], self._voice.currentData()
             )
         self._current_motor = motor
         self._engine = self._engines.get(motor)
-        if self._config_manager is not None:
-            self._config_manager.save_last_model(_ENGINE_KEY, motor)
+        self._prefs.set(prefs.AUDIO_ENGINE, motor)
         self._populate_voices()
         self._generate_button.setEnabled(self._engine is not None)
         if self._engine is None:
@@ -212,10 +213,8 @@ class AudioWidget(QWidget):
         for voice_name in voices:
             self._voice.addItem(voice_name, voice_name)
         last = None
-        if self._config_manager is not None and self._current_motor:
-            last = self._config_manager.load_last_models().get(
-                _VOICE_KEYS[self._current_motor]
-            )
+        if self._current_motor:
+            last = self._prefs.get_str(_VOICE_KEYS[self._current_motor])
         if last not in voices:
             last = _DEFAULT_VOICES.get(self._current_motor)
         if last not in voices and voices:
@@ -225,12 +224,8 @@ class AudioWidget(QWidget):
         self._voice.blockSignals(False)
 
     def _on_voice_changed(self) -> None:
-        if (
-            self._config_manager is not None
-            and self._current_motor
-            and self._voice.currentData()
-        ):
-            self._config_manager.save_last_model(
+        if self._current_motor and self._voice.currentData():
+            self._prefs.set(
                 _VOICE_KEYS[self._current_motor], self._voice.currentData()
             )
 

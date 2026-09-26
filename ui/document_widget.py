@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 )
 
 from engines.base_engine import Engine, EngineError
+from services import preferences as prefs
 from ui.workers import ThreadWorker, run_pool_task
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,7 @@ class DocumentWidget(QWidget):
         super().__init__(parent)
         self._engine = engine
         self._config_manager = config_manager
+        self._prefs = prefs.PrefsStore(config_manager)
         self._worker: DocumentWorker | None = None
         self._model_task = None
         self._file_path: Path | None = None
@@ -276,9 +278,7 @@ class DocumentWidget(QWidget):
         self._model.clear()
         for model_id in models:
             self._model.addItem(model_id, model_id)
-        last = None
-        if self._config_manager is not None:
-            last = self._config_manager.load_last_models().get("document")
+        last = self._prefs.get_str(prefs.DOCUMENT)
         if last in models:
             self._model.setCurrentIndex(models.index(last))
         elif DEFAULT_MODEL in models:
@@ -287,9 +287,7 @@ class DocumentWidget(QWidget):
         self._model.setEnabled(True)
 
     def _restore_mode(self) -> None:
-        if self._config_manager is None:
-            return
-        last = self._config_manager.load_last_models().get("document_mode")
+        last = self._prefs.get_str(prefs.DOCUMENT_MODE)
         if last is None:
             return
         idx = self._mode.findData(last)
@@ -299,14 +297,10 @@ class DocumentWidget(QWidget):
             self._mode.blockSignals(False)
 
     def _on_mode_changed(self) -> None:
-        if self._config_manager is not None and self._mode.currentData():
-            self._config_manager.save_last_model(
-                "document_mode", self._mode.currentData()
-            )
+        self._prefs.set(prefs.DOCUMENT_MODE, self._mode.currentData())
 
     def _on_model_changed(self) -> None:
-        if self._config_manager is not None and self._model.currentData():
-            self._config_manager.save_last_model("document", self._model.currentData())
+        self._prefs.set(prefs.DOCUMENT, self._model.currentData())
 
     # ---- Procesamiento --------------------------------------------
 

@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 
 from engines.base_engine import Engine
 from services import image_params as ip
+from services import preferences as prefs
 from ui.workers import ThreadWorker, run_pool_task
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ class ImageWidget(QWidget):
         self._engine: Engine | None = None
         self._model_engine: dict[str, str] = {}
         self._config_manager = config_manager
+        self._prefs = prefs.PrefsStore(config_manager)
         self._worker: ImageWorker | None = None
         self._credits_task = None
         self._elapsed = 0
@@ -193,9 +195,7 @@ class ImageWidget(QWidget):
             for model_id in engine.list_models():
                 self._model.addItem(ip.display_model(model_id, engine_id), model_id)
                 self._model_engine[model_id] = engine_id
-        last = None
-        if self._config_manager is not None:
-            last = self._config_manager.load_last_models().get("image")
+        last = self._prefs.get_str(prefs.IMAGE)
         index = self._model.findData(last)
         if index >= 0:
             self._model.setCurrentIndex(index)
@@ -203,8 +203,7 @@ class ImageWidget(QWidget):
         self._update_ref_enabled()
 
     def _on_model_changed(self) -> None:
-        if self._config_manager is not None and self._model.currentData():
-            self._config_manager.save_last_model("image", self._model.currentData())
+        self._prefs.set(prefs.IMAGE, self._model.currentData())
         self._update_ref_enabled()
         self._refresh_credits()
 

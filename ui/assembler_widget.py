@@ -26,6 +26,7 @@ from core.video_assembler import VideoAssembler
 from engines.base_engine import Engine, EngineError
 from engines.whisper_engine import WHISPER_MODELS
 from services import assembler_params as asp
+from services import preferences as prefs
 from ui.workers import ThreadWorker
 
 logger = logging.getLogger(__name__)
@@ -122,6 +123,7 @@ class AssemblerWidget(QWidget):
         super().__init__(parent)
         self._whisper: Engine | None = whisper_engine
         self._config_manager = config_manager
+        self._prefs = prefs.PrefsStore(config_manager)
         self._assembler = VideoAssembler()
         self._worker: AssemblerWorker | None = None
         self._last_path: str | None = None
@@ -514,19 +516,19 @@ class AssemblerWidget(QWidget):
         self._subtitles_section.setVisible(checked)
 
     def _on_model_changed(self) -> None:
-        self._save_pref("assembler", self._model_combo.currentData())
+        self._prefs.set(prefs.ASSEMBLER, self._model_combo.currentData())
 
     def _on_language_changed(self) -> None:
-        self._save_pref("assembler_idioma", self._language_combo.currentData())
+        self._prefs.set(prefs.ASSEMBLER_IDIOMA, self._language_combo.currentData())
 
     def _on_fontsize_changed(self) -> None:
-        self._save_pref("assembler_fontsize", str(self._fontsize.value()))
+        self._prefs.set(prefs.ASSEMBLER_FONTSIZE, self._fontsize.value())
 
     def _on_position_changed(self) -> None:
-        self._save_pref("assembler_posicion", self._position_combo.currentData())
+        self._prefs.set(prefs.ASSEMBLER_POSICION, self._position_combo.currentData())
 
     def _on_color_changed(self) -> None:
-        self._save_pref("assembler_color", self._color_combo.currentData())
+        self._prefs.set(prefs.ASSEMBLER_COLOR, self._color_combo.currentData())
 
     # ---- Música de fondo -----------------------------------------
 
@@ -546,37 +548,31 @@ class AssemblerWidget(QWidget):
         self._music_combo.blockSignals(False)
 
     def _on_music_changed(self) -> None:
-        self._save_pref("assembler_musica", self._music_combo.currentData() or "")
+        self._prefs.set(prefs.ASSEMBLER_MUSICA, self._music_combo.currentData() or "")
 
     def _on_music_volume_changed(self) -> None:
-        self._save_pref("assembler_musica_vol", str(self._music_volume.value()))
+        self._prefs.set(prefs.ASSEMBLER_MUSICA_VOL, self._music_volume.value())
 
     def _on_voice_volume_changed(self) -> None:
-        self._save_pref("assembler_voz_vol", str(self._voice_volume.value()))
+        self._prefs.set(prefs.ASSEMBLER_VOZ_VOL, self._voice_volume.value())
 
     def _on_voice_offset_changed(self) -> None:
-        self._save_pref("assembler_voice_offset", str(self._voice_offset.value()))
+        self._prefs.set(prefs.ASSEMBLER_VOICE_OFFSET, self._voice_offset.value())
 
     def _on_music_offset_changed(self) -> None:
-        self._save_pref("assembler_music_offset", str(self._music_offset.value()))
+        self._prefs.set(prefs.ASSEMBLER_MUSIC_OFFSET, self._music_offset.value())
 
     def _on_ducking_toggled(self, checked: bool) -> None:
-        self._save_pref("assembler_ducking", "1" if checked else "0")
-
-    def _save_pref(self, key: str, value: str) -> None:
-        if self._config_manager is not None and value is not None:
-            self._config_manager.save_last_model(key, value)
+        self._prefs.set_bool(prefs.ASSEMBLER_DUCKING, checked)
 
     def _restore_preferences(self) -> None:
-        if self._config_manager is None:
-            return
-        last = self._config_manager.load_last_models()
+        p = prefs.AssemblerPrefs.from_store(self._prefs)
 
         combos = (
-            (self._model_combo, "assembler"),
-            (self._language_combo, "assembler_idioma"),
-            (self._position_combo, "assembler_posicion"),
-            (self._color_combo, "assembler_color"),
+            (self._model_combo, p.model),
+            (self._language_combo, p.language),
+            (self._position_combo, p.position),
+            (self._color_combo, p.color),
         )
         all_combos = (
             self._model_combo,
@@ -585,72 +581,38 @@ class AssemblerWidget(QWidget):
             self._color_combo,
             self._music_combo,
         )
-        for combo in all_combos:
-            combo.blockSignals(True)
-        for spin in (
+        spins = (
             self._fontsize,
             self._music_volume,
             self._voice_volume,
             self._voice_offset,
             self._music_offset,
-        ):
+        )
+        for combo in all_combos:
+            combo.blockSignals(True)
+        for spin in spins:
             spin.blockSignals(True)
         self._ducking.blockSignals(True)
         try:
-            for combo, key in combos:
-                value = last.get(key)
+            for combo, value in combos:
                 if value is not None:
                     idx = combo.findData(value)
                     if idx >= 0:
                         combo.setCurrentIndex(idx)
-            fontsize = last.get("assembler_fontsize")
-            if fontsize is not None:
-                try:
-                    self._fontsize.setValue(int(fontsize))
-                except ValueError:
-                    pass
-            music_path = last.get("assembler_musica")
-            if music_path:
-                idx = self._music_combo.findData(music_path)
+            self._fontsize.setValue(p.fontsize)
+            if p.music:
+                idx = self._music_combo.findData(p.music)
                 if idx >= 0:
                     self._music_combo.setCurrentIndex(idx)
-            music_vol = last.get("assembler_musica_vol")
-            if music_vol is not None:
-                try:
-                    self._music_volume.setValue(int(music_vol))
-                except ValueError:
-                    pass
-            voice_vol = last.get("assembler_voz_vol")
-            if voice_vol is not None:
-                try:
-                    self._voice_volume.setValue(int(voice_vol))
-                except ValueError:
-                    pass
-            voice_offset = last.get("assembler_voice_offset")
-            if voice_offset is not None:
-                try:
-                    self._voice_offset.setValue(float(voice_offset))
-                except ValueError:
-                    pass
-            music_offset = last.get("assembler_music_offset")
-            if music_offset is not None:
-                try:
-                    self._music_offset.setValue(float(music_offset))
-                except ValueError:
-                    pass
-            ducking = last.get("assembler_ducking")
-            if ducking is not None:
-                self._ducking.setChecked(ducking == "1")
+            self._music_volume.setValue(p.music_volume)
+            self._voice_volume.setValue(p.voice_volume)
+            self._voice_offset.setValue(p.voice_offset)
+            self._music_offset.setValue(p.music_offset)
+            self._ducking.setChecked(p.ducking)
         finally:
             for combo in all_combos:
                 combo.blockSignals(False)
-            for spin in (
-                self._fontsize,
-                self._music_volume,
-                self._voice_volume,
-                self._voice_offset,
-                self._music_offset,
-            ):
+            for spin in spins:
                 spin.blockSignals(False)
             self._ducking.blockSignals(False)
 

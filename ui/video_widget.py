@@ -39,6 +39,7 @@ from PyQt6.QtWidgets import (
 
 from core.video_assembler import VideoAssembler
 from engines.base_engine import Engine, EngineError
+from services import preferences as prefs
 from services import video_params as vp
 from ui.workers import ThreadWorker, run_pool_task
 
@@ -111,6 +112,7 @@ class VideoWidget(QWidget):
         super().__init__(parent)
         self._engine: Engine | None = engine
         self._config_manager = config_manager
+        self._prefs = prefs.PrefsStore(config_manager)
         self._worker: VideoWorker | None = None
         self._last_path: str | None = None
         self._photos: list[dict] = []
@@ -452,31 +454,24 @@ class VideoWidget(QWidget):
 
     def _populate_modes(self) -> None:
         """Rellena el selector de modo con los workflows del motor."""
+        saved = prefs.VideoPrefs.from_store(self._prefs)
         self._mode.blockSignals(True)
         self._mode.clear()
         if self._engine is not None:
             for model_id in self._engine.list_models():
                 self._mode.addItem(vp.MODE_LABELS.get(model_id, model_id), model_id)
-        last = None
-        if self._config_manager is not None:
-            last = self._config_manager.load_last_models().get("video")
-        if last is not None:
-            idx = self._mode.findData(last)
-            if idx >= 0:
-                self._mode.setCurrentIndex(idx)
+        idx = self._mode.findData(saved.mode)
+        if idx >= 0:
+            self._mode.setCurrentIndex(idx)
         self._mode.blockSignals(False)
         # Sincronizar la visibilidad de la sección de imagen con el modo restaurado.
         self._update_image_section()
         # Restaurar la última imagen usada.
-        if self._config_manager is not None:
-            last_image = self._config_manager.load_last_models().get("video_last_image")
-            if last_image:
-                self._add_photos([last_image])
+        if saved.last_image:
+            self._add_photos([saved.last_image])
 
     def _on_mode_changed(self) -> None:
-        mode = self._mode.currentData()
-        if self._config_manager is not None and mode:
-            self._config_manager.save_last_model("video", mode)
+        self._prefs.set(prefs.VIDEO, self._mode.currentData())
         self._update_image_section()
 
     def _update_image_section(self) -> None:
@@ -516,10 +511,8 @@ class VideoWidget(QWidget):
             if path and path not in existing:
                 self._photos.append({"path": path, "prompt": ""})
                 existing.add(path)
-        if self._photos and self._config_manager is not None:
-            self._config_manager.save_last_model(
-                "video_last_image", self._photos[0]["path"]
-            )
+        if self._photos:
+            self._prefs.set(prefs.VIDEO_LAST_IMAGE, self._photos[0]["path"])
         self._rebuild_photos()
 
     def _sync_prompts(self) -> None:
@@ -685,21 +678,10 @@ class VideoWidget(QWidget):
         return answer == QMessageBox.StandardButton.Yes
 
     def _on_timeout_changed(self) -> None:
-        if self._config_manager is not None:
-            self._config_manager.save_last_model(
-                "video_timeout", str(self._timeout.value())
-            )
+        self._prefs.set(prefs.VIDEO_TIMEOUT, self._timeout.value())
 
     def _restore_timeout(self) -> None:
-        if self._config_manager is None:
-            return
-        raw = self._config_manager.load_last_models().get("video_timeout")
-        if raw is None:
-            return
-        try:
-            value = int(raw)
-        except ValueError:
-            return
+        value = self._prefs.get_int(prefs.VIDEO_TIMEOUT, self._timeout.value())
         if self._timeout.minimum() <= value <= self._timeout.maximum():
             self._timeout.blockSignals(True)
             self._timeout.setValue(value)
