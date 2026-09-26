@@ -15,7 +15,7 @@ try:
 except ImportError:  # pragma: no cover - dependencia declarada en requirements.txt
     imageio_ffmpeg = None
 
-from PyQt6.QtCore import QObject, QRunnable, QThread, QThreadPool, Qt, QUrl, pyqtSignal
+from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QDesktopServices, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -39,69 +39,30 @@ from PyQt6.QtWidgets import (
 
 from core.video_assembler import VideoAssembler
 from engines.base_engine import Engine, EngineError
+from ui.workers import ThreadWorker, run_pool_task
 
 logger = logging.getLogger(__name__)
 
 
-class _SystemStatsSignals(QObject):
-    ram_free = pyqtSignal(object)
-
-
-class _SystemStatsWorker(QRunnable):
-    """Consulta ``/system_stats`` (RAM libre) fuera del hilo de la UI (M5)."""
-
-    def __init__(self, base_url: str) -> None:
-        super().__init__()
-        self._base_url = base_url
-        self.signals = _SystemStatsSignals()
-
-    def run(self) -> None:
-        try:
-            resp = requests.get(f"{self._base_url}/system_stats", timeout=2)
-            resp.raise_for_status()
-            data = resp.json()
-        except (requests.RequestException, ValueError) as exc:
-            logger.debug("No se pudo leer /system_stats: %r", exc)
-            self.signals.ram_free.emit(None)
-            return
-        ram_free = (data.get("system") or {}).get("ram_free")
-        self.signals.ram_free.emit(
-            ram_free if isinstance(ram_free, (int, float)) else None
-        )
-
-
-class VideoWorker(QThread):
+class VideoWorker(ThreadWorker):
     """Ejecuta ``engine.generate_video()`` fuera del hilo de la UI."""
-
-    progress = pyqtSignal(int, str)   # porcentaje, mensaje
-    video_ready = pyqtSignal(str)     # ruta del MP4 generado
-    failed = pyqtSignal(str)
 
     def __init__(self, engine: Engine, params: dict, parent=None) -> None:
         super().__init__(parent)
         self._engine = engine
         self._params = params
 
-    def run(self) -> None:
+    def work(self) -> str:
         params = dict(self._params)
         params["cancel_check"] = self.isInterruptionRequested
-        try:
-            images = params.pop("image_paths", None)
-            prompts = params.pop("prompts", None)
-            if images and len(images) > 1:
-                # Varias imágenes: un clip por imagen y concatenación final.
-                path = self._generate_sequence(images, prompts, params)
-            else:
-                params["progress_callback"] = self._on_progress
-                # Duck-typing: el motor debe exponer generate_video() (WanVideoEngine).
-                path = self._engine.generate_video(**params)
-        except EngineError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # noqa: BLE001 - red/timeout/JSON inesperados
-            logger.debug("Error inesperado en VideoWorker: %r", exc, exc_info=True)
-            self.failed.emit(f"Error inesperado: {exc}")
-        else:
-            self.video_ready.emit(str(path))
+        images = params.pop("image_paths", None)
+        prompts = params.pop("prompts", None)
+        if images and len(images) > 1:
+            # Varias imágenes: un clip por imagen y concatenación final.
+            return self._generate_sequence(images, prompts, params)
+        params["progress_callback"] = self._on_progress
+        # Duck-typing: el motor debe exponer generate_video() (VideoEngine).
+        return str(self._engine.generate_video(**params))
 
     def _generate_sequence(
         self, images: list[str], prompts: list[str] | None, params: dict
@@ -173,7 +134,7 @@ class VideoWidget(QWidget):
         self._last_path: str | None = None
         self._photos: list[dict] = []
         self._prompt_edits: list[QLineEdit] = []
-        self._stats_worker: _SystemStatsWorker | None = None
+        self._stats_task = None
         self._ram_free_bytes: object = None
         self._ram_free_at = 0.0
         self._build_ui()
@@ -458,7 +419,7 @@ class VideoWidget(QWidget):
 
         self._worker = VideoWorker(self._engine, params, self)
         self._worker.progress.connect(self._on_progress)
-        self._worker.video_ready.connect(self._on_video_ready)
+        self._worker.result.connect(self._on_video_ready)
         self._worker.failed.connect(self._on_error)
         self._worker.finished.connect(self._on_finished)
         self._worker.start()
@@ -705,9 +666,22 @@ class VideoWidget(QWidget):
         base_url = "http://127.0.0.1:8188"
         if self._engine is not None:
             base_url = getattr(self._engine, "base_url", None) or base_url
-        self._stats_worker = _SystemStatsWorker(base_url)
-        self._stats_worker.signals.ram_free.connect(self._on_ram_free)
-        QThreadPool.globalInstance().start(self._stats_worker)
+        self._stats_task = run_pool_task(
+            self._read_system_stats, base_url, on_result=self._on_ram_free
+        )
+
+    @staticmethod
+    def _read_system_stats(base_url: str):
+        """Lee ``/system_stats`` y devuelve ``ram_free`` (o ``None``)."""
+        try:
+            resp = requests.get(f"{base_url}/system_stats", timeout=2)
+            resp.raise_for_status()
+            data = resp.json()
+        except (requests.RequestException, ValueError) as exc:
+            logger.debug("No se pudo leer /system_stats: %r", exc)
+            return None
+        ram_free = (data.get("system") or {}).get("ram_free")
+        return ram_free if isinstance(ram_free, (int, float)) else None
 
     def _on_ram_free(self, ram_free: object) -> None:
         self._ram_free_bytes = ram_free

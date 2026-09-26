@@ -2,7 +2,7 @@
 
 import logging
 
-from PyQt6.QtCore import QObject, QRunnable, QThread, QThreadPool, Qt, pyqtSignal
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -15,60 +15,23 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from engines.base_engine import ChatEngine, EngineError
+from engines.base_engine import ChatEngine
+from ui.workers import ThreadWorker, run_pool_task
 
 logger = logging.getLogger(__name__)
 
 
-class ChatWorker(QThread):
+class ChatWorker(ThreadWorker):
     """Ejecuta ``engine.chat()`` fuera del hilo de la UI."""
 
-    reply_ready = pyqtSignal(str)
-    failed = pyqtSignal(str)
-
-    def __init__(
-        self, engine: ChatEngine, messages: list[dict], model: str | None, parent=None
-    ) -> None:
+    def __init__(self, engine: ChatEngine, messages: list[dict], model: str | None, parent=None) -> None:
         super().__init__(parent)
         self._engine = engine
         self._messages = messages
         self._model = model
 
-    def run(self) -> None:
-        try:
-            reply = self._engine.chat(self._messages, model=self._model)
-        except EngineError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # noqa: BLE001 - red/timeout/JSON inesperados
-            logger.debug("Error inesperado en ChatWorker: %r", exc, exc_info=True)
-            self.failed.emit(f"Error inesperado: {exc}")
-        else:
-            self.reply_ready.emit(reply)
-
-
-class _ModelDetailsSignals(QObject):
-    details = pyqtSignal(list)
-
-
-class _ModelDetailsWorker(QRunnable):
-    """Obtiene los modelos de Ollama fuera del hilo de la UI (M5).
-
-    ``/api/tags`` puede tardar segundos; hacerlo en el hilo de la UI congelaba
-    el arranque de la pestaña de Chat.
-    """
-
-    def __init__(self, engine: ChatEngine) -> None:
-        super().__init__()
-        self._engine = engine
-        self.signals = _ModelDetailsSignals()
-
-    def run(self) -> None:
-        try:
-            details = list(self._engine.list_model_details())
-        except Exception as exc:  # noqa: BLE001 - red/timeout/JSON inesperados
-            logger.debug("No se pudieron listar los modelos de Ollama: %r", exc)
-            details = []
-        self.signals.details.emit(details)
+    def work(self) -> str:
+        return self._engine.chat(self._messages, model=self._model)
 
 
 class ChatWidget(QWidget):
@@ -81,7 +44,7 @@ class ChatWidget(QWidget):
         # TODO(fase 5): limitar el historial a N mensajes.
         self._messages: list[dict] = []
         self._worker: ChatWorker | None = None
-        self._model_worker: _ModelDetailsWorker | None = None
+        self._model_task = None
         self._build_ui()
         self._populate_models()
 
@@ -137,9 +100,15 @@ class ChatWidget(QWidget):
             return
         self._model.setEnabled(False)
         self._model.addItem("Cargando modelos…")
-        self._model_worker = _ModelDetailsWorker(self._engine)
-        self._model_worker.signals.details.connect(self._on_model_details)
-        QThreadPool.globalInstance().start(self._model_worker)
+        self._model_task = run_pool_task(
+            self._engine.list_model_details,
+            on_result=self._on_model_details,
+            on_error=self._on_model_details_error,
+        )
+
+    def _on_model_details_error(self, message: str) -> None:
+        logger.debug("No se pudieron listar los modelos de Ollama: %s", message)
+        self._on_model_details([])
 
     def _on_model_details(self, details: list) -> None:
         """Rellena el selector con los modelos recibidos del worker."""
@@ -226,7 +195,7 @@ class ChatWidget(QWidget):
         self._worker = ChatWorker(
             self._engine, list(self._messages), self._model.currentData(), self
         )
-        self._worker.reply_ready.connect(self._on_reply)
+        self._worker.result.connect(self._on_reply)
         self._worker.failed.connect(self._on_error)
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()

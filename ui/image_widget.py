@@ -3,7 +3,7 @@
 import logging
 import shutil
 
-from PyQt6.QtCore import QObject, QRunnable, QThread, QThreadPool, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -23,60 +23,25 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from engines.base_engine import Engine, EngineError
+from engines.base_engine import Engine
+from ui.workers import ThreadWorker, run_pool_task
 
 logger = logging.getLogger(__name__)
 
 
-class _CreditsSignals(QObject):
-    credits = pyqtSignal(object)
-
-
-class _CreditsWorker(QRunnable):
-    """Consulta los créditos de la API de pago fuera del hilo de la UI (M5).
-
-    Antes se llamaba a ``get_credits()`` (una petición HTTP) en el hilo de la
-    UI al cambiar de modelo, congelando la interfaz.
-    """
-
-    def __init__(self, get_credits) -> None:
-        super().__init__()
-        self._get_credits = get_credits
-        self.signals = _CreditsSignals()
-
-    def run(self) -> None:
-        try:
-            credits = self._get_credits()
-        except Exception as exc:  # noqa: BLE001 - red inesperada
-            logger.debug("No se pudieron consultar los créditos: %r", exc)
-            credits = None
-        self.signals.credits.emit(credits)
-
-
-class ImageWorker(QThread):
+class ImageWorker(ThreadWorker):
     """Ejecuta ``engine.generate_image()`` fuera del hilo de la UI."""
-
-    image_ready = pyqtSignal(str)   # ruta del PNG generado
-    failed = pyqtSignal(str)
 
     def __init__(self, engine: Engine, params: dict, parent=None) -> None:
         super().__init__(parent)
         self._engine = engine
         self._params = params
 
-    def run(self) -> None:
+    def work(self) -> str:
         params = dict(self._params)
         params["cancel_check"] = self.isInterruptionRequested
-        try:
-            # Duck-typing: el motor debe exponer generate_image() (ComfyUIEngine).
-            path = self._engine.generate_image(**params)
-        except EngineError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # noqa: BLE001 - red/timeout/JSON inesperados
-            logger.debug("Error inesperado en ImageWorker: %r", exc, exc_info=True)
-            self.failed.emit(f"Error inesperado: {exc}")
-        else:
-            self.image_ready.emit(str(path))
+        # Duck-typing: el motor debe exponer generate_image() (ImageEngine).
+        return str(self._engine.generate_image(**params))
 
 
 class ImageWidget(QWidget):
@@ -120,7 +85,7 @@ class ImageWidget(QWidget):
         self._model_engine: dict[str, str] = {}
         self._config_manager = config_manager
         self._worker: ImageWorker | None = None
-        self._credits_worker: _CreditsWorker | None = None
+        self._credits_task = None
         self._elapsed = 0
         self._last_path: str | None = None
         self._timer = QTimer(self)
@@ -290,9 +255,13 @@ class ImageWidget(QWidget):
             self._credits_label.setText("")
             return
         self._credits_label.setText("Consultando…")
-        self._credits_worker = _CreditsWorker(get_credits)
-        self._credits_worker.signals.credits.connect(self._on_credits)
-        QThreadPool.globalInstance().start(self._credits_worker)
+        self._credits_task = run_pool_task(
+            get_credits, on_result=self._on_credits, on_error=self._on_credits_error
+        )
+
+    def _on_credits_error(self, message: str) -> None:
+        logger.debug("No se pudieron consultar los créditos: %s", message)
+        self._credits_label.setText("No disponible")
 
     def _on_credits(self, credits: object) -> None:
         if credits is None:
@@ -377,7 +346,7 @@ class ImageWidget(QWidget):
         self._set_status("Generando... 0s")
 
         self._worker = ImageWorker(engine, params, self)
-        self._worker.image_ready.connect(self._on_image_ready)
+        self._worker.result.connect(self._on_image_ready)
         self._worker.failed.connect(self._on_error)
         self._worker.finished.connect(self._on_finished)
         self._worker.start()

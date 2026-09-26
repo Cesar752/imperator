@@ -4,7 +4,7 @@ import logging
 import tempfile
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QRunnable, QThread, QThreadPool, pyqtSignal
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 )
 
 from engines.base_engine import Engine, EngineError
+from ui.workers import ThreadWorker, run_pool_task
 
 logger = logging.getLogger(__name__)
 
@@ -71,33 +72,10 @@ _PDF_DPI = 200
 _TEXT_THRESHOLD = 50
 
 
-class _VisionModelsSignals(QObject):
-    models = pyqtSignal(list, str)  # modelos, mensaje de error ("" si ok)
-
-
-class _VisionModelsWorker(QRunnable):
-    """Obtiene los modelos de visión fuera del hilo de la UI (M5)."""
-
-    def __init__(self, engine) -> None:
-        super().__init__()
-        self._engine = engine
-        self.signals = _VisionModelsSignals()
-
-    def run(self) -> None:
-        try:
-            models = list(self._engine.list_models())
-        except Exception as exc:  # noqa: BLE001 - red/timeout/JSON inesperados
-            self.signals.models.emit([], str(exc))
-            return
-        self.signals.models.emit(models, "")
-
-
-class DocumentWorker(QThread):
+class DocumentWorker(ThreadWorker):
     """Procesa una imagen o un PDF (página a página) fuera del hilo de la UI."""
 
-    progress = pyqtSignal(int, int)   # página actual, total de páginas
-    result_ready = pyqtSignal(str)    # texto final concatenado
-    failed = pyqtSignal(str)
+    page_progress = pyqtSignal(int, int)   # página actual, total de páginas
 
     def __init__(self, engine, file_path, mode, model, parent=None) -> None:
         super().__init__(parent)
@@ -106,25 +84,14 @@ class DocumentWorker(QThread):
         self._mode = mode
         self._model = model
 
-    def run(self) -> None:
+    def work(self) -> str:
         prompt = PROMPTS.get(self._mode, PROMPTS["ocr"])
-        try:
-            if self._file_path.suffix.lower() == ".pdf":
-                result = self._process_pdf(prompt)
-            else:
-                result = self._process_image(prompt)
-        except EngineError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # noqa: BLE001 - red/IO/JSON inesperados
-            logger.debug("Error inesperado en DocumentWorker: %r", exc, exc_info=True)
-            self.failed.emit(f"Error inesperado: {exc}")
-        else:
-            self.result_ready.emit(result)
+        if self._file_path.suffix.lower() == ".pdf":
+            return self._process_pdf(prompt)
+        return self._process_image(prompt)
 
     def _process_image(self, prompt: str) -> str:
-        if self.isInterruptionRequested():
-            raise EngineError("Cancelado por el usuario")
-        self.progress.emit(1, 1)
+        self.page_progress.emit(1, 1)
         return self._engine.analyze_image(self._file_path, prompt, self._model)
 
     def _process_pdf(self, prompt: str) -> str:
@@ -139,7 +106,7 @@ class DocumentWorker(QThread):
             for index, page in enumerate(doc):
                 if self.isInterruptionRequested():
                     raise EngineError("Cancelado por el usuario")
-                self.progress.emit(index + 1, total)
+                self.page_progress.emit(index + 1, total)
                 text = (page.get_text() or "").strip()
                 if len(text) > _TEXT_THRESHOLD:
                     blocks.append(f"--- Página {index + 1} (texto) ---\n\n{text}")
@@ -172,7 +139,7 @@ class DocumentWidget(QWidget):
         self._engine = engine
         self._config_manager = config_manager
         self._worker: DocumentWorker | None = None
-        self._worker_models: _VisionModelsWorker | None = None
+        self._model_task = None
         self._file_path: Path | None = None
         self._result_text = ""
         self._build_ui()
@@ -289,15 +256,19 @@ class DocumentWidget(QWidget):
             return
         self._model.setEnabled(False)
         self._model.addItem("Cargando modelos…")
-        self._worker_models = _VisionModelsWorker(self._engine)
-        self._worker_models.signals.models.connect(self._on_models)
-        QThreadPool.globalInstance().start(self._worker_models)
+        self._model_task = run_pool_task(
+            self._engine.list_models,
+            on_result=self._on_models,
+            on_error=self._on_models_error,
+        )
 
-    def _on_models(self, models: list, error: str) -> None:
+    def _on_models_error(self, message: str) -> None:
+        logger.warning("No se pudieron listar los modelos de visión: %s", message)
+        self._set_status(f"Ollama Vision no disponible: {message}")
+        self._on_models([])
+
+    def _on_models(self, models: list) -> None:
         """Rellena el selector con los modelos recibidos (o con el default)."""
-        if error:
-            logger.warning("No se pudieron listar los modelos de visión: %s", error)
-            self._set_status(f"Ollama Vision no disponible: {error}")
         models = list(models)
         if not models:
             models = [DEFAULT_MODEL]
@@ -361,8 +332,8 @@ class DocumentWidget(QWidget):
         self._set_status("Procesando...")
 
         self._worker = DocumentWorker(self._engine, self._file_path, mode, model, self)
-        self._worker.progress.connect(self._on_progress)
-        self._worker.result_ready.connect(self._on_result_ready)
+        self._worker.page_progress.connect(self._on_progress)
+        self._worker.result.connect(self._on_result_ready)
         self._worker.failed.connect(self._on_error)
         self._worker.finished.connect(self._on_finished)
         self._worker.start()

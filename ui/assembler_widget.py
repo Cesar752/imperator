@@ -5,7 +5,6 @@ import os
 import shutil
 from pathlib import Path
 
-from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -26,6 +25,7 @@ from PyQt6.QtWidgets import (
 from core.video_assembler import VideoAssembler
 from engines.base_engine import Engine, EngineError
 from engines.whisper_engine import WHISPER_MODELS
+from ui.workers import ThreadWorker
 
 logger = logging.getLogger(__name__)
 
@@ -60,12 +60,8 @@ MUSIC_DIR = Path(__file__).resolve().parent.parent / "music"
 MUSIC_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
 
 
-class AssemblerWorker(QThread):
+class AssemblerWorker(ThreadWorker):
     """Orquesta transcripción (Whisper) + ensamblaje (ffmpeg) fuera de la UI."""
-
-    progress = pyqtSignal(int, str)   # porcentaje, mensaje
-    result_ready = pyqtSignal(str)    # ruta del MP4 final
-    failed = pyqtSignal(str)
 
     def __init__(
         self,
@@ -101,47 +97,37 @@ class AssemblerWorker(QThread):
         self._voice_offset = voice_offset
         self._music_offset = music_offset
 
-    def run(self) -> None:
-        try:
-            if self.isInterruptionRequested():
-                raise EngineError("Cancelado por el usuario")
-            srt_path = None
-            if self._use_subtitles and self._audio_path:
-                if self._whisper is None:
-                    raise EngineError(
-                        "El motor Whisper no está configurado o deshabilitado."
-                    )
-                self.progress.emit(0, "Transcribiendo audio...")
-                srt_path = self._whisper.transcribe(
-                    self._audio_path,
-                    language=self._language,
-                    model_size=self._model_size,
-                    progress_callback=self._on_transcribe_progress,
+    def work(self) -> str:
+        srt_path = None
+        if self._use_subtitles and self._audio_path:
+            if self._whisper is None:
+                raise EngineError(
+                    "El motor Whisper no está configurado o deshabilitado."
                 )
-            if self.isInterruptionRequested():
-                raise EngineError("Cancelado por el usuario")
-            self.progress.emit(40, "Ensamblando vídeo...")
-            output = self._assembler.assemble(
-                self._video_path,
-                audio_path=self._audio_path,
-                srt_path=srt_path,
-                subtitle_style=self._subtitle_style,
-                music_path=self._music_path,
-                music_volume=self._music_volume,
-                voice_volume=self._voice_volume,
-                ducking=self._ducking,
-                voice_offset=self._voice_offset,
-                music_offset=self._music_offset,
+            self.progress.emit(0, "Transcribiendo audio...")
+            srt_path = self._whisper.transcribe(
+                self._audio_path,
+                language=self._language,
+                model_size=self._model_size,
+                progress_callback=self._on_transcribe_progress,
             )
-            if self.isInterruptionRequested():
-                raise EngineError("Cancelado por el usuario")
-            self.progress.emit(100, "Listo")
-            self.result_ready.emit(str(output))
-        except EngineError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # noqa: BLE001 - IO/ffmpeg inesperados
-            logger.debug("Error inesperado en AssemblerWorker: %r", exc, exc_info=True)
-            self.failed.emit(f"Error inesperado: {exc}")
+        if self.isInterruptionRequested():
+            raise EngineError("Cancelado por el usuario")
+        self.progress.emit(40, "Ensamblando vídeo...")
+        output = self._assembler.assemble(
+            self._video_path,
+            audio_path=self._audio_path,
+            srt_path=srt_path,
+            subtitle_style=self._subtitle_style,
+            music_path=self._music_path,
+            music_volume=self._music_volume,
+            voice_volume=self._voice_volume,
+            ducking=self._ducking,
+            voice_offset=self._voice_offset,
+            music_offset=self._music_offset,
+        )
+        self.progress.emit(100, "Listo")
+        return str(output)
 
     def _on_transcribe_progress(self, percent: int, message: str) -> None:
         # La transcripción ocupa el tramo 0-40 de la barra de progreso.
@@ -486,7 +472,7 @@ class AssemblerWidget(QWidget):
             self,
         )
         self._worker.progress.connect(self._on_progress)
-        self._worker.result_ready.connect(self._on_ready)
+        self._worker.result.connect(self._on_ready)
         self._worker.failed.connect(self._on_error)
         self._worker.finished.connect(self._on_finished)
         self._worker.start()

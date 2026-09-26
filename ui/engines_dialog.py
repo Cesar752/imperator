@@ -3,7 +3,6 @@
 import json
 import logging
 
-from PyQt6.QtCore import QObject, QRunnable, QThreadPool, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -24,6 +23,7 @@ from PyQt6.QtWidgets import (
 
 from core.engine_manager import EngineManager
 from engines.base_engine import Engine
+from ui.workers import PoolTask, run_pool_task
 
 logger = logging.getLogger(__name__)
 
@@ -66,48 +66,6 @@ _TYPE_URLS: dict[str, str] = {
     "kokoro_tts": "local",
     "whisper": "local",
 }
-
-
-class _WorkerSignals(QObject):
-    availability = pyqtSignal(str, bool)
-    models = pyqtSignal(str, list)
-    error = pyqtSignal(str, str)
-
-
-class _AvailabilityWorker(QRunnable):
-    """Comprueba ``engine.is_available()`` fuera del hilo de la UI."""
-
-    def __init__(self, engine_id: str, engine: Engine) -> None:
-        super().__init__()
-        self._engine_id = engine_id
-        self._engine = engine
-        self.signals = _WorkerSignals()
-
-    def run(self) -> None:
-        try:
-            ok = self._engine.is_available()
-        except Exception as exc:  # noqa: BLE001 - red/timeout inesperados
-            self.signals.error.emit(self._engine_id, str(exc))
-            return
-        self.signals.availability.emit(self._engine_id, ok)
-
-
-class _ModelsWorker(QRunnable):
-    """Obtiene ``engine.list_models()`` fuera del hilo de la UI."""
-
-    def __init__(self, engine_id: str, engine: Engine) -> None:
-        super().__init__()
-        self._engine_id = engine_id
-        self._engine = engine
-        self.signals = _WorkerSignals()
-
-    def run(self) -> None:
-        try:
-            models = self._engine.list_models()
-        except Exception as exc:  # noqa: BLE001 - red/timeout inesperados
-            self.signals.error.emit(self._engine_id, str(exc))
-            return
-        self.signals.models.emit(self._engine_id, models)
 
 
 class EngineFormDialog(QDialog):
@@ -252,6 +210,8 @@ class EnginesDialog(QDialog):
         self.setWindowTitle("Motores")
         self.resize(640, 380)
         self._row_to_id: dict[int, str] = {}
+        self._avail_task = None
+        self._models_task = None
         self._build_ui()
         self._populate()
         self._check_all_availability()
@@ -342,10 +302,18 @@ class EnginesDialog(QDialog):
                 self._set_connection(engine_id, "Error (no se pudo construir)")
                 continue
             self._set_connection(engine_id, "Comprobando…")
-            worker = _AvailabilityWorker(engine_id, instance)
-            worker.signals.availability.connect(self._on_availability)
-            worker.signals.error.connect(self._on_availability_error)
-            QThreadPool.globalInstance().start(worker)
+            self._avail_task = self._check_availability(engine_id, instance)
+
+    def _check_availability(
+        self, engine_id: str, engine: Engine, on_result=None
+    ) -> PoolTask:
+        """Comprueba ``is_available()`` en segundo plano (etiquetando el motor)."""
+        handler = on_result or self._on_availability
+        return run_pool_task(
+            engine.is_available,
+            on_result=lambda ok, eid=engine_id: handler(eid, ok),
+            on_error=lambda msg, eid=engine_id: self._on_availability_error(eid, msg),
+        )
 
     def _on_availability(self, engine_id: str, ok: bool) -> None:
         if not self.isVisible():
@@ -446,10 +414,9 @@ class EnginesDialog(QDialog):
             return
         self._set_connection(engine_id, "Comprobando…")
         self._status.setText(f"Probando conexión de '{engine_id}'…")
-        worker = _AvailabilityWorker(engine_id, instance)
-        worker.signals.availability.connect(self._on_test_result)
-        worker.signals.error.connect(self._on_availability_error)
-        QThreadPool.globalInstance().start(worker)
+        self._avail_task = self._check_availability(
+            engine_id, instance, on_result=self._on_test_result
+        )
 
     def _on_test_result(self, engine_id: str, ok: bool) -> None:
         if not self.isVisible():
@@ -471,10 +438,11 @@ class EnginesDialog(QDialog):
             QMessageBox.warning(self, "Ver modelos", f"No se pudo construir el motor '{engine_id}'.")
             return
         self._status.setText(f"Obteniendo modelos de '{engine_id}'…")
-        worker = _ModelsWorker(engine_id, instance)
-        worker.signals.models.connect(self._on_models)
-        worker.signals.error.connect(self._on_models_error)
-        QThreadPool.globalInstance().start(worker)
+        self._models_task = run_pool_task(
+            instance.list_models,
+            on_result=lambda models, eid=engine_id: self._on_models(eid, models),
+            on_error=lambda msg, eid=engine_id: self._on_models_error(eid, msg),
+        )
 
     def _on_models(self, engine_id: str, models: list) -> None:
         if not self.isVisible():

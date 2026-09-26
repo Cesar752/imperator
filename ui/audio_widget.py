@@ -6,7 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from PyQt6.QtCore import QThread, QUrl, pyqtSignal
+from PyQt6.QtCore import QUrl
 from PyQt6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -36,6 +36,7 @@ except ImportError:  # pragma: no cover - dependencia declarada en requirements.
     imageio_ffmpeg = None
 
 from engines.base_engine import Engine, EngineError
+from ui.workers import ThreadWorker
 
 logger = logging.getLogger(__name__)
 
@@ -51,11 +52,12 @@ _VOICE_KEYS = {"piper": "audio_voice_piper", "kokoro": "audio_voice_kokoro"}
 _DEFAULT_VOICES = {"piper": "es_ES-davefx-medium", "kokoro": "ef_dora"}
 
 
-class AudioWorker(QThread):
-    """Ejecuta ``engine.synthesize()`` fuera del hilo de la UI."""
+class AudioWorker(ThreadWorker):
+    """Ejecuta ``engine.synthesize()`` fuera del hilo de la UI.
 
-    audio_ready = pyqtSignal(str)   # ruta del WAV generado
-    failed = pyqtSignal(str)
+    Piper/Kokoro son bloqueantes (no se pueden interrumpir a mitad): la
+    comprobación de cancelación antes/después la aporta ``ThreadWorker``.
+    """
 
     def __init__(self, engine, text, voice, speed, parent=None) -> None:
         super().__init__(parent)
@@ -64,25 +66,8 @@ class AudioWorker(QThread):
         self._voice = voice
         self._speed = speed
 
-    def run(self) -> None:
-        # Piper/Kokoro son bloqueantes: no se pueden interrumpir a mitad de la
-        # síntesis. Se comprueba antes de empezar y al terminar, para no marcar
-        # como listo un audio que el usuario canceló mientras se generaba.
-        if self.isInterruptionRequested():
-            self.failed.emit("Cancelado por el usuario")
-            return
-        try:
-            path = self._engine.synthesize(self._text, self._voice, self._speed)
-        except EngineError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # noqa: BLE001 - red/IO inesperados
-            logger.debug("Error inesperado en AudioWorker: %r", exc, exc_info=True)
-            self.failed.emit(f"Error inesperado: {exc}")
-        else:
-            if self.isInterruptionRequested():
-                self.failed.emit("Cancelado por el usuario")
-            else:
-                self.audio_ready.emit(str(path))
+    def work(self) -> str:
+        return str(self._engine.synthesize(self._text, self._voice, self._speed))
 
 
 class AudioWidget(QWidget):
@@ -269,7 +254,7 @@ class AudioWidget(QWidget):
         self._set_status("Generando voz...")
 
         self._worker = AudioWorker(self._engine, text, voice, speed, self)
-        self._worker.audio_ready.connect(self._on_audio_ready)
+        self._worker.result.connect(self._on_audio_ready)
         self._worker.failed.connect(self._on_error)
         self._worker.finished.connect(self._on_finished)
         self._worker.start()
