@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core.api_manager import ApiManager
 from core.engine_manager import EngineManager
 from core.paths import ASSETS
 from core.task_manager import TaskManager
@@ -31,10 +32,14 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("PlataformaIA")
+        self.setWindowTitle("Imperator")
         self._apply_window_icon()
         self.resize(1280, 720)
         self._engine_manager = EngineManager()
+        self._api_manager = ApiManager(self._engine_manager.config_manager)
+        logger.info(
+            "APIs externas configuradas: %d", len(self._api_manager.list_apis())
+        )
         self._task_manager = TaskManager(self._engine_manager)
         # Índice de pestaña -> motor cuyo modelo se descarga al abandonarla. Se
         # deriva del registro de tareas (Task.engine_id) para no duplicar aquí

@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from engines.base_engine import Engine, EngineError
+from engines.base_engine import ChatEngine, EngineError
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class ChatWorker(QThread):
     failed = pyqtSignal(str)
 
     def __init__(
-        self, engine: Engine, messages: list[dict], model: str | None, parent=None
+        self, engine: ChatEngine, messages: list[dict], model: str | None, parent=None
     ) -> None:
         super().__init__(parent)
         self._engine = engine
@@ -57,7 +57,7 @@ class _ModelDetailsWorker(QRunnable):
     el arranque de la pestaña de Chat.
     """
 
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: ChatEngine) -> None:
         super().__init__()
         self._engine = engine
         self.signals = _ModelDetailsSignals()
@@ -74,9 +74,9 @@ class _ModelDetailsWorker(QRunnable):
 class ChatWidget(QWidget):
     """Área de conversación, indicador de actividad, input y botón Enviar."""
 
-    def __init__(self, engine: Engine, config_manager=None, parent=None) -> None:
+    def __init__(self, engine: ChatEngine, config_manager=None, parent=None) -> None:
         super().__init__(parent)
-        self._engine: Engine | None = engine
+        self._engine: ChatEngine | None = engine
         self._config_manager = config_manager
         # TODO(fase 5): limitar el historial a N mensajes.
         self._messages: list[dict] = []
@@ -118,7 +118,7 @@ class ChatWidget(QWidget):
         self._input.returnPressed.connect(self._send_message)
         self._send_button.clicked.connect(self._send_message)
 
-    def set_engine(self, engine: Engine | None) -> None:
+    def set_engine(self, engine: ChatEngine | None) -> None:
         """Cambia el motor activo. Limpia el historial y el área."""
         self._engine = engine
         self._messages.clear()
