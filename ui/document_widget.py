@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 )
 
 from engines.base_engine import Engine, EngineError
+from services import document_params as dp
 from services import preferences as prefs
 from ui.workers import ThreadWorker, run_pool_task
 
@@ -32,45 +33,6 @@ try:
     import pymupdf
 except ImportError:  # pragma: no cover - dependencia declarada en requirements.txt
     pymupdf = None
-
-# Formatos de imagen soportados (además de PDF).
-IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tiff", ".tif")
-
-# Filtro del selector de archivo.
-FILE_FILTER = "Documentos (*.pdf *.png *.jpg *.jpeg *.bmp *.webp *.tiff *.tif)"
-
-# Modelo por defecto (fallback si /api/tags no responde o no hay modelos de visión).
-DEFAULT_MODEL = "qwen3-vl:8b"
-
-# Prompts por modo.
-PROMPTS = {
-    "ocr": (
-        "Extract and transcribe all visible text from this image. Preserve the "
-        "original layout, line breaks, and the original language. Do NOT translate. "
-        "Do not add any commentary or explanations."
-    ),
-    "resumen": (
-        "Summarize the content of this document in 3-5 sentences. Focus on the "
-        "key information and main points."
-    ),
-    "tablas": (
-        "Extract all tables from this image and return them as HTML tables. "
-        "If there is no table, return 'No tables found'."
-    ),
-}
-
-# Etiquetas legibles por modo.
-MODE_LABELS = {
-    "ocr": "OCR",
-    "resumen": "Resumen",
-    "tablas": "Extraer tablas",
-}
-
-# DPI al rasterizar páginas de PDF para OCR.
-_PDF_DPI = 200
-
-# Mínimo de caracteres de texto nativo para saltarse el OCR de una página.
-_TEXT_THRESHOLD = 50
 
 
 class DocumentWorker(ThreadWorker):
@@ -86,8 +48,8 @@ class DocumentWorker(ThreadWorker):
         self._model = model
 
     def work(self) -> str:
-        prompt = PROMPTS.get(self._mode, PROMPTS["ocr"])
-        if self._file_path.suffix.lower() == ".pdf":
+        prompt = dp.prompt_for(self._mode)
+        if dp.is_pdf(self._file_path.suffix):
             return self._process_pdf(prompt)
         return self._process_image(prompt)
 
@@ -109,7 +71,7 @@ class DocumentWorker(ThreadWorker):
                     raise EngineError("Cancelado por el usuario")
                 self.page_progress.emit(index + 1, total)
                 text = (page.get_text() or "").strip()
-                if len(text) > _TEXT_THRESHOLD:
+                if dp.has_native_text(text):
                     blocks.append(f"--- Página {index + 1} (texto) ---\n\n{text}")
                 else:
                     ocr = self._ocr_page(page, prompt)
@@ -120,7 +82,7 @@ class DocumentWorker(ThreadWorker):
 
     def _ocr_page(self, page, prompt: str) -> str:
         """Rasteriza una página a PNG (200 DPI) y la pasa al motor de visión."""
-        png = page.get_pixmap(dpi=_PDF_DPI).tobytes("png")
+        png = page.get_pixmap(dpi=dp.PDF_DPI).tobytes("png")
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as fh:
             fh.write(png)
             tmp_path = Path(fh.name)
@@ -160,7 +122,7 @@ class DocumentWidget(QWidget):
         file_row.addWidget(self._preview_label, 1)
 
         self._mode = QComboBox()
-        for mode_id, label in MODE_LABELS.items():
+        for mode_id, label in dp.MODE_LABELS.items():
             self._mode.addItem(label, mode_id)
         self._mode.currentIndexChanged.connect(self._on_mode_changed)
 
@@ -214,7 +176,7 @@ class DocumentWidget(QWidget):
 
     def _select_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Seleccionar documento", "", FILE_FILTER
+            self, "Seleccionar documento", "", dp.FILE_FILTER
         )
         if not path:
             return
@@ -223,28 +185,9 @@ class DocumentWidget(QWidget):
         self._reset_result()
 
     def _show_preview(self, path: Path) -> None:
-        suffix = path.suffix.lower()
-        if suffix == ".pdf":
-            tipo = "PDF"
-        elif suffix in IMAGE_EXTENSIONS:
-            tipo = "Imagen"
-        else:
-            tipo = suffix.lstrip(".").upper() or "Archivo"
-        size = path.stat().st_size
         self._preview_label.setText(
-            f"{path.name} · {tipo} · {self._human_size(size)}"
+            dp.describe_file(path.name, path.suffix, path.stat().st_size)
         )
-
-    @staticmethod
-    def _human_size(num: int) -> str:
-        value = float(num)
-        for unit in ("B", "KB", "MB", "GB"):
-            if value < 1024 or unit == "GB":
-                if unit == "B":
-                    return f"{int(value)} B"
-                return f"{value:.1f} {unit}"
-            value /= 1024
-        return f"{value:.1f} GB"
 
     # ---- Modelos y persistencia -----------------------------------
 
@@ -254,7 +197,7 @@ class DocumentWidget(QWidget):
         self._model.clear()
         self._model.blockSignals(False)
         if self._engine is None:
-            self._model.addItem(DEFAULT_MODEL, DEFAULT_MODEL)
+            self._model.addItem(dp.DEFAULT_MODEL, dp.DEFAULT_MODEL)
             return
         self._model.setEnabled(False)
         self._model.addItem("Cargando modelos…")
@@ -273,7 +216,7 @@ class DocumentWidget(QWidget):
         """Rellena el selector con los modelos recibidos (o con el default)."""
         models = list(models)
         if not models:
-            models = [DEFAULT_MODEL]
+            models = [dp.DEFAULT_MODEL]
         self._model.blockSignals(True)
         self._model.clear()
         for model_id in models:
@@ -281,8 +224,8 @@ class DocumentWidget(QWidget):
         last = self._prefs.get_str(prefs.DOCUMENT)
         if last in models:
             self._model.setCurrentIndex(models.index(last))
-        elif DEFAULT_MODEL in models:
-            self._model.setCurrentIndex(models.index(DEFAULT_MODEL))
+        elif dp.DEFAULT_MODEL in models:
+            self._model.setCurrentIndex(models.index(dp.DEFAULT_MODEL))
         self._model.blockSignals(False)
         self._model.setEnabled(True)
 

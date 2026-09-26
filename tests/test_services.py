@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import assembler_params as ap  # noqa: E402
 from services import audio_params as audio  # noqa: E402
+from services import document_params as dp  # noqa: E402
 from services import image_params as ip  # noqa: E402
 from services import preferences as prefs  # noqa: E402
 from services import video_params as vp  # noqa: E402
@@ -178,6 +179,51 @@ class AudioParamsTest(unittest.TestCase):
     def test_resolve_voice_none_without_voices(self) -> None:
         self.assertIsNone(audio.resolve_voice("piper", None, []))
         self.assertIsNone(audio.resolve_voice(None, None, []))
+
+
+class DocumentParamsTest(unittest.TestCase):
+    def test_prompt_for_known_modes(self) -> None:
+        for mode_id in dp.MODE_LABELS:
+            self.assertIn(mode_id, dp.PROMPTS)
+            self.assertEqual(dp.prompt_for(mode_id), dp.PROMPTS[mode_id])
+
+    def test_prompt_for_unknown_mode_falls_back_to_ocr(self) -> None:
+        self.assertEqual(dp.prompt_for("desconocido"), dp.PROMPTS["ocr"])
+        self.assertEqual(dp.prompt_for(None), dp.PROMPTS["ocr"])
+
+    def test_file_kind(self) -> None:
+        self.assertEqual(dp.file_kind(".PDF"), "PDF")
+        self.assertEqual(dp.file_kind(".png"), "Imagen")
+        self.assertEqual(dp.file_kind(".docx"), "DOCX")
+        self.assertEqual(dp.file_kind(""), "Archivo")
+
+    def test_human_size(self) -> None:
+        self.assertEqual(dp.human_size(512), "512 B")
+        self.assertEqual(dp.human_size(2048), "2.0 KB")
+        self.assertEqual(dp.human_size(5 * 1024**2), "5.0 MB")
+
+    def test_describe_file(self) -> None:
+        self.assertEqual(
+            dp.describe_file("informe.pdf", ".pdf", 2048),
+            "informe.pdf · PDF · 2.0 KB",
+        )
+
+    def test_has_native_text_respects_threshold(self) -> None:
+        self.assertTrue(dp.has_native_text("x" * (dp.TEXT_THRESHOLD + 1)))
+        self.assertFalse(dp.has_native_text("x" * dp.TEXT_THRESHOLD))
+        self.assertFalse(dp.has_native_text(""))
+
+    def test_is_pdf_ignores_case(self) -> None:
+        self.assertTrue(dp.is_pdf(".pdf"))
+        self.assertTrue(dp.is_pdf(".PDF"))
+        self.assertFalse(dp.is_pdf(".png"))
+
+    def test_file_filter_covers_extensions(self) -> None:
+        self.assertIn("*.pdf", dp.FILE_FILTER)
+        for ext in dp.IMAGE_EXTENSIONS:
+            self.assertTrue(ext.startswith("."))
+            self.assertEqual(ext, ext.lower())
+            self.assertIn(f"*{ext}", dp.FILE_FILTER)
 
 
 if __name__ == "__main__":
