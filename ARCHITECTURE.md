@@ -45,7 +45,9 @@ C:\Imperator\
 ├── ARCHITECTURE.md         # Este documento
 ├── PLAN.md                 # Histórico de decisiones (parcialmente obsoleto)
 ├── README.md
-├── requirements.txt
+├── requirements.txt        # Runtime (incluye los motores locales pesados)
+├── requirements-test.txt   # Mínimo para tests/CI (sin motores pesados)
+├── pyrightconfig.json      # Config del analizador (extraPaths + venv)
 ├── .gitignore
 ├── core/                   # Núcleo (sin Qt, salvo task_manager)
 │   ├── config_manager.py   # Lectura/escritura de config/*.json + validación
@@ -75,12 +77,23 @@ C:\Imperator\
 ├── ui/                     # Un widget por tarea
 │   ├── main_window.py      # Ventana principal (QTabWidget + menú de motores)
 │   ├── engines_dialog.py   # Gestión CRUD de motores
+│   ├── task_widget.py      # Base común: estado y ciclo de vida del worker
+│   ├── workers.py          # ThreadWorker / PoolTask (QThread, QThreadPool)
 │   ├── chat_widget.py
 │   ├── document_widget.py
 │   ├── image_widget.py
 │   ├── video_widget.py
 │   ├── audio_widget.py
 │   └── assembler_widget.py
+├── services/               # Lógica pura sin Qt, extraída de los widgets
+│   ├── assembler_params.py # Presets y estilos del Ensamblador
+│   ├── audio_params.py     # Motores TTS, rango de velocidad y voces
+│   ├── chat_params.py      # Ventana de historial que se envía al motor
+│   ├── document_params.py  # Formatos, prompts y helpers de documentos
+│   ├── image_params.py     # Presets y parámetros de imagen
+│   ├── preferences.py      # Preferencias tipadas (PrefsStore + dataclasses)
+│   ├── system_stats.py     # Sondeo de /system_stats de ComfyUI
+│   └── video_params.py     # Presets y parámetros de vídeo
 ├── config/                 # Config real (gitignored) + plantillas (versionadas)
 │   ├── engines.json        # Motores (real)
 │   ├── apis.json           # APIs externas (aún sin usar)
@@ -228,6 +241,11 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
 
 - Un motor = un archivo en `engines/`.
 - Una tarea = un archivo en `tasks/` + un widget en `ui/`.
+- La lógica pura (presets, validaciones, preferencias, cálculos) vive en
+  `services/`, sin Qt, para poder testearla sin GUI.
+- Los widgets de tarea heredan de `ui/task_widget.py` y declaran sus controles
+  en `_busy_widgets()`/`_busy_only_widgets()` en vez de reimplementar
+  `_set_busy()`; usan `engines.base_engine.CANCEL_MESSAGE` para la cancelación.
 - Un cambio = un commit.
 - Verificación automática: `python -m compileall -q .` +
   `python -m unittest discover -s tests` (CI en `.github/workflows/ci.yml`).
@@ -246,8 +264,16 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   (`config/*.json`) y se descartó el intento de config unificada
   (`~/.imperator/config.json`).
 - `bfl` incluido en `DEFAULT_ENGINES` (antes solo existía en el factory).
-- Suite de tests (stdlib `unittest`) + CI en GitHub Actions. Incluye un smoke
-  test de la `MainWindow` opt-in (`IMPERATOR_GUI_SMOKE=1`), que el CI activa.
+- Suite de tests (stdlib `unittest`, 154 tests) + CI en GitHub Actions. Incluye
+  un smoke test de la `MainWindow` opt-in (`IMPERATOR_GUI_SMOKE=1`), que el CI
+  activa.
+- El CI instala `requirements-test.txt` (PyQt6, requests, python-dotenv, numpy),
+  no todo `requirements.txt`: los imports de los motores pesados están
+  protegidos con `try/except ImportError`.
+- `CANCEL_MESSAGE` es única (`engines/base_engine.py`) para motores y widgets,
+  con un test-guarda que impide volver a duplicar el literal.
+- Las llamadas a `ffmpeg` (`core/video_assembler.py`) llevan `timeout` y kill:
+  un ffmpeg atascado ya no puede colgar el hilo del worker.
 - Motores divididos por familias (`Chat`/`Vision`/`Image`/`Video`/`Audio`/
   `Transcription`) en `engines/base_engine.py`.
 - `ApiManager` (`core/api_manager.py`) da un consumidor real a `apis.json`.
