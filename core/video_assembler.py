@@ -32,6 +32,14 @@ _DEFAULT_STYLE = {
     "outline": 2,
 }
 
+# Timeouts de ffmpeg (segundos). Sin ellos, un ffmpeg atascado bloquea el hilo
+# del worker para siempre y la cancelación de la UI no sirve de nada:
+# ``subprocess.run`` mata el proceso al expirar y relanza ``TimeoutExpired``.
+PROBE_TIMEOUT = 30
+CONCAT_TIMEOUT = 600
+ENCODE_TIMEOUT_MIN = 600
+ENCODE_TIMEOUT_FACTOR = 20
+
 
 class VideoAssembler:
     """Servicio que ensambla un MP4 final (vídeo + audio + subtítulos).
@@ -70,7 +78,12 @@ class VideoAssembler:
                 [ffmpeg, "-hide_banner", "-i", str(path)],
                 capture_output=True,
                 text=True,
+                timeout=PROBE_TIMEOUT,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise EngineError(
+                f"ffmpeg no respondió al inspeccionar el fichero ({PROBE_TIMEOUT} s)."
+            ) from exc
         except OSError as exc:
             raise EngineError(f"No se pudo ejecutar ffmpeg para inspeccionar: {exc}") from exc
 
@@ -162,7 +175,7 @@ class VideoAssembler:
             music_offset_ms,
         )
         try:
-            self._run(cmd)
+            self._run(cmd, self._encode_timeout(video_path))
         finally:
             if ass_path is not None:
                 ass_path.unlink(missing_ok=True)
@@ -217,7 +230,7 @@ class VideoAssembler:
             str(output_path),
         ]
         try:
-            self._run(cmd)
+            self._run(cmd, CONCAT_TIMEOUT)
         finally:
             list_path.unlink(missing_ok=True)
 
@@ -419,10 +432,30 @@ class VideoAssembler:
         parts.append(amix)
         return ";".join(parts)
 
+    def _encode_timeout(self, video_path: Path) -> float:
+        """Timeout del ensamblaje: margen fijo + factor por segundo de vídeo.
+
+        Sin duración detectable se usa solo el margen fijo: es holgado para
+        clips cortos y evita esperas infinitas con ficheros corruptos.
+        """
+        duration = self.probe(video_path).get("duration")
+        if duration is None:
+            return float(ENCODE_TIMEOUT_MIN)
+        return max(float(ENCODE_TIMEOUT_MIN), duration * ENCODE_TIMEOUT_FACTOR)
+
     @staticmethod
-    def _run(cmd: list[str]) -> None:
+    def _run(cmd: list[str], timeout: float) -> None:
+        """Ejecuta ffmpeg con ``timeout`` (mata el proceso y eleva error al pasar).
+
+        ``subprocess.run`` envía ``kill()`` al hijo al expirar el tiempo, así que
+        un ffmpeg atascado no deja el worker colgado indefinidamente.
+        """
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True)
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise EngineError(
+                f"ffmpeg superó el tiempo máximo ({timeout:.0f} s) y se canceló."
+            ) from exc
         except OSError as exc:
             raise EngineError(f"No se pudo ejecutar ffmpeg: {exc}") from exc
         if proc.returncode != 0:

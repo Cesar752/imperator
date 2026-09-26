@@ -42,6 +42,10 @@ from ui.workers import ThreadWorker
 
 logger = logging.getLogger(__name__)
 
+# Timeout de la conversión a MP3 (ffmpeg -q:a 2): holgado, pero finito, para que
+# un ffmpeg atascado no bloquee el hilo del worker.
+_MP3_TIMEOUT = 300
+
 
 class AudioWorker(ThreadWorker):
     """Ejecuta ``engine.synthesize()`` fuera del hilo de la UI.
@@ -318,6 +322,7 @@ class AudioWidget(QWidget):
             ],
             check=True,
             capture_output=True,
+            timeout=_MP3_TIMEOUT,
         )
 
     # ---- Utilidades ----------------------------------------------

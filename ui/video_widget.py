@@ -45,6 +45,9 @@ from ui.workers import ThreadWorker, run_pool_task
 
 logger = logging.getLogger(__name__)
 
+# Timeout del sondeo de duración del audio (ffmpeg -i), para no colgar el hilo.
+_AUDIO_PROBE_TIMEOUT = 30
+
 
 class VideoWorker(ThreadWorker):
     """Ejecuta ``engine.generate_video()`` fuera del hilo de la UI."""
@@ -324,6 +327,7 @@ class VideoWidget(QWidget):
                 [ffmpeg, "-i", str(path), "-hide_banner"],
                 capture_output=True,
                 text=True,
+                timeout=_AUDIO_PROBE_TIMEOUT,
             )
         except Exception as exc:  # noqa: BLE001 - binario ausente o fallo de ejecución
             logger.debug("No se pudo sondear la duración del audio: %r", exc)
