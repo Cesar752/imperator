@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 from core.video_assembler import VideoAssembler
 from engines.base_engine import Engine, EngineError
 from engines.whisper_engine import WHISPER_MODELS
+from services import assembler_params as asp
 from ui.workers import ThreadWorker
 
 logger = logging.getLogger(__name__)
@@ -32,28 +33,6 @@ logger = logging.getLogger(__name__)
 # Filtros de diálogo de archivos.
 VIDEO_FILTER = "Vídeo (*.mp4)"
 AUDIO_FILTER = "Audio (*.wav *.mp3 *.m4a *.ogg *.flac)"
-
-# Idiomas disponibles para la transcripción (código -> etiqueta).
-_LANGUAGES = [
-    ("auto", "Auto"),
-    ("es", "Español"),
-    ("en", "Inglés"),
-    ("eu", "Euskera"),
-    ("fr", "Francés"),
-    ("de", "Alemán"),
-    ("it", "Italiano"),
-    ("pt", "Portugués"),
-]
-
-# Posición y color de los subtítulos (clave interna -> etiqueta).
-_POSITIONS = [("bottom", "Abajo"), ("middle", "Centro"), ("top", "Arriba")]
-_COLORS = [("white", "Blanco"), ("yellow", "Amarillo"), ("green", "Verde")]
-
-# Diferencia de duración (s) a partir de la cual se avisa al usuario.
-_DURATION_GAP_WARNING = 2.0
-
-# Grosor del contorno del subtítulo (px), fijo por ahora (no expuesto en la UI).
-_DEFAULT_OUTLINE = 2
 
 # Carpeta de biblioteca de música de fondo (el usuario mete sus MP3 aquí).
 MUSIC_DIR = Path(__file__).resolve().parent.parent / "music"
@@ -260,7 +239,7 @@ class AssemblerWidget(QWidget):
         self._model_combo.currentIndexChanged.connect(self._on_model_changed)
 
         self._language_combo = QComboBox()
-        for code, label in _LANGUAGES:
+        for code, label in asp.LANGUAGES:
             self._language_combo.addItem(label, code)
         self._language_combo.currentIndexChanged.connect(self._on_language_changed)
 
@@ -274,12 +253,12 @@ class AssemblerWidget(QWidget):
         self._fontsize.valueChanged.connect(self._on_fontsize_changed)
 
         self._position_combo = QComboBox()
-        for key, label in _POSITIONS:
+        for key, label in asp.POSITIONS:
             self._position_combo.addItem(label, key)
         self._position_combo.currentIndexChanged.connect(self._on_position_changed)
 
         self._color_combo = QComboBox()
-        for key, label in _COLORS:
+        for key, label in asp.COLORS:
             self._color_combo.addItem(label, key)
         self._color_combo.currentIndexChanged.connect(self._on_color_changed)
 
@@ -382,16 +361,9 @@ class AssemblerWidget(QWidget):
         self._check_duration_gap()
 
     def _check_duration_gap(self) -> None:
-        video = self._video_duration
-        audio = self._audio_duration
-        if video is None or audio is None:
-            return
-        if abs(video - audio) > _DURATION_GAP_WARNING:
-            self._set_status(
-                f"Aviso: el audio dura {audio:.1f} s y el vídeo {video:.1f} s. "
-                "El vídeo es el maestro: el audio se cortará o completará con "
-                "silencio para ajustarse a su duración."
-            )
+        message = asp.duration_gap_message(self._video_duration, self._audio_duration)
+        if message is not None:
+            self._set_status(message)
 
     # ---- Ensamblado ----------------------------------------------
 
@@ -411,12 +383,11 @@ class AssemblerWidget(QWidget):
             self._set_status("Whisper no está disponible.")
             return
 
-        subtitle_style = {
-            "fontsize": self._fontsize.value(),
-            "position": self._position_combo.currentData(),
-            "color": self._color_combo.currentData(),
-            "outline": _DEFAULT_OUTLINE,
-        }
+        subtitle_style = asp.build_subtitle_style(
+            self._fontsize.value(),
+            self._position_combo.currentData(),
+            self._color_combo.currentData(),
+        )
 
         music_path = self._music_combo.currentData()
         music_volume = self._music_volume.value() / 100.0
@@ -433,7 +404,7 @@ class AssemblerWidget(QWidget):
                 self._set_status(f"No se pudo inspeccionar el vídeo: {exc}")
                 return
         if video_duration is not None:
-            if self._audio_path and voice_offset > video_duration - 0.5:
+            if self._audio_path and asp.offset_too_late(voice_offset, video_duration):
                 self._set_status(
                     f"Aviso: el inicio de la voz ({voice_offset:.1f}s) supera la "
                     f"duración del vídeo ({video_duration:.1f}s). La voz no se "
@@ -441,7 +412,7 @@ class AssemblerWidget(QWidget):
                     "continuar."
                 )
                 return
-            if music_path and music_offset > video_duration - 0.5:
+            if music_path and asp.offset_too_late(music_offset, video_duration):
                 self._set_status(
                     f"Aviso: el inicio de la música ({music_offset:.1f}s) supera "
                     f"la duración del vídeo ({video_duration:.1f}s). La música no "

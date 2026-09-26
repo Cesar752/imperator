@@ -39,6 +39,7 @@ from PyQt6.QtWidgets import (
 
 from core.video_assembler import VideoAssembler
 from engines.base_engine import Engine, EngineError
+from services import video_params as vp
 from ui.workers import ThreadWorker, run_pool_task
 
 logger = logging.getLogger(__name__)
@@ -103,26 +104,6 @@ class VideoWorker(ThreadWorker):
 
 class VideoWidget(QWidget):
     """Formulario de generación de vídeo con barra de progreso y salida MP4."""
-
-    # Presets: id -> (label, width, height, duración_s, tooltip).
-    _PRESETS = {
-        "rapido": ("Rápido", 832, 480, 2, "832×480 · 2 s (~69 s)"),
-        "equilibrado": ("Equilibrado", 832, 480, 4, "832×480 · 4 s (~140 s)"),
-        "calidad": ("Calidad", 1024, 576, 5, "1024×576 · 5 s (~250 s)"),
-        "tiktok_rapido": ("TikTok Rápido", 480, 832, 2, "480×832 · 2 s (~55 s)"),
-        "tiktok_calidad": ("TikTok Calidad", 720, 1280, 3, "720×1280 · 3 s (~120 s)"),
-        "tiktok_alto": ("TikTok Alto", 896, 1600, 4, "896×1600 · 4 s (~200 s, mucha VRAM)"),
-    }
-
-    # Orden de visualización de cada grupo.
-    _HORIZONTAL_KEYS = ("rapido", "equilibrado", "calidad")
-    _VERTICAL_KEYS = ("tiktok_rapido", "tiktok_calidad", "tiktok_alto")
-
-    # Etiquetas de los modos (clave del workflow -> texto legible).
-    _MODE_LABELS = {
-        "t2v": "Texto a vídeo",
-        "i2v": "Imagen a vídeo",
-    }
 
     _PREVIEW_SIZE = 256
 
@@ -193,7 +174,7 @@ class VideoWidget(QWidget):
         self._seed.setEnabled(False)
 
         self._preset_buttons: dict[str, QPushButton] = {}
-        for key, (label, _w, _h, _dur, tooltip) in self._PRESETS.items():
+        for key, (label, _w, _h, _dur, tooltip) in vp.PRESETS.items():
             btn = QPushButton(label)
             btn.setToolTip(tooltip)
             btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -242,12 +223,12 @@ class VideoWidget(QWidget):
         self._status = QLabel("")
 
         horizontal_row = QHBoxLayout()
-        for key in self._HORIZONTAL_KEYS:
+        for key in vp.HORIZONTAL_KEYS:
             horizontal_row.addWidget(self._preset_buttons[key])
         horizontal_row.addStretch(1)
 
         vertical_row = QHBoxLayout()
-        for key in self._VERTICAL_KEYS:
+        for key in vp.VERTICAL_KEYS:
             vertical_row.addWidget(self._preset_buttons[key])
         vertical_row.addStretch(1)
 
@@ -304,7 +285,7 @@ class VideoWidget(QWidget):
         self._update_image_section()
 
     def _apply_preset(self, key: str) -> None:
-        label, width, height, duration, _tooltip = self._PRESETS[key]
+        label, width, height, duration, _tooltip = vp.PRESETS[key]
         self._width.setValue(width)
         self._height.setValue(height)
         self._duration.setValue(duration)
@@ -377,34 +358,26 @@ class VideoWidget(QWidget):
                 self._set_status("Escribe un prompt.")
                 return
 
-        # length = duración * fps (+1 para el último frame).
-        length = round(self._duration.value() * self._fps.value()) + 1
-        params = {
-            "negative_prompt": self._negative_prompt.text().strip(),
-            "width": self._width.value(),
-            "height": self._height.value(),
-            "length": length,
-            "fps": self._fps.value(),
-            "model": mode,
-        }
-        if mode == "i2v":
-            if len(photos) == 1:
-                params["image_path"] = photos[0]["path"]
-                params["prompt"] = photos[0]["prompt"]
-            else:
-                params["image_paths"] = [p["path"] for p in photos]
-                params["prompts"] = [p["prompt"] for p in photos]
-        else:
-            params["image_path"] = None
-            params["prompt"] = prompt
+        seed = None
         if not self._random_seed.isChecked():
             try:
-                params["seed"] = int(self._seed.text().strip())
+                seed = vp.parse_seed(self._seed.text())
             except ValueError:
                 self._set_status(
                     "Seed inválido: usa un número entero o marca 'Aleatorio'."
                 )
                 return
+        params = vp.build_generate_params(
+            mode=mode,
+            negative_prompt=self._negative_prompt.text().strip(),
+            width=self._width.value(),
+            height=self._height.value(),
+            duration=self._duration.value(),
+            fps=self._fps.value(),
+            prompt=prompt,
+            photos=photos,
+            seed=seed,
+        )
 
         set_timeout = getattr(self._engine, "set_timeout", None)
         if callable(set_timeout):
@@ -483,7 +456,7 @@ class VideoWidget(QWidget):
         self._mode.clear()
         if self._engine is not None:
             for model_id in self._engine.list_models():
-                self._mode.addItem(self._MODE_LABELS.get(model_id, model_id), model_id)
+                self._mode.addItem(vp.MODE_LABELS.get(model_id, model_id), model_id)
         last = None
         if self._config_manager is not None:
             last = self._config_manager.load_last_models().get("video")

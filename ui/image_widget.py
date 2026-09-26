@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
 )
 
 from engines.base_engine import Engine
+from services import image_params as ip
 from ui.workers import ThreadWorker, run_pool_task
 
 logger = logging.getLogger(__name__)
@@ -46,32 +47,6 @@ class ImageWorker(ThreadWorker):
 
 class ImageWidget(QWidget):
     """Formulario de generación con preview de la imagen resultante."""
-
-    # Presets: clave -> (label, width, height, tooltip).
-    _PRESETS = {
-        "vertical": ("Vertical 9:16", 768, 1344, "768×1344 · vertical para TikTok/Reels"),
-        "cuadrado": ("Cuadrado 1:1", 1024, 1024, "1024×1024 · default"),
-        "horizontal": ("Horizontal 16:9", 1344, 768, "1344×768 · panorámico"),
-    }
-
-    # Modelos que REQUIEREN una imagen de referencia (solo edición de imagen).
-    _REQUIRED_REFERENCE_MODELS = {
-        "flux_kontext",        # ComfyUI local (gratis)
-        "flux-kontext-pro",    # BFL (pago)
-        "flux-kontext-max",    # BFL (pago)
-    }
-
-    # Modelos con referencia OPCIONAL: con foto editan, sin foto crean desde cero.
-    _OPTIONAL_REFERENCE_MODELS = {
-        "flux-2-pro",          # BFL (pago)
-    }
-
-    # Etiquetas legibles para los modelos de la API de pago.
-    _BFL_LABELS = {
-        "flux-kontext-pro": "FLUX.1 Kontext Pro",
-        "flux-kontext-max": "FLUX.1 Kontext Max",
-        "flux-2-pro": "FLUX.2 Pro",
-    }
 
     def __init__(
         self,
@@ -120,7 +95,7 @@ class ImageWidget(QWidget):
         self._height.setValue(1024)
 
         self._preset_buttons: dict[str, QPushButton] = {}
-        for key, (label, _w, _h, tooltip) in self._PRESETS.items():
+        for key, (label, _w, _h, tooltip) in ip.PRESETS.items():
             btn = QPushButton(label)
             btn.setToolTip(tooltip)
             btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -157,7 +132,7 @@ class ImageWidget(QWidget):
         self._preview.setMinimumSize(480, 320)
 
         presets_row = QHBoxLayout()
-        for key in self._PRESETS:
+        for key in ip.PRESETS:
             presets_row.addWidget(self._preset_buttons[key])
         presets_row.addStretch(1)
 
@@ -216,7 +191,7 @@ class ImageWidget(QWidget):
             if engine is None:
                 continue
             for model_id in engine.list_models():
-                self._model.addItem(self._display_model(model_id, engine_id), model_id)
+                self._model.addItem(ip.display_model(model_id, engine_id), model_id)
                 self._model_engine[model_id] = engine_id
         last = None
         if self._config_manager is not None:
@@ -226,13 +201,6 @@ class ImageWidget(QWidget):
             self._model.setCurrentIndex(index)
         self._model.blockSignals(False)
         self._update_ref_enabled()
-
-    @classmethod
-    def _display_model(cls, model_id: str, engine_id: str = "") -> str:
-        if engine_id == "bfl":
-            label = cls._BFL_LABELS.get(model_id, model_id)
-            return f"{label} · PAGO"
-        return model_id.replace("_", " ").title()
 
     def _on_model_changed(self) -> None:
         if self._config_manager is not None and self._model.currentData():
@@ -273,8 +241,8 @@ class ImageWidget(QWidget):
 
     def _update_ref_enabled(self, busy: bool = False) -> None:
         model = self._model.currentData()
-        required = model in self._REQUIRED_REFERENCE_MODELS
-        optional = model in self._OPTIONAL_REFERENCE_MODELS
+        required = ip.requires_reference(model)
+        optional = ip.optional_reference(model)
         enabled = (not busy) and (required or optional)
         self._ref_image.setEnabled(enabled)
         self._ref_button.setEnabled(enabled)
@@ -299,7 +267,7 @@ class ImageWidget(QWidget):
         self._ref_image.clear()
 
     def _apply_preset(self, key: str) -> None:
-        label, width, height, _tooltip = self._PRESETS[key]
+        label, width, height, _tooltip = ip.PRESETS[key]
         self._width.setValue(width)
         self._height.setValue(height)
         self._set_status(f"Preset aplicado: {label}")
@@ -318,27 +286,28 @@ class ImageWidget(QWidget):
             return
 
         ref_path = self._ref_image.text().strip()
-        if model in self._REQUIRED_REFERENCE_MODELS and not ref_path:
+        if ip.requires_reference(model) and not ref_path:
             self._set_status("Selecciona una imagen de referencia para este modelo.")
             return
 
-        params = {
-            "prompt": prompt,
-            "negative_prompt": self._negative_prompt.text().strip(),
-            "width": self._width.value(),
-            "height": self._height.value(),
-            "steps": self._steps.value(),
-            "guidance": self._guidance.value(),
-            "model": model,
-        }
-        if ref_path:
-            params["image_path"] = ref_path
+        seed = None
         if not self._random_seed.isChecked():
             try:
-                params["seed"] = int(self._seed.text().strip())
+                seed = ip.parse_seed(self._seed.text())
             except ValueError:
                 self._set_status("Seed inválido: usa un número entero o marca 'Aleatorio'.")
                 return
+        params = ip.build_generate_params(
+            prompt=prompt,
+            negative_prompt=self._negative_prompt.text().strip(),
+            width=self._width.value(),
+            height=self._height.value(),
+            steps=self._steps.value(),
+            guidance=self._guidance.value(),
+            model=model,
+            ref_path=ref_path,
+            seed=seed,
+        )
 
         self._engine = engine
         self._set_busy(True)
