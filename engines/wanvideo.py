@@ -316,10 +316,14 @@ class WanVideoEngine(ComfyUIBaseEngine, VideoEngine):
     @staticmethod
     def _ws_error_detail(message: dict) -> str:
         data = message.get("data", {})
-        exc_type = data.get("exception_type", "")
-        exc_message = data.get("exception_message", "")
-        detail = f"{exc_type}: {exc_message}".strip()
-        return detail or "error desconocido"
+        # Solo se unen las partes presentes: con ambas vacías, el fallback
+        # "error desconocido" era inalcanzable y se devolvía un ":" suelto.
+        parts = [
+            str(part)
+            for part in (data.get("exception_type"), data.get("exception_message"))
+            if part
+        ]
+        return ": ".join(parts) or "error desconocido"
 
     def _read_output(
         self, prompt_id: str, cancel_check: Callable[[], bool] | None = None
