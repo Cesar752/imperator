@@ -4,7 +4,7 @@ import logging
 import tempfile
 from pathlib import Path
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QRunnable, QThread, QThreadPool, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -38,7 +38,7 @@ IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tiff", ".tif")
 FILE_FILTER = "Documentos (*.pdf *.png *.jpg *.jpeg *.bmp *.webp *.tiff *.tif)"
 
 # Modelo por defecto (fallback si /api/tags no responde o no hay modelos de visión).
-DEFAULT_MODEL = "qwen2.5vl:7b"
+DEFAULT_MODEL = "qwen3-vl:8b"
 
 # Prompts por modo.
 PROMPTS = {
@@ -69,6 +69,27 @@ _PDF_DPI = 200
 
 # Mínimo de caracteres de texto nativo para saltarse el OCR de una página.
 _TEXT_THRESHOLD = 50
+
+
+class _VisionModelsSignals(QObject):
+    models = pyqtSignal(list, str)  # modelos, mensaje de error ("" si ok)
+
+
+class _VisionModelsWorker(QRunnable):
+    """Obtiene los modelos de visión fuera del hilo de la UI (M5)."""
+
+    def __init__(self, engine) -> None:
+        super().__init__()
+        self._engine = engine
+        self.signals = _VisionModelsSignals()
+
+    def run(self) -> None:
+        try:
+            models = list(self._engine.list_models())
+        except Exception as exc:  # noqa: BLE001 - red/timeout/JSON inesperados
+            self.signals.models.emit([], str(exc))
+            return
+        self.signals.models.emit(models, "")
 
 
 class DocumentWorker(QThread):
@@ -151,6 +172,7 @@ class DocumentWidget(QWidget):
         self._engine = engine
         self._config_manager = config_manager
         self._worker: DocumentWorker | None = None
+        self._worker_models: _VisionModelsWorker | None = None
         self._file_path: Path | None = None
         self._result_text = ""
         self._build_ui()
@@ -258,19 +280,29 @@ class DocumentWidget(QWidget):
     # ---- Modelos y persistencia -----------------------------------
 
     def _populate_models(self) -> None:
+        """Lanza la carga de modelos de visión en segundo plano (M5)."""
         self._model.blockSignals(True)
         self._model.clear()
-        models: list[str] = []
-        if self._engine is not None:
-            try:
-                models = list(self._engine.list_models())
-            except EngineError as exc:
-                logger.warning("No se pudieron listar los modelos de visión: %s", exc)
-                self._set_status(f"Ollama Vision no disponible: {exc}")
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("Error listando modelos de visión: %r", exc, exc_info=True)
+        self._model.blockSignals(False)
+        if self._engine is None:
+            self._model.addItem(DEFAULT_MODEL, DEFAULT_MODEL)
+            return
+        self._model.setEnabled(False)
+        self._model.addItem("Cargando modelos…")
+        self._worker_models = _VisionModelsWorker(self._engine)
+        self._worker_models.signals.models.connect(self._on_models)
+        QThreadPool.globalInstance().start(self._worker_models)
+
+    def _on_models(self, models: list, error: str) -> None:
+        """Rellena el selector con los modelos recibidos (o con el default)."""
+        if error:
+            logger.warning("No se pudieron listar los modelos de visión: %s", error)
+            self._set_status(f"Ollama Vision no disponible: {error}")
+        models = list(models)
         if not models:
             models = [DEFAULT_MODEL]
+        self._model.blockSignals(True)
+        self._model.clear()
         for model_id in models:
             self._model.addItem(model_id, model_id)
         last = None
@@ -278,7 +310,10 @@ class DocumentWidget(QWidget):
             last = self._config_manager.load_last_models().get("document")
         if last in models:
             self._model.setCurrentIndex(models.index(last))
+        elif DEFAULT_MODEL in models:
+            self._model.setCurrentIndex(models.index(DEFAULT_MODEL))
         self._model.blockSignals(False)
+        self._model.setEnabled(True)
 
     def _restore_mode(self) -> None:
         if self._config_manager is None:

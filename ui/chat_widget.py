@@ -2,7 +2,7 @@
 
 import logging
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QRunnable, QThread, QThreadPool, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -46,6 +46,31 @@ class ChatWorker(QThread):
             self.reply_ready.emit(reply)
 
 
+class _ModelDetailsSignals(QObject):
+    details = pyqtSignal(list)
+
+
+class _ModelDetailsWorker(QRunnable):
+    """Obtiene los modelos de Ollama fuera del hilo de la UI (M5).
+
+    ``/api/tags`` puede tardar segundos; hacerlo en el hilo de la UI congelaba
+    el arranque de la pestaña de Chat.
+    """
+
+    def __init__(self, engine: Engine) -> None:
+        super().__init__()
+        self._engine = engine
+        self.signals = _ModelDetailsSignals()
+
+    def run(self) -> None:
+        try:
+            details = list(self._engine.list_model_details())
+        except Exception as exc:  # noqa: BLE001 - red/timeout/JSON inesperados
+            logger.debug("No se pudieron listar los modelos de Ollama: %r", exc)
+            details = []
+        self.signals.details.emit(details)
+
+
 class ChatWidget(QWidget):
     """Área de conversación, indicador de actividad, input y botón Enviar."""
 
@@ -56,6 +81,7 @@ class ChatWidget(QWidget):
         # TODO(fase 5): limitar el historial a N mensajes.
         self._messages: list[dict] = []
         self._worker: ChatWorker | None = None
+        self._model_worker: _ModelDetailsWorker | None = None
         self._build_ui()
         self._populate_models()
 
@@ -103,10 +129,21 @@ class ChatWidget(QWidget):
     # ---- Modelos ------------------------------------------------
 
     def _populate_models(self) -> None:
-        """Rellena el selector con los modelos de Ollama y restaura el último."""
+        """Lanza la carga de modelos en segundo plano y restaura el último."""
+        self._model.blockSignals(True)
+        self._model.clear()
+        self._model.blockSignals(False)
         if self._engine is None:
             return
-        details = self._fetch_model_details()
+        self._model.setEnabled(False)
+        self._model.addItem("Cargando modelos…")
+        self._model_worker = _ModelDetailsWorker(self._engine)
+        self._model_worker.signals.details.connect(self._on_model_details)
+        QThreadPool.globalInstance().start(self._model_worker)
+
+    def _on_model_details(self, details: list) -> None:
+        """Rellena el selector con los modelos recibidos del worker."""
+        details = [dict(detail) for detail in details]
         names = [detail["name"] for detail in details]
         default = getattr(self._engine, "default_model", None)
         if default and default not in names:
@@ -144,16 +181,7 @@ class ChatWidget(QWidget):
                     last,
                 )
         self._model.blockSignals(False)
-
-    def _fetch_model_details(self) -> list[dict]:
-        """Detalles de los modelos; lista vacía si falla la red."""
-        if self._engine is None:
-            return []
-        try:
-            return list(self._engine.list_model_details())
-        except Exception as exc:  # noqa: BLE001 - red/timeout/JSON inesperados
-            logger.debug("No se pudieron listar los modelos de Ollama: %r", exc)
-            return []
+        self._model.setEnabled(True)
 
     @staticmethod
     def _format_size(size: int) -> str:

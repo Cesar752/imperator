@@ -31,15 +31,23 @@ class ImageTask(Task):
         return "Imagen"
 
     def build_widget(self, parent: QWidget | None = None) -> QWidget:
-        engine = self._engine_manager.get_engine("comfyui")
-        self._widget = ImageWidget(engine, self._engine_manager.config_manager, parent)
+        engines = {
+            "comfyui": self._engine_manager.get_engine("comfyui"),
+            "bfl": self._engine_manager.get_engine("bfl"),
+        }
+        self._widget = ImageWidget(engines, self._engine_manager.config_manager, parent)
         return self._widget
 
     def refresh_engine(self) -> None:
-        """Relee el motor ComfyUI y lo propaga al widget de imagen.
+        """Relee los motores de imagen y los propaga al widget.
 
         Método concreto de esta tarea (no forma parte de la interfaz
         :class:`Task`), simétrico a :meth:`ChatTask.refresh_engine`.
         """
         if self._widget is not None:
-            self._widget.set_engine(self._engine_manager.get_engine("comfyui"))
+            self._widget.set_engines(
+                {
+                    "comfyui": self._engine_manager.get_engine("comfyui"),
+                    "bfl": self._engine_manager.get_engine("bfl"),
+                }
+            )

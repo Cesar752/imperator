@@ -13,6 +13,12 @@ class Task(ABC):
     se registra en :class:`core.task_manager.TaskManager`.
     """
 
+    # Id del motor cuyo modelo se descarga al salir de esta pestaña (``None``
+    # para tareas sin motor único, p. ej. Audio con Piper+Kokoro). El gestor de
+    # ventana deriva su mapa pestaña->motor de este atributo, no de una lista
+    # duplicada.
+    engine_id: str | None = None
+
     @property
     @abstractmethod
     def id(self) -> str:

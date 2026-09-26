@@ -1,11 +1,11 @@
-"""Ventana principal de PlataformaIA."""
+"""Ventana principal de Imperator."""
 
 import logging
-from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread
-from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtGui import QActionGroup, QIcon, QPixmap
 from PyQt6.QtWidgets import (
+    QApplication,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -15,20 +15,15 @@ from PyQt6.QtWidgets import (
 )
 
 from core.engine_manager import EngineManager
+from core.paths import ASSETS
 from core.task_manager import TaskManager
 from ui.engines_dialog import EnginesDialog
+from ui.theme import apply_theme
 
 logger = logging.getLogger(__name__)
 
-# Raíz del proyecto (C:\Imperator); los assets viven en assets/.
-ASSETS = Path(__file__).resolve().parent.parent / "assets"
-
 # Altura del logo en el header (px).
-HEADER_LOGO_HEIGHT = 60
-
-# Índice de pestaña -> id de motor Ollama cuyo modelo se descarga al salir.
-# El orden de pestañas viene de TASK_FACTORY (0 chat, 1 document, ...).
-TAB_TO_ENGINE = {0: "ollama", 1: "ollama_vision"}
+HEADER_LOGO_HEIGHT = 120
 
 
 class MainWindow(QMainWindow):
@@ -38,18 +33,27 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("PlataformaIA")
         self._apply_window_icon()
-        self.resize(900, 600)
+        self.resize(1280, 720)
         self._engine_manager = EngineManager()
         self._task_manager = TaskManager(self._engine_manager)
+        # Índice de pestaña -> motor cuyo modelo se descarga al abandonarla. Se
+        # deriva del registro de tareas (Task.engine_id) para no duplicar aquí
+        # el orden de las pestañas (única fuente de verdad: TASK_FACTORY).
+        self._tab_to_engine: dict[int, str] = {
+            index: task.engine_id
+            for index, task in enumerate(self._task_manager.list_tasks())
+            if task.engine_id
+        }
         self._engines_dialog: EnginesDialog | None = None
         self._current_tab_index = 0
         self._unload_toggle = None
         self._build_menu()
         self._build_central_widget()
-        self._validate_tab_mapping()
         self._build_status_bar()
+        self._restore_geometry()
 
     def closeEvent(self, event) -> None:
+        self._save_geometry()
         # Al cerrar la ventana, detener los workers antes de que Qt destruya
         # los QThread mientras aún se ejecutan ("QThread: Destroyed while
         # thread is still running").
@@ -68,13 +72,13 @@ class MainWindow(QMainWindow):
         for thread in running:
             thread.requestInterruption()
 
-        # 3. Espera híbrida: 5 s con límite, luego sin límite para evitar crash.
+        # 3. Espera acotada: 5 s por hilo. Esperar sin límite podía colgar el
+        # cierre indefinidamente si un worker quedaba atascado en red/ffmpeg.
         for thread in running:
             if not thread.wait(5000):
                 logger.warning(
-                    "Worker no terminó en 5s, esperando sin límite: %s", thread
+                    "Worker no terminó en 5s; se continúa con el cierre: %s", thread
                 )
-                thread.wait()
 
         event.accept()
 
@@ -110,6 +114,23 @@ class MainWindow(QMainWindow):
 
         free_action = engines_menu.addAction("Liberar VRAM ahora")
         free_action.triggered.connect(self._free_all_vram)
+
+        view_menu = menubar.addMenu("&Ver")
+        self._dark_theme_toggle = view_menu.addAction("Modo oscuro")
+        self._dark_theme_toggle.setCheckable(True)
+        self._dark_theme_toggle.setChecked(self._theme_is_dark())
+        self._dark_theme_toggle.toggled.connect(self._on_theme_toggled)
+
+        self._font_group = QActionGroup(self)
+        self._font_group.setExclusive(True)
+        font_menu = view_menu.addMenu("Tamaño de texto")
+        current_size = self._current_font_size()
+        for size in (10, 11, 12, 13, 14):
+            action = font_menu.addAction(f"{size} pt")
+            action.setCheckable(True)
+            action.setActionGroup(self._font_group)
+            action.setChecked(size == current_size)
+            action.triggered.connect(lambda _checked, s=size: self._on_font_size(s))
 
         help_menu = menubar.addMenu("&Ayuda")
         about_action = help_menu.addAction("&Acerca de")
@@ -195,12 +216,12 @@ class MainWindow(QMainWindow):
     # ---- Liberación de VRAM --------------------------------------
 
     def _on_tab_changed(self, index: int) -> None:
-        """Descarga el motor Ollama de la pestaña que se abandona."""
+        """Descarga el motor asociado a la pestaña que se abandona."""
         previous = self._current_tab_index
         self._current_tab_index = index
         if previous == index or not self._unload_toggle.isChecked():
             return
-        engine_id = TAB_TO_ENGINE.get(previous)
+        engine_id = self._tab_to_engine.get(previous)
         if engine_id is None:
             return
         try:
@@ -210,18 +231,6 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001 - no bloquear el cambio de pestaña
             logger.warning("No se pudo liberar VRAM del motor %s: %s", engine_id, exc)
 
-    def _validate_tab_mapping(self) -> None:
-        """Verifica que TAB_TO_ENGINE siga alineado con el orden de pestañas."""
-        tasks = self._task_manager.list_tasks()
-        expected = {0: "chat", 1: "document"}
-        for tab_index, task_id in expected.items():
-            if tab_index >= len(tasks) or tasks[tab_index].id != task_id:
-                logger.warning(
-                    "TAB_TO_ENGINE desincronizado: se esperaba '%s' en la pestaña %d.",
-                    task_id,
-                    tab_index,
-                )
-
     def _unload_on_tab_change_enabled(self) -> bool:
         settings = self._engine_manager.config_manager.load_settings()
         return bool(settings.get("unload_on_tab_change", True))
@@ -230,6 +239,61 @@ class MainWindow(QMainWindow):
         settings = self._engine_manager.config_manager.load_settings()
         settings["unload_on_tab_change"] = checked
         self._engine_manager.config_manager.save_settings(settings)
+
+    def _theme_is_dark(self) -> bool:
+        settings = self._engine_manager.config_manager.load_settings()
+        return settings.get("theme", "dark") != "light"
+
+    def _on_theme_toggled(self, checked: bool) -> None:
+        theme = "dark" if checked else "light"
+        settings = self._engine_manager.config_manager.load_settings()
+        settings["theme"] = theme
+        self._engine_manager.config_manager.save_settings(settings)
+        app = QApplication.instance()
+        if app is not None:
+            apply_theme(app, theme)
+
+    def _current_font_size(self) -> int:
+        return int(self._engine_manager.config_manager.load_settings().get("font_size", 11))
+
+    def _on_font_size(self, size: int) -> None:
+        settings = self._engine_manager.config_manager.load_settings()
+        settings["font_size"] = size
+        self._engine_manager.config_manager.save_settings(settings)
+        app = QApplication.instance()
+        if app is not None:
+            font = app.font()
+            font.setPointSize(size)
+            app.setFont(font)
+
+    def _save_geometry(self) -> None:
+        try:
+            g = self.normalGeometry()
+            settings = self._engine_manager.config_manager.load_settings()
+            settings["geometry"] = {
+                "x": g.x(),
+                "y": g.y(),
+                "width": g.width(),
+                "height": g.height(),
+                "maximized": self.isMaximized(),
+            }
+            self._engine_manager.config_manager.save_settings(settings)
+        except Exception as exc:  # noqa: BLE001 - no bloquear el cierre
+            logger.warning("No se pudo guardar la geometría de la ventana: %s", exc)
+
+    def _restore_geometry(self) -> None:
+        try:
+            geom = self._engine_manager.config_manager.load_settings().get("geometry")
+            if not isinstance(geom, dict):
+                return
+            x, y = geom.get("x"), geom.get("y")
+            width, height = geom.get("width"), geom.get("height")
+            if all(isinstance(v, int) for v in (x, y, width, height)):
+                self.setGeometry(x, y, width, height)
+            if geom.get("maximized"):
+                self.showMaximized()
+        except Exception as exc:  # noqa: BLE001 - geometría corrupta no debe romper el arranque
+            logger.warning("No se pudo restaurar la geometría de la ventana: %s", exc)
 
     def _free_all_vram(self) -> None:
         """Libera la VRAM de todos los motores que la usan (botón manual)."""

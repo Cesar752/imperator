@@ -3,7 +3,7 @@
 import logging
 import shutil
 
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, QRunnable, QThread, QThreadPool, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -26,6 +26,31 @@ from PyQt6.QtWidgets import (
 from engines.base_engine import Engine, EngineError
 
 logger = logging.getLogger(__name__)
+
+
+class _CreditsSignals(QObject):
+    credits = pyqtSignal(object)
+
+
+class _CreditsWorker(QRunnable):
+    """Consulta los créditos de la API de pago fuera del hilo de la UI (M5).
+
+    Antes se llamaba a ``get_credits()`` (una petición HTTP) en el hilo de la
+    UI al cambiar de modelo, congelando la interfaz.
+    """
+
+    def __init__(self, get_credits) -> None:
+        super().__init__()
+        self._get_credits = get_credits
+        self.signals = _CreditsSignals()
+
+    def run(self) -> None:
+        try:
+            credits = self._get_credits()
+        except Exception as exc:  # noqa: BLE001 - red inesperada
+            logger.debug("No se pudieron consultar los créditos: %r", exc)
+            credits = None
+        self.signals.credits.emit(credits)
 
 
 class ImageWorker(QThread):
@@ -64,11 +89,38 @@ class ImageWidget(QWidget):
         "horizontal": ("Horizontal 16:9", 1344, 768, "1344×768 · panorámico"),
     }
 
-    def __init__(self, engine: Engine | None, config_manager=None, parent=None) -> None:
+    # Modelos que REQUIEREN una imagen de referencia (solo edición de imagen).
+    _REQUIRED_REFERENCE_MODELS = {
+        "flux_kontext",        # ComfyUI local (gratis)
+        "flux-kontext-pro",    # BFL (pago)
+        "flux-kontext-max",    # BFL (pago)
+    }
+
+    # Modelos con referencia OPCIONAL: con foto editan, sin foto crean desde cero.
+    _OPTIONAL_REFERENCE_MODELS = {
+        "flux-2-pro",          # BFL (pago)
+    }
+
+    # Etiquetas legibles para los modelos de la API de pago.
+    _BFL_LABELS = {
+        "flux-kontext-pro": "FLUX.1 Kontext Pro",
+        "flux-kontext-max": "FLUX.1 Kontext Max",
+        "flux-2-pro": "FLUX.2 Pro",
+    }
+
+    def __init__(
+        self,
+        engines: dict[str, Engine | None] | None,
+        config_manager=None,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
-        self._engine: Engine | None = engine
+        self._engines: dict[str, Engine | None] = engines or {}
+        self._engine: Engine | None = None
+        self._model_engine: dict[str, str] = {}
         self._config_manager = config_manager
         self._worker: ImageWorker | None = None
+        self._credits_worker: _CreditsWorker | None = None
         self._elapsed = 0
         self._last_path: str | None = None
         self._timer = QTimer(self)
@@ -76,8 +128,8 @@ class ImageWidget(QWidget):
         self._timer.timeout.connect(self._tick)
         self._build_ui()
         self._populate_models()
-        if self._engine is None:
-            self._set_status("ComfyUI no está configurado o deshabilitado.")
+        if not any(e is not None for e in self._engines.values()):
+            self._set_status("No hay motor de imagen configurado o habilitado.")
 
     def _build_ui(self) -> None:
         self._prompt = QPlainTextEdit()
@@ -85,6 +137,12 @@ class ImageWidget(QWidget):
 
         self._negative_prompt = QLineEdit()
         self._negative_prompt.setPlaceholderText("(opcional)")
+
+        self._ref_image = QLineEdit()
+        self._ref_image.setPlaceholderText("Imagen de referencia (edición)...")
+        self._ref_image.setReadOnly(True)
+        self._ref_button = QPushButton("Examinar...")
+        self._ref_clear_button = QPushButton("Quitar")
 
         self._model = QComboBox()
         self._model.currentIndexChanged.connect(self._on_model_changed)
@@ -140,8 +198,17 @@ class ImageWidget(QWidget):
 
         form = QFormLayout()
         form.addRow("Modelo:", self._model)
+        self._credits_label = QLabel("")
+        form.addRow("Créditos:", self._credits_label)
         form.addRow("Prompt:", self._prompt)
         form.addRow("Prompt negativo:", self._negative_prompt)
+
+        ref_row = QHBoxLayout()
+        ref_row.addWidget(self._ref_image)
+        ref_row.addWidget(self._ref_button)
+        ref_row.addWidget(self._ref_clear_button)
+        form.addRow("Referencia:", ref_row)
+
         form.addRow("Ancho:", self._width)
         form.addRow("Alto:", self._height)
         form.addRow("Presets:", presets_row)
@@ -167,35 +234,100 @@ class ImageWidget(QWidget):
         self._generate_button.clicked.connect(self._generate)
         self._cancel_button.clicked.connect(self._cancel)
         self._save_button.clicked.connect(self._save_as)
+        self._ref_button.clicked.connect(self._pick_ref_image)
+        self._ref_clear_button.clicked.connect(self._clear_ref_image)
 
-    def set_engine(self, engine: Engine | None) -> None:
-        """Cambia el motor activo."""
-        self._engine = engine
+    def set_engines(self, engines: dict[str, Engine | None]) -> None:
+        """Actualiza los motores disponibles (ComfyUI local + BFL de pago)."""
+        self._engines = engines or {}
         self._populate_models()
 
     def _populate_models(self) -> None:
-        """Rellena el selector con los modelos del motor y restaura el último."""
-        if self._engine is None:
-            return
-        models = list(self._engine.list_models())
+        """Rellena el selector con los modelos de todos los motores."""
         self._model.blockSignals(True)
         self._model.clear()
-        for model_id in models:
-            self._model.addItem(self._display_model(model_id), model_id)
+        self._model_engine = {}
+        for engine_id, engine in self._engines.items():
+            if engine is None:
+                continue
+            for model_id in engine.list_models():
+                self._model.addItem(self._display_model(model_id, engine_id), model_id)
+                self._model_engine[model_id] = engine_id
         last = None
         if self._config_manager is not None:
             last = self._config_manager.load_last_models().get("image")
-        if last in models:
-            self._model.setCurrentIndex(models.index(last))
+        index = self._model.findData(last)
+        if index >= 0:
+            self._model.setCurrentIndex(index)
         self._model.blockSignals(False)
+        self._update_ref_enabled()
 
-    @staticmethod
-    def _display_model(model_id: str) -> str:
+    @classmethod
+    def _display_model(cls, model_id: str, engine_id: str = "") -> str:
+        if engine_id == "bfl":
+            label = cls._BFL_LABELS.get(model_id, model_id)
+            return f"{label} · PAGO"
         return model_id.replace("_", " ").title()
 
     def _on_model_changed(self) -> None:
         if self._config_manager is not None and self._model.currentData():
             self._config_manager.save_last_model("image", self._model.currentData())
+        self._update_ref_enabled()
+        self._refresh_credits()
+
+    def _current_engine(self) -> Engine | None:
+        model = self._model.currentData()
+        engine_id = self._model_engine.get(model)
+        return self._engines.get(engine_id)
+
+    def _refresh_credits(self) -> None:
+        """Consulta los créditos de la API de pago en segundo plano (M5)."""
+        engine = self._current_engine()
+        get_credits = (
+            getattr(engine, "get_credits", None) if engine is not None else None
+        )
+        if getattr(engine, "id", "") != "bfl" or not callable(get_credits):
+            self._credits_label.setText("")
+            return
+        self._credits_label.setText("Consultando…")
+        self._credits_worker = _CreditsWorker(get_credits)
+        self._credits_worker.signals.credits.connect(self._on_credits)
+        QThreadPool.globalInstance().start(self._credits_worker)
+
+    def _on_credits(self, credits: object) -> None:
+        if credits is None:
+            self._credits_label.setText("No disponible")
+        else:
+            self._credits_label.setText(
+                f"{float(credits):,.1f} créditos (≈ ${float(credits) / 100:.2f})"
+            )
+
+    def _update_ref_enabled(self, busy: bool = False) -> None:
+        model = self._model.currentData()
+        required = model in self._REQUIRED_REFERENCE_MODELS
+        optional = model in self._OPTIONAL_REFERENCE_MODELS
+        enabled = (not busy) and (required or optional)
+        self._ref_image.setEnabled(enabled)
+        self._ref_button.setEnabled(enabled)
+        self._ref_clear_button.setEnabled(enabled)
+        if required:
+            self._ref_image.setPlaceholderText("Imagen de referencia (obligatoria)...")
+        elif optional:
+            self._ref_image.setPlaceholderText(
+                "Imagen de referencia (opcional): con foto edita, sin foto crea desde cero..."
+            )
+        else:
+            self._ref_image.setPlaceholderText("Imagen de referencia (no aplica a este modelo)")
+
+    def _pick_ref_image(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Selecciona la imagen de referencia", "", "Imágenes (*.png *.jpg *.jpeg)"
+        )
+        if path:
+            self._ref_image.setText(path)
+
+    def _clear_ref_image(self) -> None:
+        self._ref_image.clear()
 
     def _apply_preset(self, key: str) -> None:
         label, width, height, _tooltip = self._PRESETS[key]
@@ -204,14 +336,21 @@ class ImageWidget(QWidget):
         self._set_status(f"Preset aplicado: {label}")
 
     def _generate(self) -> None:
-        if self._engine is None:
-            self._set_status("Error: no hay motor ComfyUI configurado.")
+        model = self._model.currentData()
+        engine = self._engines.get(self._model_engine.get(model))
+        if engine is None:
+            self._set_status("Error: no hay motor configurado para este modelo.")
             return
         prompt = self._prompt.toPlainText().strip()
         if not prompt:
             self._set_status("Escribe un prompt.")
             return
         if self._worker is not None and self._worker.isRunning():
+            return
+
+        ref_path = self._ref_image.text().strip()
+        if model in self._REQUIRED_REFERENCE_MODELS and not ref_path:
+            self._set_status("Selecciona una imagen de referencia para este modelo.")
             return
 
         params = {
@@ -221,8 +360,10 @@ class ImageWidget(QWidget):
             "height": self._height.value(),
             "steps": self._steps.value(),
             "guidance": self._guidance.value(),
-            "model": self._model.currentData(),
+            "model": model,
         }
+        if ref_path:
+            params["image_path"] = ref_path
         if not self._random_seed.isChecked():
             try:
                 params["seed"] = int(self._seed.text().strip())
@@ -230,11 +371,12 @@ class ImageWidget(QWidget):
                 self._set_status("Seed inválido: usa un número entero o marca 'Aleatorio'.")
                 return
 
+        self._engine = engine
         self._set_busy(True)
         self._elapsed = 0
         self._set_status("Generando... 0s")
 
-        self._worker = ImageWorker(self._engine, params, self)
+        self._worker = ImageWorker(engine, params, self)
         self._worker.image_ready.connect(self._on_image_ready)
         self._worker.failed.connect(self._on_error)
         self._worker.finished.connect(self._on_finished)
@@ -243,7 +385,10 @@ class ImageWidget(QWidget):
 
     def _tick(self) -> None:
         self._elapsed += 1
-        self._set_status(f"Generando... {self._elapsed}s")
+        status = f"Generando... {self._elapsed}s"
+        if self._is_paid_engine() and self._elapsed >= 30 and self._elapsed % 60 == 30:
+            status += " (FLUX.2 Pro es lento: puede tardar varios minutos, es normal)"
+        self._set_status(status)
 
     def _on_image_ready(self, path: str) -> None:
         self._last_path = path
@@ -263,9 +408,26 @@ class ImageWidget(QWidget):
         self._worker.deleteLater()
         self._worker = None
 
+    def _is_paid_engine(self) -> bool:
+        """True si el motor actual es de pago (Black Forest Labs)."""
+        return getattr(self._engine, "id", "") == "bfl"
+
     def _cancel(self) -> None:
         if self._worker is None or not self._worker.isRunning():
             return
+        if self._is_paid_engine():
+            answer = QMessageBox.question(
+                self,
+                "Cancelar generación de pago",
+                "La solicitud ya se envió a la API de pago (Black Forest Labs). "
+                "Cancelar aquí NO detiene la generación en sus servidores y es "
+                "posible que se consuman créditos igualmente.\n\n"
+                "¿Quieres cancelar la espera?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         self._worker.requestInterruption()
         cancel_remote = getattr(self._engine, "cancel_remote", None)
         if callable(cancel_remote):
@@ -314,6 +476,7 @@ class ImageWidget(QWidget):
             btn.setEnabled(not busy)
         # El campo de seed solo se habilita si no está marcado "Aleatorio".
         self._seed.setEnabled(not busy and not self._random_seed.isChecked())
+        self._update_ref_enabled(busy=busy)
 
     def _set_status(self, text: str) -> None:
         self._status.setText(text)

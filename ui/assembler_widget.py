@@ -360,7 +360,11 @@ class AssemblerWidget(QWidget):
             return
         self._video_path = path
         self._video_label.setText(path)
-        info = self._assembler.probe(path)
+        try:
+            info = self._assembler.probe(path)
+        except EngineError as exc:
+            self._set_status(f"No se pudo inspeccionar el vídeo: {exc}")
+            info = {}
         self._video_duration = info.get("duration")
         parts = []
         if info.get("width") and info.get("height"):
@@ -378,7 +382,11 @@ class AssemblerWidget(QWidget):
             return
         self._audio_path = path
         self._audio_label.setText(path)
-        info = self._assembler.probe(path)
+        try:
+            info = self._assembler.probe(path)
+        except EngineError as exc:
+            self._set_status(f"No se pudo inspeccionar el audio: {exc}")
+            info = {}
         self._audio_duration = info.get("duration")
         self._audio_info.setText(
             f"Duración: {self._audio_duration:.1f} s"
@@ -433,7 +441,11 @@ class AssemblerWidget(QWidget):
 
         video_duration = self._video_duration
         if video_duration is None and self._video_path:
-            video_duration = self._assembler.probe(self._video_path).get("duration")
+            try:
+                video_duration = self._assembler.probe(self._video_path).get("duration")
+            except EngineError as exc:
+                self._set_status(f"No se pudo inspeccionar el vídeo: {exc}")
+                return
         if video_duration is not None:
             if self._audio_path and voice_offset > video_duration - 0.5:
                 self._set_status(

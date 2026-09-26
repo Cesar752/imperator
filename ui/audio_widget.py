@@ -65,6 +65,12 @@ class AudioWorker(QThread):
         self._speed = speed
 
     def run(self) -> None:
+        # Piper/Kokoro son bloqueantes: no se pueden interrumpir a mitad de la
+        # síntesis. Se comprueba antes de empezar y al terminar, para no marcar
+        # como listo un audio que el usuario canceló mientras se generaba.
+        if self.isInterruptionRequested():
+            self.failed.emit("Cancelado por el usuario")
+            return
         try:
             path = self._engine.synthesize(self._text, self._voice, self._speed)
         except EngineError as exc:

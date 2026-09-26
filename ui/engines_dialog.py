@@ -1,5 +1,6 @@
 """Diálogo de gestión de motores locales (lista + CRUD + checks en paralelo)."""
 
+import json
 import logging
 
 from PyQt6.QtCore import QObject, QRunnable, QThreadPool, pyqtSignal
@@ -14,6 +15,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -29,6 +31,41 @@ COL_NOMBRE = 0
 COL_ID = 1
 COL_ACTIVO = 2
 COL_CONEXION = 3
+
+# Plantilla de ``parametros`` por tipo de motor, usada al AÑADIR uno nuevo para
+# no partir de un dict vacío (evita configuraciones incompletas imposibles de
+# construir, p. ej. ComfyUI sin workflows). El usuario puede editarla como JSON.
+_TYPE_TEMPLATES: dict[str, dict] = {
+    "ollama": {"model": "qwen3.5:9b"},
+    "ollama_vision": {"model": "qwen3-vl:8b"},
+    "comfyui": {
+        "workflows": {"flux_dev": "C:/CComfyUI/flux_dev_workflow_api.json"},
+        "default_model": "flux_dev",
+    },
+    "bfl": {"models": ["flux-kontext-pro", "flux-kontext-max", "flux-2-pro"]},
+    "wanvideo": {
+        "workflows": {
+            "t2v": "C:/CComfyUI/wan22_t2v_workflow_api.json",
+            "i2v": "C:/CComfyUI/wan22_i2v_workflow_api.json",
+        },
+        "default_model": "t2v",
+    },
+    "piper_tts": {"voices_dir": "voices", "default_voice": ""},
+    "kokoro_tts": {"default_voice": "ef_dora"},
+    "whisper": {"model": "small", "device": "cpu", "compute_type": "int8"},
+}
+
+# URL (ruta) por defecto al añadir un motor de cada tipo.
+_TYPE_URLS: dict[str, str] = {
+    "ollama": "http://localhost:11434",
+    "ollama_vision": "http://localhost:11434",
+    "comfyui": "http://127.0.0.1:8188",
+    "bfl": "https://api.bfl.ai",
+    "wanvideo": "http://127.0.0.1:8188",
+    "piper_tts": "voices",
+    "kokoro_tts": "local",
+    "whisper": "local",
+}
 
 
 class _WorkerSignals(QObject):
@@ -74,7 +111,12 @@ class _ModelsWorker(QRunnable):
 
 
 class EngineFormDialog(QDialog):
-    """Formulario para añadir o editar un motor (solo tipo Ollama en esta fase)."""
+    """Formulario para añadir o editar un motor.
+
+    El ``id`` (tipo) es inmutable al editar. Los ``parametros`` se editan como
+    JSON para no perder campos específicos de cada motor (workflows, device,
+    voces...), que un formulario plano destruiría.
+    """
 
     def __init__(
         self,
@@ -83,39 +125,54 @@ class EngineFormDialog(QDialog):
         supported_types: list[str] | None = None,
     ) -> None:
         super().__init__(parent)
-        self._config = engine_config
-        is_edit = engine_config is not None
-        types = supported_types or ["ollama"]
-        self.setWindowTitle("Editar motor" if is_edit else "Añadir motor")
+        self._is_edit = engine_config is not None
+        types = supported_types or list(_TYPE_TEMPLATES)
+        self.setWindowTitle("Editar motor" if self._is_edit else "Añadir motor")
 
         form = QFormLayout(self)
 
         self._type_combo = QComboBox()
-        self._type_combo.addItems(types)
-        if is_edit:
-            self._type_combo.setCurrentText(engine_config["id"])
+        if self._is_edit:
+            # Al editar, el tipo queda fijo: solo el id original, deshabilitado.
+            self._type_combo.addItem(engine_config["id"])
             self._type_combo.setEnabled(False)
+        else:
+            self._type_combo.addItems(types)
+            self._type_combo.currentIndexChanged.connect(self._on_type_changed)
 
         self._nombre_edit = QLineEdit()
         self._ruta_edit = QLineEdit()
-        self._model_edit = QLineEdit()
         self._enabled_check = QCheckBox("Habilitado")
 
-        if is_edit:
-            params = engine_config.get("parametros", {})
+        self._params_edit = QPlainTextEdit()
+        self._params_edit.setPlaceholderText('{"clave": "valor"}')
+        self._params_edit.setMinimumHeight(140)
+        self._params_hint = QLabel(
+            "Parámetros del motor en JSON (modelos, workflows, voces, device...)."
+        )
+        self._params_hint.setWordWrap(True)
+
+        if self._is_edit:
             self._nombre_edit.setText(engine_config.get("nombre", ""))
             self._ruta_edit.setText(engine_config.get("ruta", ""))
-            self._model_edit.setText(params.get("model", ""))
             self._enabled_check.setChecked(engine_config.get("enabled", True))
+            self._params_edit.setPlainText(
+                json.dumps(
+                    engine_config.get("parametros", {}),
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
         else:
-            self._ruta_edit.setText("http://localhost:11434")
-            self._enabled_check.setChecked(True)
+            self._enabled_check.setChecked(False)
+            self._apply_type_defaults()
 
         form.addRow("Tipo:", self._type_combo)
         form.addRow("Nombre:", self._nombre_edit)
         form.addRow("URL (ruta):", self._ruta_edit)
-        form.addRow("Modelo:", self._model_edit)
         form.addRow("", self._enabled_check)
+        form.addRow("Parámetros (JSON):", self._params_hint)
+        form.addRow("", self._params_edit)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -124,6 +181,47 @@ class EngineFormDialog(QDialog):
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
 
+    def _engine_type(self) -> str:
+        return self._type_combo.currentText()
+
+    def _apply_type_defaults(self) -> None:
+        """Rellena URL/parametros con la plantilla del tipo seleccionado."""
+        engine_type = self._engine_type()
+        if not self._ruta_edit.text().strip():
+            self._ruta_edit.setText(_TYPE_URLS.get(engine_type, ""))
+        template = _TYPE_TEMPLATES.get(engine_type, {})
+        self._params_edit.setPlainText(
+            json.dumps(template, indent=2, ensure_ascii=False)
+        )
+
+    def _on_type_changed(self) -> None:
+        # Solo en alta: al cambiar de tipo se refrescan la URL y los parámetros.
+        if not self._is_edit:
+            self._ruta_edit.clear()
+            self._apply_type_defaults()
+
+    def _parsed_params(self) -> dict | None:
+        raw = self._params_edit.toPlainText().strip()
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            QMessageBox.warning(
+                self,
+                "Parámetros inválidos",
+                f"Los parámetros no son JSON válido:\n{exc}",
+            )
+            return None
+        if not isinstance(data, dict):
+            QMessageBox.warning(
+                self,
+                "Parámetros inválidos",
+                "Los parámetros deben ser un objeto JSON ({...}).",
+            )
+            return None
+        return data
+
     def _on_accept(self) -> None:
         if not self._nombre_edit.text().strip():
             QMessageBox.warning(self, "Datos incompletos", "El nombre no puede estar vacío.")
@@ -131,15 +229,17 @@ class EngineFormDialog(QDialog):
         if not self._ruta_edit.text().strip():
             QMessageBox.warning(self, "Datos incompletos", "La URL (ruta) no puede estar vacía.")
             return
+        if self._parsed_params() is None:
+            return
         self.accept()
 
     def result_config(self) -> dict:
         return {
-            "id": self._type_combo.currentText(),
+            "id": self._engine_type(),
             "nombre": self._nombre_edit.text().strip(),
             "ruta": self._ruta_edit.text().strip(),
             "enabled": self._enabled_check.isChecked(),
-            "parametros": {"model": self._model_edit.text().strip()},
+            "parametros": self._parsed_params() or {},
         }
 
 
@@ -284,7 +384,13 @@ class EnginesDialog(QDialog):
             QMessageBox.information(self, "Editar motor", "Selecciona un motor para editar.")
             return
         config = self._manager.get_config(engine_id)
-        dialog = EngineFormDialog(self, engine_config=config)
+        if config is None:
+            return
+        # Pasar supported_types=[engine_id] mantiene el tipo original en el combo
+        # (antes quedaba en "ollama" y reescribía el id del motor editado).
+        dialog = EngineFormDialog(
+            self, engine_config=config, supported_types=[engine_id]
+        )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             try:
                 self._manager.update_engine(engine_id, dialog.result_config())

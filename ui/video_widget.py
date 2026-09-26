@@ -5,6 +5,7 @@ import math
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import requests
@@ -14,7 +15,7 @@ try:
 except ImportError:  # pragma: no cover - dependencia declarada en requirements.txt
     imageio_ffmpeg = None
 
-from PyQt6.QtCore import Qt, QThread, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, QRunnable, QThread, QThreadPool, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -29,15 +30,44 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
+from core.video_assembler import VideoAssembler
 from engines.base_engine import Engine, EngineError
 
 logger = logging.getLogger(__name__)
+
+
+class _SystemStatsSignals(QObject):
+    ram_free = pyqtSignal(object)
+
+
+class _SystemStatsWorker(QRunnable):
+    """Consulta ``/system_stats`` (RAM libre) fuera del hilo de la UI (M5)."""
+
+    def __init__(self, base_url: str) -> None:
+        super().__init__()
+        self._base_url = base_url
+        self.signals = _SystemStatsSignals()
+
+    def run(self) -> None:
+        try:
+            resp = requests.get(f"{self._base_url}/system_stats", timeout=2)
+            resp.raise_for_status()
+            data = resp.json()
+        except (requests.RequestException, ValueError) as exc:
+            logger.debug("No se pudo leer /system_stats: %r", exc)
+            self.signals.ram_free.emit(None)
+            return
+        ram_free = (data.get("system") or {}).get("ram_free")
+        self.signals.ram_free.emit(
+            ram_free if isinstance(ram_free, (int, float)) else None
+        )
 
 
 class VideoWorker(QThread):
@@ -53,13 +83,18 @@ class VideoWorker(QThread):
         self._params = params
 
     def run(self) -> None:
-        # El progreso llega desde el WebSocket vía este callback.
         params = dict(self._params)
-        params["progress_callback"] = self._on_progress
         params["cancel_check"] = self.isInterruptionRequested
         try:
-            # Duck-typing: el motor debe exponer generate_video() (WanVideoEngine).
-            path = self._engine.generate_video(**params)
+            images = params.pop("image_paths", None)
+            prompts = params.pop("prompts", None)
+            if images and len(images) > 1:
+                # Varias imágenes: un clip por imagen y concatenación final.
+                path = self._generate_sequence(images, prompts, params)
+            else:
+                params["progress_callback"] = self._on_progress
+                # Duck-typing: el motor debe exponer generate_video() (WanVideoEngine).
+                path = self._engine.generate_video(**params)
         except EngineError as exc:
             self.failed.emit(str(exc))
         except Exception as exc:  # noqa: BLE001 - red/timeout/JSON inesperados
@@ -68,9 +103,41 @@ class VideoWorker(QThread):
         else:
             self.video_ready.emit(str(path))
 
+    def _generate_sequence(
+        self, images: list[str], prompts: list[str] | None, params: dict
+    ) -> str:
+        """Genera un clip por imagen (con su prompt) y los concatena en un MP4."""
+        total = len(images)
+        clips: list[str] = []
+        for i, image in enumerate(images):
+            if self.isInterruptionRequested():
+                raise EngineError("Cancelado por el usuario")
+            clip_params = dict(params)
+            clip_params["image_path"] = image
+            clip_params["prompt"] = self._prompt_for(i, prompts)
+            clip_params["progress_callback"] = (
+                lambda pct, msg, i=i: self._on_clip_progress(i, total, pct, msg)
+            )
+            clips.append(str(self._engine.generate_video(**clip_params)))
+        return str(VideoAssembler().concat_clips(clips))
+
+    @staticmethod
+    def _prompt_for(index: int, prompts: list[str] | None) -> str:
+        """Prompt para la imagen ``index``; reutiliza el último si faltan líneas."""
+        if not prompts:
+            return ""
+        return prompts[min(index, len(prompts) - 1)]
+
     def _on_progress(self, percent: int, message: str) -> None:
         # Emitir desde un hilo distinto es seguro en PyQt (conexión encolada).
         self.progress.emit(percent, message)
+
+    def _on_clip_progress(
+        self, clip_index: int, total: int, percent: int, message: str
+    ) -> None:
+        """Mapea el progreso de un clip al progreso global de la secuencia."""
+        overall = int(((clip_index + percent / 100.0) / total) * 100)
+        self.progress.emit(overall, f"Clip {clip_index + 1}/{total}: {message}")
 
 
 class VideoWidget(QWidget):
@@ -104,10 +171,15 @@ class VideoWidget(QWidget):
         self._config_manager = config_manager
         self._worker: VideoWorker | None = None
         self._last_path: str | None = None
-        self._image_path: str | None = None
+        self._photos: list[dict] = []
+        self._prompt_edits: list[QLineEdit] = []
+        self._stats_worker: _SystemStatsWorker | None = None
+        self._ram_free_bytes: object = None
+        self._ram_free_at = 0.0
         self._build_ui()
         self._populate_modes()
         self._restore_timeout()
+        self._refresh_system_stats()
         if self._engine is None:
             self._set_status("Wan Video no está configurado o deshabilitado.")
 
@@ -167,28 +239,32 @@ class VideoWidget(QWidget):
             btn.clicked.connect(lambda _checked=False, k=key: self._apply_preset(k))
             self._preset_buttons[key] = btn
 
-        # --- Controles de imagen (modo I2V) ---
-        self._image_preview = QLabel("Sin imagen")
-        self._image_preview.setFixedSize(self._PREVIEW_SIZE, self._PREVIEW_SIZE)
-        self._image_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._image_preview.setStyleSheet("border: 1px solid #888;")
-
+        # --- Controles de imagen (modo I2V): lista de fotos con prompt propio ---
         self._use_last_button = QPushButton("Usar última imagen generada")
         self._use_last_button.clicked.connect(self._use_last_image)
-        self._select_button = QPushButton("Seleccionar imagen...")
+        self._select_button = QPushButton("Seleccionar imágenes...")
         self._select_button.clicked.connect(self._select_image)
-        self._image_path_label = QLabel("")
 
         image_buttons = QHBoxLayout()
         image_buttons.addWidget(self._use_last_button)
         image_buttons.addWidget(self._select_button)
 
+        self._photos_layout = QVBoxLayout()
+        self._photos_layout.setContentsMargins(0, 0, 0, 0)
+        self._photos_container = QWidget()
+        self._photos_container.setLayout(self._photos_layout)
+
+        photos_scroll = QScrollArea()
+        photos_scroll.setWidgetResizable(True)
+        photos_scroll.setWidget(self._photos_container)
+        photos_scroll.setMinimumHeight(120)
+        photos_scroll.setMaximumHeight(300)
+
         self._image_section = QWidget()
         image_layout = QVBoxLayout(self._image_section)
         image_layout.setContentsMargins(0, 0, 0, 0)
-        image_layout.addWidget(self._image_preview, alignment=Qt.AlignmentFlag.AlignLeft)
         image_layout.addLayout(image_buttons)
-        image_layout.addWidget(self._image_path_label)
+        image_layout.addWidget(photos_scroll)
 
         self._generate_button = QPushButton("Generar")
         self._cancel_button = QPushButton("Cancelar")
@@ -226,6 +302,7 @@ class VideoWidget(QWidget):
         duration_row.addStretch(1)
 
         form = QFormLayout()
+        self._form = form
         form.addRow("Modo", self._mode)
         form.addRow("Prompt", self._prompt)
         form.addRow("Negativo", self._negative_prompt)
@@ -317,30 +394,48 @@ class VideoWidget(QWidget):
         if self._engine is None:
             self._set_status("Wan Video no está configurado.")
             return
-        prompt = self._prompt.toPlainText().strip()
-        if not prompt:
-            self._set_status("Escribe un prompt.")
-            return
         if self._worker is not None and self._worker.isRunning():
             return
 
         mode = self._mode.currentData() or "t2v"
-        if mode == "i2v" and not self._image_path:
-            self._set_status("Selecciona una imagen para el modo Imagen a vídeo.")
-            return
+
+        photos: list[dict] = []
+        prompt = ""
+        if mode == "i2v":
+            self._sync_prompts()
+            photos = [p for p in self._photos if p["path"]]
+            if not photos:
+                self._set_status("Selecciona una o más imágenes para el modo Imagen a vídeo.")
+                return
+            if any(not p["prompt"] for p in photos):
+                self._set_status("Escribe un prompt para cada foto.")
+                return
+        else:
+            prompt = self._prompt.toPlainText().strip()
+            if not prompt:
+                self._set_status("Escribe un prompt.")
+                return
 
         # length = duración * fps (+1 para el último frame).
         length = round(self._duration.value() * self._fps.value()) + 1
         params = {
-            "prompt": prompt,
             "negative_prompt": self._negative_prompt.text().strip(),
             "width": self._width.value(),
             "height": self._height.value(),
             "length": length,
             "fps": self._fps.value(),
             "model": mode,
-            "image_path": self._image_path if mode == "i2v" else None,
         }
+        if mode == "i2v":
+            if len(photos) == 1:
+                params["image_path"] = photos[0]["path"]
+                params["prompt"] = photos[0]["prompt"]
+            else:
+                params["image_paths"] = [p["path"] for p in photos]
+                params["prompts"] = [p["prompt"] for p in photos]
+        else:
+            params["image_path"] = None
+            params["prompt"] = prompt
         if not self._random_seed.isChecked():
             try:
                 params["seed"] = int(self._seed.text().strip())
@@ -442,7 +537,7 @@ class VideoWidget(QWidget):
         if self._config_manager is not None:
             last_image = self._config_manager.load_last_models().get("video_last_image")
             if last_image:
-                self._set_image(last_image)
+                self._add_photos([last_image])
 
     def _on_mode_changed(self) -> None:
         mode = self._mode.currentData()
@@ -453,6 +548,11 @@ class VideoWidget(QWidget):
     def _update_image_section(self) -> None:
         is_i2v = self._mode.currentData() == "i2v"
         self._image_section.setVisible(is_i2v)
+        # En I2V cada foto tiene su propio prompt; ocultar el prompt global.
+        self._prompt.setVisible(not is_i2v)
+        label = self._form.labelForField(self._prompt)
+        if label is not None:
+            label.setVisible(not is_i2v)
 
     def _use_last_image(self) -> None:
         output_dir = Path(__file__).resolve().parent.parent / "output"
@@ -464,33 +564,116 @@ class VideoWidget(QWidget):
         if not pngs:
             self._set_status("No hay imágenes generadas en output/.")
             return
-        self._set_image(str(pngs[0]))
+        self._add_photos([str(pngs[0])])
 
     def _select_image(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Seleccionar imagen", "", "Imágenes (*.png *.jpg *.jpeg)"
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Seleccionar imagen(es)", "", "Imágenes (*.png *.jpg *.jpeg)"
         )
-        if not path:
+        if not paths:
             return
-        self._set_image(path)
+        self._add_photos(list(paths))
 
-    def _set_image(self, path: str) -> None:
-        self._image_path = path
-        self._image_path_label.setText(path)
-        pixmap = QPixmap(path)
+    def _add_photos(self, paths: list[str]) -> None:
+        """Añade imágenes a la lista (sin duplicar), con prompt vacío."""
+        existing = {item["path"] for item in self._photos}
+        for path in paths:
+            path = str(path).strip()
+            if path and path not in existing:
+                self._photos.append({"path": path, "prompt": ""})
+                existing.add(path)
+        if self._photos and self._config_manager is not None:
+            self._config_manager.save_last_model(
+                "video_last_image", self._photos[0]["path"]
+            )
+        self._rebuild_photos()
+
+    def _sync_prompts(self) -> None:
+        """Copia el texto de los campos de prompt al modelo de datos."""
+        for item, edit in zip(self._photos, self._prompt_edits):
+            item["prompt"] = edit.text().strip()
+
+    def _rebuild_photos(self) -> None:
+        """Recrea las filas de fotos a partir de ``self._photos``."""
+        while self._photos_layout.count():
+            child = self._photos_layout.takeAt(0)
+            widget = child.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._prompt_edits = []
+        for index, item in enumerate(self._photos):
+            self._photos_layout.addWidget(self._build_photo_row(index, item))
+        self._photos_layout.addStretch(1)
+
+    def _build_photo_row(self, index: int, item: dict) -> QWidget:
+        """Construye una fila: miniatura + prompt + subir/bajar/quitar."""
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        thumb = QLabel()
+        thumb.setFixedSize(56, 56)
+        thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        thumb.setStyleSheet("border: 1px solid #888;")
+        pixmap = QPixmap(item["path"])
         if pixmap.isNull():
-            self._image_preview.setText("No se pudo cargar la imagen.")
+            thumb.setText("?")
         else:
-            self._image_preview.setPixmap(
+            thumb.setPixmap(
                 pixmap.scaled(
-                    self._PREVIEW_SIZE,
-                    self._PREVIEW_SIZE,
+                    56,
+                    56,
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 )
             )
-        if self._config_manager is not None:
-            self._config_manager.save_last_model("video_last_image", path)
+
+        prompt_edit = QLineEdit(item["prompt"])
+        prompt_edit.setPlaceholderText(f"Prompt foto {index + 1}...")
+
+        up = QPushButton("↑")
+        up.setToolTip("Subir de posición")
+        up.setFixedWidth(28)
+        up.setEnabled(index > 0)
+        up.clicked.connect(lambda _checked=False, i=index: self._move_photo(i, -1))
+
+        down = QPushButton("↓")
+        down.setToolTip("Bajar de posición")
+        down.setFixedWidth(28)
+        down.setEnabled(index < len(self._photos) - 1)
+        down.clicked.connect(lambda _checked=False, i=index: self._move_photo(i, 1))
+
+        remove = QPushButton("×")
+        remove.setToolTip("Quitar foto")
+        remove.setFixedWidth(28)
+        remove.clicked.connect(lambda _checked=False, i=index: self._remove_photo(i))
+
+        layout.addWidget(thumb)
+        layout.addWidget(prompt_edit, stretch=1)
+        layout.addWidget(up)
+        layout.addWidget(down)
+        layout.addWidget(remove)
+
+        self._prompt_edits.append(prompt_edit)
+        return row
+
+    def _move_photo(self, index: int, delta: int) -> None:
+        """Intercambia la foto con la posición adyacente (reordenar)."""
+        new_index = index + delta
+        if new_index < 0 or new_index >= len(self._photos):
+            return
+        self._sync_prompts()
+        self._photos[index], self._photos[new_index] = (
+            self._photos[new_index],
+            self._photos[index],
+        )
+        self._rebuild_photos()
+
+    def _remove_photo(self, index: int) -> None:
+        """Quita la foto de la lista."""
+        self._sync_prompts()
+        del self._photos[index]
+        self._rebuild_photos()
 
     # ---- Utilidades -----------------------------------------------
 
@@ -511,26 +694,37 @@ class VideoWidget(QWidget):
             btn.setEnabled(not busy)
         self._use_last_button.setEnabled(not busy)
         self._select_button.setEnabled(not busy)
+        self._photos_container.setEnabled(not busy)
         self._seed.setEnabled(not busy and not self._random_seed.isChecked())
 
     def _set_status(self, text: str) -> None:
         self._status.setText(text)
 
-    def _warn_low_ram(self) -> bool:
-        """Avisa si queda poca RAM libre; devuelve False si el usuario aborta."""
+    def _refresh_system_stats(self) -> None:
+        """Pide la RAM libre en segundo plano (no bloquea la UI, M5)."""
         base_url = "http://127.0.0.1:8188"
         if self._engine is not None:
             base_url = getattr(self._engine, "base_url", None) or base_url
-        try:
-            resp = requests.get(f"{base_url}/system_stats", timeout=2)
-            resp.raise_for_status()
-            data = resp.json()
-        except (requests.RequestException, ValueError):
-            return True  # sin datos de RAM: no bloquear la generación
-        ram_free = (data.get("system") or {}).get("ram_free")
-        if not isinstance(ram_free, (int, float)):
+        self._stats_worker = _SystemStatsWorker(base_url)
+        self._stats_worker.signals.ram_free.connect(self._on_ram_free)
+        QThreadPool.globalInstance().start(self._stats_worker)
+
+    def _on_ram_free(self, ram_free: object) -> None:
+        self._ram_free_bytes = ram_free
+        self._ram_free_at = time.monotonic()
+
+    def _warn_low_ram(self) -> bool:
+        """Avisa si queda poca RAM libre, usando datos en caché (sin bloquear).
+
+        Si no hay datos frescos (p. ej. ComfyUI no responde) no se avisa.
+        """
+        fresh = (
+            self._ram_free_bytes is not None
+            and (time.monotonic() - self._ram_free_at) < 120
+        )
+        if not fresh:
             return True
-        gb = ram_free / (1024 ** 3)
+        gb = float(self._ram_free_bytes) / (1024 ** 3)
         if gb >= 10:
             return True
         answer = QMessageBox.question(
@@ -569,6 +763,4 @@ class VideoWidget(QWidget):
         self._populate_modes()
         if engine is None:
             self._set_status("Wan Video no está configurado o deshabilitado.")
-
-
 

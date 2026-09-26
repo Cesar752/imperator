@@ -18,6 +18,8 @@ class ChatTask(Task):
     actual y lo expone como widget de tarea.
     """
 
+    engine_id = "ollama"
+
     def __init__(self, engine_manager: EngineManager) -> None:
         self._engine_manager = engine_manager
         self._widget: ChatWidget | None = None

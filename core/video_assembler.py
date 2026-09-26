@@ -170,6 +170,66 @@ class VideoAssembler:
         logger.info("VideoAssembler: MP4 final en '%s'.", output_path)
         return output_path
 
+    def concat_clips(
+        self,
+        clip_paths: list[str | Path],
+        output_name: str | None = None,
+    ) -> Path:
+        """Concatena varios MP4 del mismo formato en uno solo y devuelve su ruta.
+
+        Usa el demuxer ``concat`` de ffmpeg con ``-c copy`` (sin recodificar),
+        porque todos los clips provienen del mismo workflow (mismo códec H.264,
+        resolución y fps). No mezcla audio (los clips de Wan no lo llevan).
+        """
+        clips = [Path(p) for p in clip_paths]
+        if len(clips) < 2:
+            raise EngineError("Se necesitan al menos dos clips para concatenar.")
+        for clip in clips:
+            if not clip.is_file():
+                raise EngineError(f"El clip no existe: {clip}")
+
+        self._output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = self._output_dir / (
+            output_name
+            or f"plataformaia_{datetime.now():%Y%m%d_%H%M%S_%f}_secuencia.mp4"
+        )
+
+        list_path = self._output_dir / f"concat_{datetime.now():%Y%m%d_%H%M%S_%f}.txt"
+        list_path.write_text(
+            "\n".join(self._concat_entry(c) for c in clips) + "\n",
+            encoding="utf-8",
+        )
+
+        ffmpeg = self._ffmpeg()
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(list_path),
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+        try:
+            self._run(cmd)
+        finally:
+            list_path.unlink(missing_ok=True)
+
+        logger.info("VideoAssembler: secuencia concatenada en '%s'.", output_path)
+        return output_path
+
+    @staticmethod
+    def _concat_entry(path: Path) -> str:
+        """Escapa una ruta para el fichero de lista del demuxer concat."""
+        escaped = str(path).replace("\\", "/").replace("'", "'\\''")
+        return f"file '{escaped}'"
+
     def _build_command(
         self,
         video_path: Path,
