@@ -40,6 +40,7 @@ from engines.base_engine import CANCEL_MESSAGE, Engine, EngineError
 from services import preferences as prefs
 from services import system_stats as stats
 from services import video_params as vp
+from ui.task_widget import TaskWidget
 from ui.workers import ThreadWorker, run_pool_task
 
 logger = logging.getLogger(__name__)
@@ -105,7 +106,7 @@ class VideoWorker(ThreadWorker):
         self.progress.emit(overall, f"Clip {clip_index + 1}/{total}: {message}")
 
 
-class VideoWidget(QWidget):
+class VideoWidget(TaskWidget):
     """Formulario de generación de vídeo con barra de progreso y salida MP4."""
 
     _PREVIEW_SIZE = 256
@@ -413,17 +414,6 @@ class VideoWidget(QWidget):
         self._open_button.setEnabled(True)
         self._set_status(f"Listo: {path}")
 
-    def _on_error(self, message: str) -> None:
-        if message == CANCEL_MESSAGE:
-            self._set_status(message)
-        else:
-            self._set_status(f"Error: {message}")
-
-    def _on_finished(self) -> None:
-        self._set_busy(False)
-        self._worker.deleteLater()
-        self._worker = None
-
     def _cancel(self) -> None:
         if self._worker is None or not self._worker.isRunning():
             return
@@ -607,28 +597,31 @@ class VideoWidget(QWidget):
 
     # ---- Utilidades -----------------------------------------------
 
-    def _set_busy(self, busy: bool) -> None:
-        self._generate_button.setEnabled(not busy)
-        self._cancel_button.setEnabled(busy)
-        self._timeout.setEnabled(not busy)
-        self._prompt.setEnabled(not busy)
-        self._negative_prompt.setEnabled(not busy)
-        self._mode.setEnabled(not busy)
-        self._width.setEnabled(not busy)
-        self._height.setEnabled(not busy)
-        self._duration.setEnabled(not busy)
-        self._adjust_audio_button.setEnabled(not busy)
-        self._fps.setEnabled(not busy)
-        self._random_seed.setEnabled(not busy)
-        for btn in self._preset_buttons.values():
-            btn.setEnabled(not busy)
-        self._use_last_button.setEnabled(not busy)
-        self._select_button.setEnabled(not busy)
-        self._photos_container.setEnabled(not busy)
-        self._seed.setEnabled(not busy and not self._random_seed.isChecked())
+    def _busy_widgets(self) -> tuple:
+        return (
+            self._generate_button,
+            self._timeout,
+            self._prompt,
+            self._negative_prompt,
+            self._mode,
+            self._width,
+            self._height,
+            self._duration,
+            self._adjust_audio_button,
+            self._fps,
+            self._random_seed,
+            *self._preset_buttons.values(),
+            self._use_last_button,
+            self._select_button,
+            self._photos_container,
+        )
 
-    def _set_status(self, text: str) -> None:
-        self._status.setText(text)
+    def _busy_only_widgets(self) -> tuple:
+        return (self._cancel_button,)
+
+    def _on_busy_changed(self, busy: bool) -> None:
+        # El seed solo se habilita si no está marcado "Aleatorio".
+        self._seed.setEnabled(not busy and not self._random_seed.isChecked())
 
     def _refresh_system_stats(self) -> None:
         """Pide la RAM libre en segundo plano (no bloquea la UI, M5).

@@ -17,12 +17,12 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QVBoxLayout,
-    QWidget,
 )
 
 from engines.base_engine import CANCEL_MESSAGE, Engine, EngineError
 from services import document_params as dp
 from services import preferences as prefs
+from ui.task_widget import TaskWidget
 from ui.workers import ThreadWorker, run_pool_task
 
 logger = logging.getLogger(__name__)
@@ -92,7 +92,7 @@ class DocumentWorker(ThreadWorker):
             tmp_path.unlink(missing_ok=True)
 
 
-class DocumentWidget(QWidget):
+class DocumentWidget(TaskWidget):
     """Selector de archivo, modo, modelo y área de resultado del proceso."""
 
     def __init__(
@@ -289,17 +289,9 @@ class DocumentWidget(QWidget):
         self._copy_button.setEnabled(True)
         self._set_status("Listo.")
 
-    def _on_error(self, message: str) -> None:
-        if message == CANCEL_MESSAGE:
-            self._set_status(message)
-        else:
-            self._set_status(f"Error: {message}")
-
     def _on_finished(self) -> None:
-        self._set_busy(False)
         self._progress.setVisible(False)
-        self._worker.deleteLater()
-        self._worker = None
+        super()._on_finished()
 
     def _cancel(self) -> None:
         if self._worker is None or not self._worker.isRunning():
@@ -340,18 +332,17 @@ class DocumentWidget(QWidget):
 
     # ---- Utilidades -----------------------------------------------
 
-    def _set_busy(self, busy: bool) -> None:
-        self._select_button.setEnabled(not busy)
-        self._mode.setEnabled(not busy)
-        self._model.setEnabled(not busy)
+    def _busy_widgets(self) -> tuple:
+        return (self._select_button, self._mode, self._model)
+
+    def _busy_only_widgets(self) -> tuple:
+        return (self._cancel_button,)
+
+    def _on_busy_changed(self, busy: bool) -> None:
         self._process_button.setEnabled(not busy and self._engine is not None)
-        self._cancel_button.setEnabled(busy)
         if busy:
             self._save_button.setEnabled(False)
             self._copy_button.setEnabled(False)
-
-    def _set_status(self, text: str) -> None:
-        self._status.setText(text)
 
     def set_engine(self, engine: Engine | None) -> None:
         self._engine = engine

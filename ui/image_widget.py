@@ -20,12 +20,12 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QVBoxLayout,
-    QWidget,
 )
 
-from engines.base_engine import CANCEL_MESSAGE, Engine
+from engines.base_engine import Engine
 from services import image_params as ip
 from services import preferences as prefs
+from ui.task_widget import TaskWidget
 from ui.workers import ThreadWorker, run_pool_task
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ class ImageWorker(ThreadWorker):
         return str(self._engine.generate_image(**params))
 
 
-class ImageWidget(QWidget):
+class ImageWidget(TaskWidget):
     """Formulario de generación con preview de la imagen resultante."""
 
     def __init__(
@@ -333,17 +333,9 @@ class ImageWidget(QWidget):
         self._save_button.setEnabled(True)
         self._set_status(f"Listo: {path}")
 
-    def _on_error(self, message: str) -> None:
-        if message == CANCEL_MESSAGE:
-            self._set_status(message)
-        else:
-            self._set_status(f"Error: {message}")
-
     def _on_finished(self) -> None:
         self._timer.stop()
-        self._set_busy(False)
-        self._worker.deleteLater()
-        self._worker = None
+        super()._on_finished()
 
     def _is_paid_engine(self) -> bool:
         """True si el motor actual es de pago (Black Forest Labs)."""
@@ -398,22 +390,24 @@ class ImageWidget(QWidget):
             return
         self._set_status(f"Imagen guardada en: {target}")
 
-    def _set_busy(self, busy: bool) -> None:
-        self._generate_button.setEnabled(not busy)
-        self._cancel_button.setEnabled(busy)
-        self._prompt.setEnabled(not busy)
-        self._negative_prompt.setEnabled(not busy)
-        self._model.setEnabled(not busy)
-        self._width.setEnabled(not busy)
-        self._height.setEnabled(not busy)
-        self._steps.setEnabled(not busy)
-        self._guidance.setEnabled(not busy)
-        self._random_seed.setEnabled(not busy)
-        for btn in self._preset_buttons.values():
-            btn.setEnabled(not busy)
+    def _busy_widgets(self) -> tuple:
+        return (
+            self._generate_button,
+            self._prompt,
+            self._negative_prompt,
+            self._model,
+            self._width,
+            self._height,
+            self._steps,
+            self._guidance,
+            self._random_seed,
+            *self._preset_buttons.values(),
+        )
+
+    def _busy_only_widgets(self) -> tuple:
+        return (self._cancel_button,)
+
+    def _on_busy_changed(self, busy: bool) -> None:
         # El campo de seed solo se habilita si no está marcado "Aleatorio".
         self._seed.setEnabled(not busy and not self._random_seed.isChecked())
         self._update_ref_enabled(busy=busy)
-
-    def _set_status(self, text: str) -> None:
-        self._status.setText(text)

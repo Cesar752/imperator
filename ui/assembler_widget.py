@@ -27,6 +27,7 @@ from engines.base_engine import CANCEL_MESSAGE, Engine, EngineError
 from engines.whisper_engine import WHISPER_MODELS
 from services import assembler_params as asp
 from services import preferences as prefs
+from ui.task_widget import TaskWidget
 from ui.workers import ThreadWorker
 
 logger = logging.getLogger(__name__)
@@ -114,7 +115,7 @@ class AssemblerWorker(ThreadWorker):
         self.progress.emit(int(percent * 0.4), message)
 
 
-class AssemblerWidget(QWidget):
+class AssemblerWidget(TaskWidget):
     """Formulario del Ensamblador: vídeo + audio + subtítulos -> MP4 final."""
 
     def __init__(
@@ -461,17 +462,6 @@ class AssemblerWidget(QWidget):
         self._save_button.setEnabled(True)
         self._set_status(f"Listo: {path}")
 
-    def _on_error(self, message: str) -> None:
-        if message == CANCEL_MESSAGE:
-            self._set_status(message)
-        else:
-            self._set_status(f"Error: {message}")
-
-    def _on_finished(self) -> None:
-        self._set_busy(False)
-        self._worker.deleteLater()
-        self._worker = None
-
     def _cancel(self) -> None:
         if self._worker is None or not self._worker.isRunning():
             return
@@ -618,24 +608,27 @@ class AssemblerWidget(QWidget):
 
     # ---- Utilidades ----------------------------------------------
 
-    def _set_busy(self, busy: bool) -> None:
-        self._assemble_button.setEnabled(not busy)
-        self._cancel_button.setEnabled(busy)
-        self._save_button.setEnabled(not busy and self._last_path is not None)
-        self._video_button.setEnabled(not busy)
-        self._audio_button.setEnabled(not busy)
-        self._music_combo.setEnabled(not busy)
-        self._music_refresh.setEnabled(not busy)
-        self._music_volume.setEnabled(not busy)
-        self._voice_volume.setEnabled(not busy)
-        self._voice_offset.setEnabled(not busy)
-        self._music_offset.setEnabled(not busy)
-        self._ducking.setEnabled(not busy)
-        self._subtitles_check.setEnabled(not busy and self._whisper is not None)
-        self._subtitles_section.setEnabled(not busy)
+    def _busy_widgets(self) -> tuple:
+        return (
+            self._assemble_button,
+            self._video_button,
+            self._audio_button,
+            self._music_combo,
+            self._music_refresh,
+            self._music_volume,
+            self._voice_volume,
+            self._voice_offset,
+            self._music_offset,
+            self._ducking,
+            self._subtitles_section,
+        )
 
-    def _set_status(self, text: str) -> None:
-        self._status.setText(text)
+    def _busy_only_widgets(self) -> tuple:
+        return (self._cancel_button,)
+
+    def _on_busy_changed(self, busy: bool) -> None:
+        self._save_button.setEnabled(not busy and self._last_path is not None)
+        self._subtitles_check.setEnabled(not busy and self._whisper is not None)
 
     def set_engine(self, engine: Engine | None) -> None:
         self._whisper = engine

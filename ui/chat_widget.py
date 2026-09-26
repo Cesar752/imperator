@@ -12,12 +12,12 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
-    QWidget,
 )
 
 from engines.base_engine import ChatEngine
 from services import chat_params as cp
 from services import preferences as prefs
+from ui.task_widget import TaskWidget
 from ui.workers import ThreadWorker, run_pool_task
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,7 @@ class ChatWorker(ThreadWorker):
         return self._engine.chat(self._messages, model=self._model)
 
 
-class ChatWidget(QWidget):
+class ChatWidget(TaskWidget):
     """Área de conversación, indicador de actividad, input y botón Enviar."""
 
     def __init__(self, engine: ChatEngine, config_manager=None, parent=None) -> None:
@@ -211,16 +211,21 @@ class ChatWidget(QWidget):
         self._append_line(f"Ollama: {reply}")
         self._worker = None
 
-    def _on_error(self, message: str) -> None:
+    def _close_turn(self, text: str) -> None:
+        """Cierra el turno mostrando ``text`` (error o cancelación)."""
         self._thinking_label.setVisible(False)
         self._set_busy(False)
-        self._append_line(f"Error: {message}")
+        self._append_line(text)
         self._worker = None
+
+    def _on_cancelled(self, message: str) -> None:
+        self._close_turn(message)
+
+    def _on_failed(self, message: str) -> None:
+        self._close_turn(f"Error: {message}")
 
     def _append_line(self, text: str) -> None:
         self._conversation.appendPlainText(text)
 
-    def _set_busy(self, busy: bool) -> None:
-        self._model.setEnabled(not busy)
-        self._input.setEnabled(not busy)
-        self._send_button.setEnabled(not busy)
+    def _busy_widgets(self) -> tuple:
+        return (self._model, self._input, self._send_button)

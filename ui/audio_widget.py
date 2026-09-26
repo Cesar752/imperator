@@ -18,7 +18,6 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
-    QWidget,
 )
 
 try:
@@ -35,9 +34,10 @@ try:
 except ImportError:  # pragma: no cover - dependencia declarada en requirements.txt
     imageio_ffmpeg = None
 
-from engines.base_engine import CANCEL_MESSAGE, Engine, EngineError
+from engines.base_engine import Engine, EngineError
 from services import audio_params as ap
 from services import preferences as prefs
+from ui.task_widget import TaskWidget
 from ui.workers import ThreadWorker
 
 logger = logging.getLogger(__name__)
@@ -65,7 +65,7 @@ class AudioWorker(ThreadWorker):
         return str(self._engine.synthesize(self._text, self._voice, self._speed))
 
 
-class AudioWidget(QWidget):
+class AudioWidget(TaskWidget):
     """Formulario de texto a voz (Piper/Kokoro) con reproductor y guardado."""
 
     def __init__(
@@ -247,17 +247,6 @@ class AudioWidget(QWidget):
             self._player.setSource(QUrl.fromLocalFile(path))
         self._set_status(f"Listo: {path}")
 
-    def _on_error(self, message: str) -> None:
-        if message == CANCEL_MESSAGE:
-            self._set_status(message)
-        else:
-            self._set_status(f"Error: {message}")
-
-    def _on_finished(self) -> None:
-        self._set_busy(False)
-        self._worker.deleteLater()
-        self._worker = None
-
     def _cancel(self) -> None:
         if self._worker is None or not self._worker.isRunning():
             return
@@ -327,16 +316,14 @@ class AudioWidget(QWidget):
 
     # ---- Utilidades ----------------------------------------------
 
-    def _set_busy(self, busy: bool) -> None:
-        self._generate_button.setEnabled(not busy and self._engine is not None)
-        self._cancel_button.setEnabled(busy)
-        self._text_area.setEnabled(not busy)
-        self._motor.setEnabled(not busy)
-        self._voice.setEnabled(not busy)
-        self._speed.setEnabled(not busy)
+    def _busy_widgets(self) -> tuple:
+        return (self._text_area, self._motor, self._voice, self._speed)
 
-    def _set_status(self, text: str) -> None:
-        self._status.setText(text)
+    def _busy_only_widgets(self) -> tuple:
+        return (self._cancel_button,)
+
+    def _on_busy_changed(self, busy: bool) -> None:
+        self._generate_button.setEnabled(not busy and self._engine is not None)
 
     def set_engines(self, piper_engine=None, kokoro_engine=None) -> None:
         self._engines = {"piper": piper_engine, "kokoro": kokoro_engine}
