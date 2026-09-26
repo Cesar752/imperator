@@ -8,8 +8,6 @@ import subprocess
 import time
 from pathlib import Path
 
-import requests
-
 try:
     import imageio_ffmpeg
 except ImportError:  # pragma: no cover - dependencia declarada en requirements.txt
@@ -40,6 +38,7 @@ from PyQt6.QtWidgets import (
 from core.video_assembler import VideoAssembler
 from engines.base_engine import CANCEL_MESSAGE, Engine, EngineError
 from services import preferences as prefs
+from services import system_stats as stats
 from services import video_params as vp
 from ui.workers import ThreadWorker, run_pool_task
 
@@ -632,26 +631,17 @@ class VideoWidget(QWidget):
         self._status.setText(text)
 
     def _refresh_system_stats(self) -> None:
-        """Pide la RAM libre en segundo plano (no bloquea la UI, M5)."""
-        base_url = "http://127.0.0.1:8188"
-        if self._engine is not None:
-            base_url = getattr(self._engine, "base_url", None) or base_url
-        self._stats_task = run_pool_task(
-            self._read_system_stats, base_url, on_result=self._on_ram_free
-        )
+        """Pide la RAM libre en segundo plano (no bloquea la UI, M5).
 
-    @staticmethod
-    def _read_system_stats(base_url: str):
-        """Lee ``/system_stats`` y devuelve ``ram_free`` (o ``None``)."""
-        try:
-            resp = requests.get(f"{base_url}/system_stats", timeout=2)
-            resp.raise_for_status()
-            data = resp.json()
-        except (requests.RequestException, ValueError) as exc:
-            logger.debug("No se pudo leer /system_stats: %r", exc)
-            return None
-        ram_free = (data.get("system") or {}).get("ram_free")
-        return ram_free if isinstance(ram_free, (int, float)) else None
+        La consulta vive en :mod:`services.system_stats` (función pura y
+        testeable); aquí solo se lanza en el pool y se guarda el resultado.
+        """
+        base_url = None
+        if self._engine is not None:
+            base_url = getattr(self._engine, "base_url", None)
+        self._stats_task = run_pool_task(
+            stats.read_ram_free, base_url, on_result=self._on_ram_free
+        )
 
     def _on_ram_free(self, ram_free: object) -> None:
         self._ram_free_bytes = ram_free
@@ -662,9 +652,8 @@ class VideoWidget(QWidget):
 
         Si no hay datos frescos (p. ej. ComfyUI no responde) no se avisa.
         """
-        fresh = (
-            self._ram_free_bytes is not None
-            and (time.monotonic() - self._ram_free_at) < 120
+        fresh = self._ram_free_bytes is not None and stats.is_fresh(
+            self._ram_free_at, time.monotonic()
         )
         if not fresh:
             return True

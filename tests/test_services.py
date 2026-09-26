@@ -3,6 +3,9 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
+
+import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -12,6 +15,7 @@ from services import chat_params as cp  # noqa: E402
 from services import document_params as dp  # noqa: E402
 from services import image_params as ip  # noqa: E402
 from services import preferences as prefs  # noqa: E402
+from services import system_stats as ss  # noqa: E402
 from services import video_params as vp  # noqa: E402
 
 
@@ -252,6 +256,53 @@ class ChatParamsTest(unittest.TestCase):
         history = self._history(5)
         self.assertEqual(cp.trim_history(history, 0), history)
         self.assertEqual(cp.trim_history(history, -1), history)
+
+
+class SystemStatsTest(unittest.TestCase):
+    def _response(self, payload: dict) -> mock.Mock:
+        resp = mock.Mock()
+        resp.json.return_value = payload
+        return resp
+
+    def test_url_por_defecto_es_la_de_comfyui(self) -> None:
+        self.assertIn("8188", ss.DEFAULT_BASE_URL)
+
+    def test_lee_ram_free_y_pasa_timeout(self) -> None:
+        resp = self._response({"system": {"ram_free": 1234}})
+        with mock.patch.object(ss.requests, "get", return_value=resp) as get:
+            self.assertEqual(ss.read_ram_free("http://x:1"), 1234)
+        self.assertEqual(get.call_args.args[0], "http://x:1/system_stats")
+        self.assertEqual(get.call_args.kwargs["timeout"], ss.STATS_TIMEOUT)
+
+    def test_usa_el_endpoint_por_defecto_sin_base_url(self) -> None:
+        resp = self._response({"system": {"ram_free": 1}})
+        with mock.patch.object(ss.requests, "get", return_value=resp) as get:
+            ss.read_ram_free(None)
+        self.assertEqual(get.call_args.args[0], f"{ss.DEFAULT_BASE_URL}/system_stats")
+
+    def test_devuelve_none_si_falla_la_red(self) -> None:
+        with mock.patch.object(
+            ss.requests, "get", side_effect=requests.RequestException("boom")
+        ):
+            self.assertIsNone(ss.read_ram_free("http://x:1"))
+
+    def test_devuelve_none_si_el_json_es_invalido(self) -> None:
+        resp = mock.Mock()
+        resp.json.side_effect = ValueError("no json")
+        with mock.patch.object(ss.requests, "get", return_value=resp):
+            self.assertIsNone(ss.read_ram_free("http://x:1"))
+
+    def test_devuelve_none_si_el_campo_falta_o_no_es_numerico(self) -> None:
+        for payload in ({}, {"system": {}}, {"system": {"ram_free": "mucho"}}):
+            with mock.patch.object(
+                ss.requests, "get", return_value=self._response(payload)
+            ):
+                self.assertIsNone(ss.read_ram_free("http://x:1"))
+
+    def test_is_fresh(self) -> None:
+        self.assertTrue(ss.is_fresh(100.0, 100.0 + ss.STALE_AFTER - 1))
+        self.assertFalse(ss.is_fresh(100.0, 100.0 + ss.STALE_AFTER))
+        self.assertFalse(ss.is_fresh(None, 100.0))
 
 
 if __name__ == "__main__":
