@@ -2,6 +2,48 @@
 
 Notas pendientes (revisar al retomar el proyecto).
 
+## 0. Reanudar aquí (mañana): ¿merece la pena el paralelismo?
+
+**Estado en el que se queda todo:** el procesado de documentos va **de dos
+páginas a la vez** (`ui/document_widget.MAX_PARALLEL_PAGES = 2`), con
+`OLLAMA_NUM_PARALLEL=2` **ya fijado en tu entorno de usuario** y Ollama
+reiniciado, y el contexto doblado en los dos motores (visión **32768** = 16 384
+por página; chat **16384** = los 8 192 de siempre, repartidos entre dos slots).
+Medido con páginas sintéticas: **0,84x** sin slots forzados, **1,32x** con dos
+slots y **1,68x** en peticiones crudas por HTTP. Suite: **337 tests en verde**,
+árbol limpio (últimos commits: `de74fe3`, `05a249b`, `710636a`).
+
+**Lo único que hay que hacer mañana:** procesar **un PDF real de varias páginas**
+en Documentos (con `qwen3-vl:8b`) y cronometrarlo **dos veces**: una con
+`MAX_PARALLEL_PAGES = 1` y otra con `2`. Decidir con esos números:
+
+- **Si gana** (≥ 1,2x): se queda como está.
+- **Si no gana, o algo falla:** deshacer es quitar la variable de entorno
+  `OLLAMA_NUM_PARALLEL` (y reiniciar Ollama), poner `MAX_PARALLEL_PAGES = 1` y
+  devolver los `num_ctx` a visión 16384 / chat 8192.
+
+**Cómo medir sin engañarse:** el `thinking` del modelo hace que el tiempo varíe
+muchísimo entre ejecuciones — las **mismas** 3 páginas en serie tardaron 106 s en
+una prueba y 205 s en otra. Hay que comparar **el mismo documento** en las dos
+configuraciones y mirar los segundos **por página**, no un total suelto.
+
+**Avisos vigentes tras el cambio:**
+
+- Con dos slots Ollama **reparte el contexto**: si vuelve a aparecer "exceeds the
+  available context size" en cualquier motor, hay que doblar su `num_ctx`.
+- Los dos modelos no caben juntos en VRAM (8b a 32768 = 9,5 GB; 35b a 16384 =
+  12,2 GB). Al cambiar de pestaña Ollama descarga el otro, así que la primera
+  página tras el cambio paga la carga del modelo (~5-25 s).
+- El chat se queda como estaba (8 192 por petición) gracias a su `num_ctx`
+  doblado en `config/engines.json`.
+
+**Pendientes por orden de ganancia medida** (el paralelismo es lo más modesto):
+
+1. Modelo de visión **sin razonamiento** (p. ej. `qwen2.5vl:7b`): quita el ~90%
+   de los tokens generados → **5-10x**. Requiere descargar ~5 GB.
+2. §1: validar el **ducking** con los MP3 reales de `music/` (sigue pendiente).
+3. **Borrador** (speculative decoding) para que la CPU aporte: sin medir.
+
 ## 1. Verificar ducking con MP3 reales (≈5 min)
 
 **Estado:** pendiente — falta material de prueba.
