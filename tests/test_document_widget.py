@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -18,6 +19,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtCore import Qt  # noqa: E402
 
 from core.config_manager import ConfigManager  # noqa: E402
+from services import document_params as dp  # noqa: E402
+from services import preferences as prefs  # noqa: E402
 from ui import document_widget as docw  # noqa: E402
 
 
@@ -73,6 +76,35 @@ class DocumentLanguageHintTest(unittest.TestCase):
 
         self._modo("ocr")
         self.assertEqual(self.widget._status.text(), "Error: se cayó Ollama")
+
+    def test_el_selector_de_idioma_tiene_las_opciones(self) -> None:
+        combo = self.widget._language_combo
+        labels = [combo.itemText(i) for i in range(combo.count())]
+        self.assertEqual(list(dp.LANGUAGES.values()), labels)
+        self.assertEqual(combo.currentData(), dp.DEFAULT_LANGUAGE)
+
+    def test_el_idioma_elegido_se_guarda(self) -> None:
+        combo = self.widget._language_combo
+        combo.setCurrentIndex(combo.findData("eu"))
+        self.assertEqual(self.cm.load_last_models()[prefs.DOCUMENT_LANGUAGE], "eu")
+
+    def test_restaura_el_idioma_guardado(self) -> None:
+        self.cm.save_last_model(prefs.DOCUMENT_LANGUAGE, "es")
+        widget = docw.DocumentWidget(None, self.cm)
+        try:
+            self.assertEqual(widget._language_combo.currentData(), "es")
+        finally:
+            widget.close()
+
+    def test_el_idioma_elegido_se_pasa_al_worker(self) -> None:
+        combo = self.widget._language_combo
+        combo.setCurrentIndex(combo.findData("eu"))
+        self.widget._file_path = Path("documento.pdf")
+        with mock.patch.object(docw, "DocumentWorker") as worker_cls:
+            with mock.patch.object(self.widget, "_set_busy"):
+                self.widget._engine = mock.Mock(is_available=lambda: True)
+                self.widget._process()
+        self.assertEqual(worker_cls.call_args.args[4], "eu")
 
 
 if __name__ == "__main__":

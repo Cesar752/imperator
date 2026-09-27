@@ -18,6 +18,7 @@ from dataclasses import dataclass
 CHAT = "chat"
 DOCUMENT = "document"
 DOCUMENT_MODE = "document_mode"
+DOCUMENT_LANGUAGE = "document_language"
 IMAGE = "image"
 VIDEO = "video"
 VIDEO_LAST_IMAGE = "video_last_image"

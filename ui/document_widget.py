@@ -40,15 +40,18 @@ class DocumentWorker(ThreadWorker):
 
     page_progress = pyqtSignal(int, int)   # página actual, total de páginas
 
-    def __init__(self, engine, file_path, mode, model, parent=None) -> None:
+    def __init__(
+        self, engine, file_path, mode, model, language=None, parent=None
+    ) -> None:
         super().__init__(parent)
         self._engine = engine
         self._file_path = Path(file_path)
         self._mode = mode
         self._model = model
+        self._language = language
 
     def work(self) -> str:
-        image_prompt = dp.prompt_for(self._mode)
+        image_prompt = dp.prompt_for(self._mode, self._language)
         if dp.is_pdf(self._file_path.suffix):
             return self._process_pdf(image_prompt)
         return self._process_image(image_prompt)
@@ -69,7 +72,7 @@ class DocumentWorker(ThreadWorker):
             raise EngineError(
                 "PyMuPDF no está instalado. Instálalo con: pip install PyMuPDF>=1.24.0"
             )
-        text_prompt = dp.text_prompt_for(self._mode)
+        text_prompt = dp.text_prompt_for(self._mode, self._language)
         doc = pymupdf.open(str(self._file_path))
         try:
             total = doc.page_count
@@ -127,6 +130,7 @@ class DocumentWidget(TaskWidget):
         self._build_ui()
         self._populate_models()
         self._restore_mode()
+        self._restore_language()
         if engine is None:
             self._set_status("Ollama Vision no está configurado o deshabilitado.")
             self._process_button.setEnabled(False)
@@ -147,9 +151,19 @@ class DocumentWidget(TaskWidget):
         self._model = QComboBox()
         self._model.currentIndexChanged.connect(self._on_model_changed)
 
+        self._language_combo = QComboBox()
+        self._language_combo.setToolTip(
+            "Idioma del resumen y de las tablas. El OCR siempre respeta el idioma "
+            "original del documento."
+        )
+        for language_id, label in dp.LANGUAGES.items():
+            self._language_combo.addItem(label, language_id)
+        self._language_combo.currentIndexChanged.connect(self._on_language_changed)
+
         form = QFormLayout()
         form.addRow("Modo:", self._mode)
         form.addRow("Modelo:", self._model)
+        form.addRow("Idioma:", self._language_combo)
 
         self._process_button = QPushButton("Procesar")
         self._cancel_button = QPushButton("Cancelar")
@@ -285,6 +299,20 @@ class DocumentWidget(TaskWidget):
             self._mode.setCurrentIndex(idx)
             self._mode.blockSignals(False)
 
+    def _restore_language(self) -> None:
+        """Restaura el idioma de salida guardado (``auto`` si no hay nada)."""
+        last = self._prefs.get_str(prefs.DOCUMENT_LANGUAGE)
+        idx = self._language_combo.findData(last) if last else -1
+        if idx < 0:
+            idx = self._language_combo.findData(dp.DEFAULT_LANGUAGE)
+        if idx >= 0:
+            self._language_combo.blockSignals(True)
+            self._language_combo.setCurrentIndex(idx)
+            self._language_combo.blockSignals(False)
+
+    def _on_language_changed(self) -> None:
+        self._prefs.set(prefs.DOCUMENT_LANGUAGE, self._language_combo.currentData())
+
     def _on_mode_changed(self) -> None:
         self._prefs.set(prefs.DOCUMENT_MODE, self._mode.currentData())
         self._update_language_hint()
@@ -316,7 +344,14 @@ class DocumentWidget(TaskWidget):
         self._progress.setVisible(True)
         self._set_status("Procesando...")
 
-        self._worker = DocumentWorker(self._engine, self._file_path, mode, model, self)
+        self._worker = DocumentWorker(
+            self._engine,
+            self._file_path,
+            mode,
+            model,
+            self._language_combo.currentData(),
+            self,
+        )
         self._worker.page_progress.connect(self._on_progress)
         self._worker.result.connect(self._on_result_ready)
         self._worker.failed.connect(self._on_error)

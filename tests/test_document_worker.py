@@ -159,6 +159,16 @@ class DocumentWorkerPdfTest(unittest.TestCase):
         self.assertEqual(result, "RESULTADO-IMAGEN")
         self.assertEqual(engine.image_calls[0][1], dp.prompt_for("tablas"))
 
+    def test_el_idioma_elegido_llega_al_prompt(self) -> None:
+        engine = _FakeEngine()
+        doc = _FakeDoc([_FakePage(_TEXT)])
+        worker = dw.DocumentWorker(engine, self.pdf, "resumen", "m", "eu")
+        with mock.patch.object(dw, "pymupdf", _FakePymupdf(doc)):
+            worker.work()
+        prompt = engine.text_calls[0][1]
+        self.assertIn("Basque (euskera)", prompt)
+        self.assertNotIn("SAME language", prompt)
+
     def test_cancelacion_detectada_entre_paginas(self) -> None:
         # QThread.requestInterruption() no marca nada si el hilo no corre, así
         # que se simula la cancelación a partir de la segunda comprobación.

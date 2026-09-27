@@ -190,7 +190,11 @@ class DocumentParamsTest(unittest.TestCase):
     def test_prompt_for_known_modes(self) -> None:
         for mode_id in dp.MODE_LABELS:
             self.assertIn(mode_id, dp.PROMPTS)
-            self.assertEqual(dp.prompt_for(mode_id), dp.PROMPTS[mode_id])
+            # El prompt del modo empieza por su cuerpo y añade lo que corresponda
+            # (idioma de salida y regla de no comentar).
+            self.assertTrue(
+                dp.prompt_for(mode_id).startswith(dp.PROMPTS[mode_id]), mode_id
+            )
 
     def test_prompt_for_unknown_mode_falls_back_to_ocr(self) -> None:
         self.assertEqual(dp.prompt_for("desconocido"), dp.PROMPTS["ocr"])
@@ -242,6 +246,42 @@ class DocumentParamsTest(unittest.TestCase):
         self.assertEqual(
             dp.language_warning("llava:13b", "tablas"), dp.LANGUAGE_WARNING
         )
+
+    def test_el_idioma_de_salida_se_puede_forzar(self) -> None:
+        fuerzas = (
+            ("es", "Spanish"),
+            ("eu", "Basque (euskera)"),
+            ("en", "English"),
+        )
+        for language, esperado in fuerzas:
+            for prompt in (
+                dp.prompt_for("resumen", language),
+                dp.text_prompt_for("resumen", language),
+                dp.prompt_for("tablas", language),
+                dp.text_prompt_for("tablas", language),
+            ):
+                self.assertIn(esperado, prompt, language)
+                self.assertNotIn("SAME language", prompt, language)
+
+    def test_el_ocr_ignora_el_idioma_elegido(self) -> None:
+        # Una transcripción nunca se traduce.
+        self.assertEqual(dp.prompt_for("ocr", "es"), dp.prompt_for("ocr"))
+        self.assertEqual(dp.prompt_for("ocr", "eu"), dp.PROMPTS["ocr"])
+
+    def test_los_prompts_de_analisis_prohiben_los_comentarios(self) -> None:
+        # Al modelo se le escapaba un "(3 sentences)" copiado del prompt.
+        for prompt in (
+            dp.prompt_for("resumen"),
+            dp.prompt_for("resumen", "eu"),
+            dp.text_prompt_for("tablas", "es"),
+        ):
+            self.assertIn("Do not add commentary", prompt)
+
+    def test_la_instruccion_de_idioma_cae_en_auto(self) -> None:
+        auto = dp.language_instruction("auto")
+        self.assertEqual(dp.language_instruction(None), auto)
+        self.assertEqual(dp.language_instruction("desconocido"), auto)
+        self.assertIn("SAME language", auto)
 
     def test_ocr_no_necesita_analisis_de_texto(self) -> None:
         # En OCR la capa de texto del PDF ya es la transcripción.

@@ -6,10 +6,14 @@ modelo por defecto, prompts por modo y el formateo de la previsualización
 
 Sobre idiomas: los modelos locales de Ollama que se usan aquí (``qwen3-vl`` y la
 familia ``qwen3.x``) sí trabajan en euskera, así que los prompts piden conservar
-el idioma original y responder en él. La limitación "sin euskera" del proyecto
-es exclusiva de TTS: Kokoro no lo cubre y para voces en euskera se usa Piper.
-Las instrucciones van en inglés (los modelos las siguen mejor), pero el idioma
-de la *respuesta* se fija explícitamente.
+el idioma original. La limitación "sin euskera" del proyecto es exclusiva de TTS:
+Kokoro no lo cubre y para voces en euskera se usa Piper.
+
+El idioma de la *respuesta* es una opción de la UI (:data:`LANGUAGES`): ``auto``
+respeta el del documento y ``es``/``eu``/``en`` lo fuerzan a español, euskera o
+inglés, que es lo que permite pedir el resumen en euskera aunque el documento
+venga en castellano (o al revés). El OCR nunca se traduce. Las instrucciones van
+en inglés porque los modelos las siguen mejor.
 """
 
 # Formatos de imagen soportados (además de PDF).
@@ -21,7 +25,8 @@ FILE_FILTER = "Documentos (*.pdf *.png *.jpg *.jpeg *.bmp *.webp *.tiff *.tif)"
 # Modelo por defecto (fallback si /api/tags no responde o no hay modelos de visión).
 DEFAULT_MODEL = "qwen3-vl:8b"
 
-# Prompts por modo (imagen: página rasterizada o foto).
+# Prompts por modo (imagen: página rasterizada o foto). El idioma de salida se
+# añade aparte, en :func:`prompt_for`.
 PROMPTS = {
     "ocr": (
         "Extract and transcribe all visible text from this image. Preserve the "
@@ -30,14 +35,13 @@ PROMPTS = {
         "normalise it. Do not add any commentary or explanations."
     ),
     "resumen": (
-        "Summarize the content of this document in 3-5 sentences, in the SAME "
-        "language as the document: if it is written in Basque/euskera, answer in "
-        "Basque. Focus on the key information and main points."
+        "Summarize the content of this document in 3-5 sentences. Focus on the "
+        "key information and main points."
     ),
     "tablas": (
-        "Extract all tables from this image and return them as HTML tables. Keep "
-        "the cell text in the original language. If there is no table, return "
-        "'No tables found'."
+        "Extract all tables from this image and return them as HTML tables, "
+        "keeping the cell text in the original language. If there is no table, "
+        "return 'No tables found'."
     ),
 }
 
@@ -45,16 +49,43 @@ PROMPTS = {
 # En ``ocr`` no hacen falta: el texto extraído ya es la transcripción.
 TEXT_PROMPTS = {
     "resumen": (
-        "Summarize the following document content in 3-5 sentences, in the SAME "
-        "language as the text: if it is written in Basque/euskera, answer in "
-        "Basque. Focus on the key information and main points."
+        "Summarize the following document content in 3-5 sentences. Focus on the "
+        "key information and main points."
     ),
     "tablas": (
         "Extract all tables from the following text and return them as HTML "
-        "tables. Keep the cell text in the original language. If there is no "
+        "tables, keeping the cell text in the original language. If there is no "
         "table, return 'No tables found'."
     ),
 }
+
+# Modos que *analizan* el contenido: en ellos el texto nativo también pasa por el
+# modelo (y el idioma de salida es configurable). En OCR basta transcribir.
+ANALYSIS_MODES = ("resumen", "tablas")
+
+# Idiomas de salida para resumen y tablas. El OCR no se traduce nunca: una
+# transcripción debe conservar el idioma original del documento.
+LANGUAGES: dict[str, str] = {
+    "auto": "Igual que el documento",
+    "es": "Español",
+    "eu": "Euskera",
+    "en": "Inglés",
+}
+DEFAULT_LANGUAGE = "auto"
+
+_LANGUAGE_INSTRUCTIONS = {
+    "auto": (
+        "Answer in the SAME language as the document: if it is written in "
+        "Basque/euskera, answer in Basque."
+    ),
+    "es": "Answer in Spanish, regardless of the language of the document.",
+    "eu": "Answer in Basque (euskera), regardless of the language of the document.",
+    "en": "Answer in English, regardless of the language of the document.",
+}
+
+#: Recordatorio para que el modelo no repita sus instrucciones en la respuesta
+#: (se le escapaba un "(3 sentences)" copiado del prompt).
+_NO_META = "Do not add commentary, notes or mentions of these instructions."
 
 # Etiquetas legibles por modo.
 MODE_LABELS = {
@@ -83,9 +114,27 @@ LANGUAGE_WARNING = (
 )
 
 
-def prompt_for(mode: str | None) -> str:
-    """Prompt del modo indicado (cae a OCR si el modo falta o es desconocido)."""
-    return PROMPTS.get(mode or "", PROMPTS["ocr"])
+def prompt_for(mode: str | None, language: str | None = None) -> str:
+    """Prompt de imagen del modo, con la instrucción de idioma si aplica."""
+    base = PROMPTS.get(mode or "", PROMPTS["ocr"])
+    return _with_language(mode, base, language)
+
+
+def language_instruction(language: str | None) -> str:
+    """Instrucción de idioma de salida (``auto`` = el del documento)."""
+    return _LANGUAGE_INSTRUCTIONS.get(
+        language or DEFAULT_LANGUAGE, _LANGUAGE_INSTRUCTIONS[DEFAULT_LANGUAGE]
+    )
+
+
+def _with_language(mode: str | None, base: str, language: str | None) -> str:
+    """Añade el idioma de salida y la regla de no comentar.
+
+    En ``ocr`` no se toca: una transcripción debe conservar el idioma original.
+    """
+    if not needs_text_analysis(mode):
+        return base
+    return f"{base} {language_instruction(language)} {_NO_META}"
 
 
 def supports_minority_languages(model: str | None) -> bool:
@@ -109,18 +158,25 @@ def language_warning(model: str | None, mode: str | None) -> str | None:
     return LANGUAGE_WARNING
 
 
-def text_prompt_for(mode: str | None) -> str | None:
+def text_prompt_for(mode: str | None, language: str | None = None) -> str | None:
     """Prompt para analizar texto ya extraído, o ``None`` si el modo no lo necesita.
 
     ``ocr`` no necesita modelo cuando el documento ya trae capa de texto: esa
     capa *es* la transcripción. Resumen y tablas, en cambio, deben analizarla.
     """
-    return TEXT_PROMPTS.get(mode or "")
+    base = TEXT_PROMPTS.get(mode or "")
+    if base is None:
+        return None
+    return _with_language(mode, base, language)
 
 
 def needs_text_analysis(mode: str | None) -> bool:
-    """¿El modo debe analizar el texto nativo en vez de devolverlo tal cual?"""
-    return text_prompt_for(mode) is not None
+    """¿El modo debe analizar el texto nativo en vez de devolverlo tal cual?
+
+    Se comprueba contra ``ANALYSIS_MODES`` en vez de contra ``text_prompt_for``
+    para no crear un ciclo (esa función consulta este mismo predicado).
+    """
+    return (mode or "") in ANALYSIS_MODES
 
 
 def is_pdf(suffix: str) -> bool:
