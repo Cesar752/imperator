@@ -88,16 +88,24 @@ SUMMARY_MODE = "resumen"
 # que resumir y en tablas cada página trae las suyas: unirlas no es un resumen.
 GLOBAL_MODES = (SUMMARY_MODE,)
 
-# Reglas de estilo de los resúmenes, por página y globales. Salen de revisar un
-# resumen real: el modelo mezclaba apartados en un mismo párrafo, alternaba
-# frases larguísimas con telegráficas, repetía la misma cifra en dos apartados y
-# no cerraba las ideas de cada bloque.
+# Reglas de estilo de los resúmenes, por página y globales. Salen de revisar dos
+# resúmenes reales:
+# - el primero mezclaba apartados en un mismo párrafo, alternaba frases
+#   larguísimas con telegráficas y repetía la misma cifra en dos apartados;
+# - el segundo enseñó que pedir un "cierre" por apartado con "→" era un error:
+#   el modelo lo usaba para *interpretar* y llegó a inventar datos (hablaba de
+#   "equipamiento" donde el texto decía acumular la hora de lactancia). Por eso
+#   las reglas de fidelidad prohíben interpretar, inferir e inventar.
 SUMMARY_STYLE = (
     "Style: organize the answer in short paragraphs, one per distinct topic, "
     "without merging unrelated sections; keep the sentences of similar length "
     "(do not mix very long sentences with very short ones); do not repeat data "
-    "already given in another paragraph; and end each paragraph with a one-line "
-    "takeaway that starts with '→'."
+    "already given in another paragraph; and make sure every sentence adds "
+    "information taken from the document. "
+    "Fidelity: summarize only what the document states. Do not interpret, "
+    "infer, deduce, give opinions or add context that is not written in the "
+    "text, and do not invent terms, numbers or data. Do not add closing lines, "
+    "arrows or extra commentary."
 )
 
 # Presupuesto de caracteres del texto que se manda al resumen global. El contexto
@@ -179,9 +187,8 @@ def _with_language(mode: str | None, base: str, language: str | None) -> str:
     """Añade las reglas de estilo, el idioma de salida y la regla de no comentar.
 
     En ``ocr`` no se toca: una transcripción debe conservar el idioma original.
-    Las reglas de estilo son solo del resumen (:data:`SUMMARY_STYLE`); el cierre
-    de cada apartado se pide en el idioma de salida, así que va junto a la
-    instrucción de idioma.
+    Las reglas de estilo (y de fidelidad al texto) son solo del resumen; ver
+    :data:`SUMMARY_STYLE`.
     """
     if not needs_text_analysis(mode):
         return base

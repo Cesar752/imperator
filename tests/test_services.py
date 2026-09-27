@@ -336,12 +336,33 @@ class DocumentParamsTest(unittest.TestCase):
         ):
             self.assertIn(dp.SUMMARY_STYLE, prompt)
 
-    def test_las_reglas_de_estilo_cubren_lo_pedido(self) -> None:
+    def test_las_reglas_cubren_separar_apartados_y_no_repetir(self) -> None:
+        # Primera revisión: apartados mezclados, frases muy desiguales y la misma
+        # cifra repetida en dos apartados.
         estilo = dp.SUMMARY_STYLE
-        self.assertIn("one per distinct topic", estilo)  # separar apartados
-        self.assertIn("similar length", estilo)          # unificar el estilo
-        self.assertIn("do not repeat", estilo)           # reducir repeticiones
-        self.assertIn("'→'", estilo)                     # cierre de cada apartado
+        self.assertIn("one per distinct topic", estilo)
+        self.assertIn("similar length", estilo)
+        self.assertIn("do not repeat", estilo)
+        self.assertIn("every sentence adds information", estilo)
+
+    def test_las_reglas_exigen_fidelidad_al_texto(self) -> None:
+        # Segunda revisión: pedir un "cierre" con "→" invitaba a interpretar y el
+        # modelo llegó a inventar datos (habló de "equipamiento" donde el
+        # documento decía acumular la hora de lactancia). Nada de interpretar ni
+        # de añadir datos que no estén escritos.
+        estilo = dp.SUMMARY_STYLE
+        self.assertNotIn("→", estilo)
+        self.assertIn("only what the document states", estilo)
+        self.assertIn("Do not interpret", estilo)
+        self.assertIn("do not invent", estilo)
+        self.assertIn("arrows", estilo)
+
+        for prompt in (
+            dp.prompt_for("resumen"),
+            dp.text_prompt_for("resumen"),
+            dp.global_prompt_for("resumen"),
+        ):
+            self.assertNotIn("→", prompt)
 
     def test_las_reglas_de_estilo_no_tocan_los_demas_modos(self) -> None:
         # El OCR transcribe y las tablas devuelven celdas: no son prosa.
