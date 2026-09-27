@@ -61,6 +61,27 @@ class ChatPayloadTest(unittest.TestCase):
         contenido, _ = self._chat({"message": {"content": "  hola  "}})
         self.assertEqual(contenido, "hola")
 
+    def test_por_defecto_no_limita_los_tokens_de_salida(self) -> None:
+        # Un tope bajo cortaba las respuestas a media frase: el techo real es la
+        # ventana de contexto.
+        self.assertEqual(OllamaEngine._NUM_PREDICT, -1)
+        _, enviado = self._chat({"message": {"content": "hola"}})
+        self.assertEqual(enviado["options"]["num_predict"], -1)
+
+    def test_respuesta_cortada_avisa_en_el_propio_texto(self) -> None:
+        contenido, _ = self._chat(
+            {"message": {"content": "texto a medias"}, "done_reason": "length"}
+        )
+        self.assertTrue(contenido.startswith("texto a medias"))
+        self.assertTrue(contenido.endswith(OllamaEngine.TRUNCATED_NOTE))
+        self.assertIn("respuesta incompleta", contenido)
+
+    def test_respuesta_completa_no_lleva_aviso(self) -> None:
+        contenido, _ = self._chat(
+            {"message": {"content": "respuesta entera"}, "done_reason": "stop"}
+        )
+        self.assertEqual(contenido, "respuesta entera")
+
 
 class EmptyReplyTest(unittest.TestCase):
     def setUp(self) -> None:

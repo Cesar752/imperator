@@ -18,9 +18,14 @@ class OllamaEngine(ChatEngine):
     #: truncarse la generación, el contenido llega vacío.
     _NUM_CTX = 8192
 
-    #: Tokens máximos de salida. El defecto del servidor (128) puede consumirse
-    #: entero en el razonamiento previo de los modelos thinking.
-    _NUM_PREDICT = 2048
+    #: Tokens máximos de salida. ``-1`` = sin límite explícito: el techo real es
+    #: la ventana de contexto (``num_ctx``). Un tope bajo corta las respuestas a
+    #: media frase (el defecto del servidor, 128, incluso las dejaba vacías).
+    _NUM_PREDICT = -1
+
+    #: Aviso que se añade cuando el servidor cortó la respuesta por límite de
+    #: tokens (``done_reason == "length"``), para que el corte no pase inadvertido.
+    TRUNCATED_NOTE = "\n\n[respuesta incompleta: se alcanzó el límite de tokens]"
 
     def __init__(
         self,
@@ -120,6 +125,9 @@ class OllamaEngine(ChatEngine):
         content = (message.get("content") or "").strip()
         if not content:
             raise EngineError(self._empty_reply_reason(data, message))
+        if str(data.get("done_reason") or "") == "length":
+            logger.warning("Ollama: respuesta cortada por el límite de tokens")
+            return f"{content}{self.TRUNCATED_NOTE}"
         logger.debug("Ollama chat OK: %d chars", len(content))
         return content
 
