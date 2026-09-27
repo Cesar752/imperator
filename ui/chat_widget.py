@@ -3,7 +3,7 @@
 import logging
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QTextCursor
+from PyQt6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
 from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -22,6 +22,13 @@ from ui.task_widget import TaskWidget
 from ui.workers import ThreadWorker, run_pool_task
 
 logger = logging.getLogger(__name__)
+
+# Colores de las etiquetas de autor. Son tonos medios, legibles tanto sobre el
+# tema oscuro de la app como sobre el claro.
+_COLOR_USUARIO = "#4a9eff"
+_COLOR_MOTOR = "#69c07a"
+_COLOR_ERROR = "#e06c75"
+_COLOR_AVISO = "#d8a657"
 
 
 class ChatWorker(ThreadWorker):
@@ -178,7 +185,7 @@ class ChatWidget(TaskWidget):
 
     def _send_message(self) -> None:
         if self._engine is None:
-            self._append_line("Error: no hay motor activo.")
+            self._append_turn("Error", "no hay motor activo.", _COLOR_ERROR)
             return
         text = self._input.text().strip()
         if not text:
@@ -186,7 +193,7 @@ class ChatWidget(TaskWidget):
         if self._worker is not None and self._worker.isRunning():
             return
 
-        self._append_line(f"Tú: {text}")
+        self._append_turn("Tú", text, _COLOR_USUARIO)
         self._messages.append({"role": "user", "content": text})
         self._input.clear()
 
@@ -206,28 +213,42 @@ class ChatWidget(TaskWidget):
 
     def _on_reply(self, reply: str) -> None:
         self._messages.append({"role": "assistant", "content": reply})
-        self._thinking_label.setVisible(False)
-        self._set_busy(False)
-        self._append_line(f"Ollama: {reply}")
-        self._worker = None
-        self._restore_focus()
-
-    def _close_turn(self, text: str) -> None:
-        """Cierra el turno mostrando ``text`` (error o cancelación)."""
-        self._thinking_label.setVisible(False)
-        self._set_busy(False)
-        self._append_line(text)
-        self._worker = None
-        self._restore_focus()
+        self._append_turn("Ollama", reply, _COLOR_MOTOR)
+        self._end_turn()
 
     def _on_cancelled(self, message: str) -> None:
-        self._close_turn(message)
+        self._append_turn("Aviso", message, _COLOR_AVISO)
+        self._end_turn()
 
     def _on_failed(self, message: str) -> None:
-        self._close_turn(f"Error: {message}")
+        self._append_turn("Error", message, _COLOR_ERROR)
+        self._end_turn()
 
-    def _append_line(self, text: str) -> None:
-        self._conversation.appendPlainText(text)
+    def _end_turn(self) -> None:
+        """Cierra el turno: oculta el indicador, libera la UI y devuelve el foco."""
+        self._thinking_label.setVisible(False)
+        self._set_busy(False)
+        self._worker = None
+        self._restore_focus()
+
+    def _append_turn(self, autor: str, texto: str, color: str) -> None:
+        """Añade un turno con su autor resaltado y separado del anterior.
+
+        Del cuerpo solo se deja el color del tema (no se fija), así que se lee
+        igual en claro y en oscuro; el color distingue únicamente a quién habla.
+        """
+        cursor = self._conversation.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        if not self._conversation.document().isEmpty():
+            cursor.insertBlock()   # cierra el turno anterior
+            cursor.insertBlock()   # y deja una línea en blanco entre turnos
+        etiqueta = QTextCharFormat()
+        etiqueta.setFontWeight(QFont.Weight.Bold)
+        etiqueta.setForeground(QColor(color))
+        cursor.setCharFormat(etiqueta)
+        cursor.insertText(f"{autor}: ")
+        cursor.setCharFormat(QTextCharFormat())   # el cuerpo, con el color del tema
+        cursor.insertText(texto)
         self._scroll_to_bottom()
 
     def _scroll_to_bottom(self) -> None:

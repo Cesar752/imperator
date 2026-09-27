@@ -1,8 +1,9 @@
-"""Tests del foco de ChatWidget: la barra debe quedar lista para escribir.
+"""Tests de ChatWidget: foco de la barra y formato de los turnos.
 
-Al enviar, el widget deshabilita la barra mientras el motor piensa; Qt le quita
-el foco y, al rehabilitarla, no lo devuelve. Estos tests fijan el arreglo:
-el cursor vuelve solo cuando termina el turno (respuesta, error o cancelación).
+Cubre dos arreglos de usabilidad:
+- la barra recupera el foco al terminar el turno (bloquearla lo perdía);
+- cada turno se ve distingue: autor resaltado y turnos separados, para que no
+  se mezcle lo que dice el humano con lo que responde el motor.
 """
 
 import os
@@ -15,8 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtGui import QShowEvent  # noqa: E402
+from PyQt6.QtCore import Qt  # noqa: E402
+from PyQt6.QtGui import QFont, QShowEvent  # noqa: E402
 
+from engines.base_engine import CANCEL_MESSAGE  # noqa: E402
 from ui import chat_widget as cw  # noqa: E402
 from ui.chat_widget import ChatWidget  # noqa: E402
 
@@ -43,6 +46,8 @@ class ChatFocusTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.widget.close()
 
+    # ---- Foco ------------------------------------------------------
+
     def test_restaura_el_foco_al_recibir_la_respuesta(self) -> None:
         barra = self.widget._input
         self.widget._set_busy(True)  # el motor está pensando
@@ -51,11 +56,18 @@ class ChatFocusTest(unittest.TestCase):
         set_focus.assert_called_once()
         self.assertTrue(barra.isEnabled())
 
-    def test_restaura_el_foco_al_cerrar_el_turno_por_error(self) -> None:
+    def test_restaura_el_foco_al_fallar(self) -> None:
         barra = self.widget._input
         self.widget._set_busy(True)
         with mock.patch.object(barra, "setFocus") as set_focus:
-            self.widget._close_turn("Error: se cayó Ollama")
+            self.widget._on_failed("se cayó Ollama")
+        set_focus.assert_called_once()
+
+    def test_restaura_el_foco_al_cancelar(self) -> None:
+        barra = self.widget._input
+        self.widget._set_busy(True)
+        with mock.patch.object(barra, "setFocus") as set_focus:
+            self.widget._on_cancelled(CANCEL_MESSAGE)
         set_focus.assert_called_once()
 
     def test_restaura_el_foco_con_la_barra_ya_habilitada(self) -> None:
@@ -65,7 +77,7 @@ class ChatFocusTest(unittest.TestCase):
             barra, "setFocus", side_effect=lambda: estados.append(barra.isEnabled())
         ):
             self.widget._set_busy(True)
-            self.widget._close_turn("Cancelado por el usuario")
+            self.widget._on_failed("boom")
         self.assertEqual(estados, [True], "se enfoca después de rehabilitarla")
 
     def test_no_roba_el_foco_mientras_esta_bloqueada(self) -> None:
@@ -83,6 +95,8 @@ class ChatFocusTest(unittest.TestCase):
             self.widget.showEvent(QShowEvent())
         focus.assert_called_once()
 
+    # ---- Envío -----------------------------------------------------
+
     def test_al_enviar_limpia_la_barra_y_manda_el_historial(self) -> None:
         self.widget._input.setText("  hola  ")
         with mock.patch.object(cw.ChatWorker, "start") as start:
@@ -98,11 +112,67 @@ class ChatFocusTest(unittest.TestCase):
         start.assert_not_called()
         self.assertEqual(self.widget._messages, [])
 
+    def test_sin_motor_avisa_en_la_conversacion(self) -> None:
+        with mock.patch.object(cw, "run_pool_task"):
+            widget = ChatWidget(engine=None)
+        widget._input.setText("hola")
+        with mock.patch.object(cw.ChatWorker, "start") as start:
+            widget._send_message()
+        start.assert_not_called()
+        self.assertIn("Error: no hay motor activo.", widget._conversation.toPlainText())
+        widget.close()
+
+    # ---- Quién dice qué --------------------------------------------
+
+    def _formato_de(self, aguja: str):
+        return self.widget._conversation.document().find(aguja).charFormat()
+
+    def _dos_turnos(self) -> None:
+        self.widget._input.setText("hola")
+        with mock.patch.object(cw.ChatWorker, "start"):
+            self.widget._send_message()
+        self.widget._on_reply("respuesta del motor")
+
+    def test_cada_turno_lleva_su_autor(self) -> None:
+        self._dos_turnos()
+        texto = self.widget._conversation.toPlainText()
+        self.assertIn("Tú: hola", texto)
+        self.assertIn("Ollama: respuesta del motor", texto)
+
+    def test_el_autor_va_resaltado_con_su_color(self) -> None:
+        self._dos_turnos()
+        usuario = self._formato_de("Tú:")
+        motor = self._formato_de("Ollama:")
+        self.assertEqual(usuario.foreground().color().name(), cw._COLOR_USUARIO)
+        self.assertEqual(motor.foreground().color().name(), cw._COLOR_MOTOR)
+        negrita = int(QFont.Weight.Bold)
+        self.assertEqual(int(usuario.fontWeight()), negrita)
+        self.assertEqual(int(motor.fontWeight()), negrita)
+
+    def test_el_cuerpo_conserva_el_color_del_tema(self) -> None:
+        self._dos_turnos()
+        cuerpo = self._formato_de("respuesta del motor")
+        self.assertEqual(cuerpo.foreground().style(), Qt.BrushStyle.NoBrush)
+
+    def test_los_turnos_se_separan_con_linea_en_blanco(self) -> None:
+        self._dos_turnos()
+        self.assertIn("\n\nOllama:", self.widget._conversation.toPlainText())
+
+    def test_el_error_tambien_se_etiqueta(self) -> None:
+        self.widget._on_failed("se cayó Ollama")
+        texto = self.widget._conversation.toPlainText()
+        self.assertIn("Error: se cayó Ollama", texto)
+        self.assertEqual(
+            self._formato_de("Error:").foreground().color().name(), cw._COLOR_ERROR
+        )
+
+    # ---- Desplazamiento --------------------------------------------
+
     def _llenar_conversacion(self) -> None:
         self.widget.resize(240, 120)
         self.app.processEvents()
         for i in range(200):
-            self.widget._conversation.appendPlainText(f"linea {i}")
+            self.widget._append_turn("Tú", f"linea {i}", cw._COLOR_USUARIO)
         self.app.processEvents()
 
     def test_baja_al_final_aunque_el_usuario_haya_subido(self) -> None:
@@ -111,7 +181,7 @@ class ChatFocusTest(unittest.TestCase):
         self.assertGreater(barra.maximum(), 0, "la conversación debe desbordar")
 
         barra.setValue(0)  # el usuario se ha ido arriba a leer
-        self.widget._append_line("Tú: mensaje nuevo")
+        self.widget._append_turn("Tú", "mensaje nuevo", cw._COLOR_USUARIO)
         self.app.processEvents()
 
         self.assertEqual(barra.value(), barra.maximum())
