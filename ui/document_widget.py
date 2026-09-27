@@ -4,7 +4,7 @@ import logging
 import tempfile
 from pathlib import Path
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -122,6 +122,8 @@ class DocumentWidget(TaskWidget):
         self._model_task = None
         self._file_path: Path | None = None
         self._result_text = ""
+        #: Aviso de cobertura de idiomas que se está mostrando (o None).
+        self._language_hint: str | None = None
         self._build_ui()
         self._populate_models()
         self._restore_mode()
@@ -213,7 +215,7 @@ class DocumentWidget(TaskWidget):
         self._model.clear()
         self._model.blockSignals(False)
         if self._engine is None:
-            self._model.addItem(dp.DEFAULT_MODEL, dp.DEFAULT_MODEL)
+            self._add_model(dp.DEFAULT_MODEL)
             return
         self._model.setEnabled(False)
         self._model.addItem("Cargando modelos…")
@@ -228,6 +230,18 @@ class DocumentWidget(TaskWidget):
         self._set_status(f"Ollama Vision no disponible: {message}")
         self._on_models([])
 
+    def _add_model(self, model_id: str) -> None:
+        """Añade un modelo al combo con su aviso de cobertura de idiomas."""
+        self._model.addItem(model_id, model_id)
+        aviso = (
+            "Cobertura multilingüe amplia (incluye euskera)."
+            if dp.supports_minority_languages(model_id)
+            else dp.LANGUAGE_WARNING
+        )
+        self._model.setItemData(
+            self._model.count() - 1, aviso, Qt.ItemDataRole.ToolTipRole
+        )
+
     def _on_models(self, models: list) -> None:
         """Rellena el selector con los modelos recibidos (o con el default)."""
         models = list(models)
@@ -236,7 +250,7 @@ class DocumentWidget(TaskWidget):
         self._model.blockSignals(True)
         self._model.clear()
         for model_id in models:
-            self._model.addItem(model_id, model_id)
+            self._add_model(model_id)
         last = self._prefs.get_str(prefs.DOCUMENT)
         if last in models:
             self._model.setCurrentIndex(models.index(last))
@@ -244,6 +258,22 @@ class DocumentWidget(TaskWidget):
             self._model.setCurrentIndex(models.index(dp.DEFAULT_MODEL))
         self._model.blockSignals(False)
         self._model.setEnabled(True)
+        self._update_language_hint()
+
+    def _update_language_hint(self) -> None:
+        """Muestra o retira el aviso de idioma del modelo/modo actuales.
+
+        Solo retira el texto de estado si es el propio aviso el que está puesto,
+        para no pisar otros mensajes (errores, resultados...).
+        """
+        aviso = dp.language_warning(self._model.currentData(), self._mode.currentData())
+        if aviso == self._language_hint:
+            return
+        if self._language_hint is not None and self._status.text() == self._language_hint:
+            self._set_status("")
+        self._language_hint = aviso
+        if aviso is not None:
+            self._set_status(aviso)
 
     def _restore_mode(self) -> None:
         last = self._prefs.get_str(prefs.DOCUMENT_MODE)
@@ -257,9 +287,11 @@ class DocumentWidget(TaskWidget):
 
     def _on_mode_changed(self) -> None:
         self._prefs.set(prefs.DOCUMENT_MODE, self._mode.currentData())
+        self._update_language_hint()
 
     def _on_model_changed(self) -> None:
         self._prefs.set(prefs.DOCUMENT, self._model.currentData())
+        self._update_language_hint()
 
     # ---- Procesamiento --------------------------------------------
 

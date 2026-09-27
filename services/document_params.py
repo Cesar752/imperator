@@ -70,9 +70,43 @@ PDF_DPI = 200
 TEXT_THRESHOLD = 50
 
 
+# Marcadores de modelos de visión con cobertura amplia de idiomas (euskera
+# incluido). Los demás pueden transcribir, pero al resumir o extraer tablas de
+# un idioma minoritario tienden a traducir o directamente a inventar.
+MULTILINGUAL_VISION_MARKERS = ("qwen3", "qwen2.5", "gemma3", "glm4v", "glm-4v")
+
+# Aviso al elegir un modelo sin esa cobertura en los modos que exigen *entender*
+# el documento (en OCR no aplica: transcribir no requiere comprender).
+LANGUAGE_WARNING = (
+    "Ojo: este modelo puede no cubrir el euskera; al resumir o extraer tablas "
+    "podría traducir o inventar. Para documentos en euskera, usa qwen3-vl."
+)
+
+
 def prompt_for(mode: str | None) -> str:
     """Prompt del modo indicado (cae a OCR si el modo falta o es desconocido)."""
     return PROMPTS.get(mode or "", PROMPTS["ocr"])
+
+
+def supports_minority_languages(model: str | None) -> bool:
+    """¿El modelo de visión cubre idiomas minoritarios como el euskera?"""
+    if not model:
+        return False
+    name = str(model).lower()
+    return any(marker in name for marker in MULTILINGUAL_VISION_MARKERS)
+
+
+def language_warning(model: str | None, mode: str | None) -> str | None:
+    """Aviso a mostrar, o ``None`` si ese modelo/modo no lo necesitan.
+
+    Solo se avisa en los modos que analizan el contenido (resumen, tablas): en
+    ``ocr`` basta con transcribir, y para eso no hace falta conocer el idioma.
+    """
+    if not needs_text_analysis(mode):
+        return None
+    if supports_minority_languages(model):
+        return None
+    return LANGUAGE_WARNING
 
 
 def text_prompt_for(mode: str | None) -> str | None:

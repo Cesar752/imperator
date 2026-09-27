@@ -225,6 +225,24 @@ class DocumentParamsTest(unittest.TestCase):
         for prompt in (dp.prompt_for("tablas"), dp.text_prompt_for("tablas")):
             self.assertIn("original language", prompt)
 
+    def test_detecta_los_modelos_que_cubren_idiomas_minoritarios(self) -> None:
+        for modelo in ("qwen3-vl:30b-a3b", "qwen2.5vl:7b", "gemma3:12b"):
+            self.assertTrue(dp.supports_minority_languages(modelo), modelo)
+        for modelo in ("llava:13b", "moondream", "minicpm-v"):
+            self.assertFalse(dp.supports_minority_languages(modelo), modelo)
+        self.assertFalse(dp.supports_minority_languages(None))
+
+    def test_aviso_de_idioma_solo_en_los_modos_que_entienden_el_texto(self) -> None:
+        # En OCR basta transcribir; resumir o extraer tablas exige comprender.
+        self.assertIsNone(dp.language_warning("llava:13b", "ocr"))
+        self.assertIsNone(dp.language_warning("qwen3-vl:8b", "resumen"))
+        self.assertEqual(
+            dp.language_warning("llava:13b", "resumen"), dp.LANGUAGE_WARNING
+        )
+        self.assertEqual(
+            dp.language_warning("llava:13b", "tablas"), dp.LANGUAGE_WARNING
+        )
+
     def test_ocr_no_necesita_analisis_de_texto(self) -> None:
         # En OCR la capa de texto del PDF ya es la transcripción.
         self.assertIsNone(dp.text_prompt_for("ocr"))
