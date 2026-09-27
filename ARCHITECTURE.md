@@ -288,7 +288,7 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   (`config/*.json`) y se descartó el intento de config unificada
   (`~/.imperator/config.json`).
 - `bfl` incluido en `DEFAULT_ENGINES` (antes solo existía en el factory).
-- Suite de tests (stdlib `unittest`, 319 tests) + CI en GitHub Actions. Incluye
+- Suite de tests (stdlib `unittest`, 331 tests) + CI en GitHub Actions. Incluye
   un smoke test de la `MainWindow` opt-in (`IMPERATOR_GUI_SMOKE=1`), que el CI
   activa.
 - El CI instala `requirements-test.txt` (PyQt6, requests, python-dotenv, numpy),
@@ -307,9 +307,13 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   resúmenes (por página y globales) comparten reglas en
   `document_params.SUMMARY_STYLE`: un bloque por tema con **título tomado de los
   epígrafes del documento** (en texto plano: el área de resultado no pinta
-  markdown), frases de longitud parecida, sin repetir datos y **fidelidad al
-  texto** (sin interpretar, inferir ni inventar; se descartó pedir un cierre por
-  apartado porque el modelo lo usaba para interpretar).
+  markdown), frases completas de longitud parecida, sin repetir datos y
+  **fidelidad al texto** (sin interpretar, inferir ni inventar). La pestaña tiene
+  dos casillas para el resumen, ambas persistidas y activas solo en ese modo:
+  **alcance global** (una sola llamada con el documento entero) y **frase de
+  cierre por apartado** (por defecto apagada; encendida, `CLOSING_STYLE` la pide
+  extractiva —solo repite lo que ya dice el bloque— porque pedirla a secas hacía
+  que el modelo inventara datos para "concluir").
 - El modelo por defecto del chat es `qwen3.6:35b`, definido en un solo sitio
   (`_OLLAMA_DEFAULT_MODEL`) y replicado en la configuración y la UI, con un
   test-guarda (`test_ollama_defaults.py`) que impide que se desincronicen.

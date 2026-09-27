@@ -49,6 +49,7 @@ class DocumentWorker(ThreadWorker):
         model,
         language=None,
         global_summary=False,
+        closing=False,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -58,9 +59,10 @@ class DocumentWorker(ThreadWorker):
         self._model = model
         self._language = language
         self._global_summary = global_summary
+        self._closing = closing
 
     def work(self) -> str:
-        image_prompt = dp.prompt_for(self._mode, self._language)
+        image_prompt = dp.prompt_for(self._mode, self._language, self._closing)
         if not dp.is_pdf(self._file_path.suffix):
             return self._process_image(image_prompt)
         if dp.wants_global(self._mode, self._global_summary):
@@ -87,7 +89,7 @@ class DocumentWorker(ThreadWorker):
         texto es la *entrada* del análisis, así que también pasa por el modelo
         con su prompt de texto. Si no, los tres modos devolvían el mismo texto.
         """
-        text_prompt = dp.text_prompt_for(self._mode, self._language)
+        text_prompt = dp.text_prompt_for(self._mode, self._language, self._closing)
         doc = self._open_pdf()
         try:
             total = doc.page_count
@@ -142,7 +144,7 @@ class DocumentWorker(ThreadWorker):
             joined, truncated = dp.merge_pages(pages)
             summary = self._engine.analyze_text(
                 joined,
-                dp.global_prompt_for(self._mode, self._language),
+                dp.global_prompt_for(self._mode, self._language, self._closing),
                 self._model,
             )
             if truncated:
@@ -184,7 +186,8 @@ class DocumentWidget(TaskWidget):
         self._restore_mode()
         self._restore_language()
         self._restore_global()
-        self._update_global_enabled()
+        self._restore_closing()
+        self._update_summary_options()
         if engine is None:
             self._set_status("Ollama Vision no está configurado o deshabilitado.")
             self._process_button.setEnabled(False)
@@ -221,11 +224,21 @@ class DocumentWidget(TaskWidget):
         )
         self._global_check.toggled.connect(self._on_global_changed)
 
+        self._closing_check = QCheckBox("Frase de cierre por apartado (→)")
+        self._closing_check.setToolTip(
+            "Añade una línea de cierre a cada apartado («→ …») para fijar la "
+            "idea. Se pide que solo repita lo que ya dice ese apartado.\n"
+            "Apagada, el resumen se limita a lo que dice el documento (mejor si "
+            "es para un examen o para citarlo)."
+        )
+        self._closing_check.toggled.connect(self._on_closing_changed)
+
         form = QFormLayout()
         form.addRow("Modo:", self._mode)
         form.addRow("Modelo:", self._model)
         form.addRow("Idioma:", self._language_combo)
         form.addRow("Alcance:", self._global_check)
+        form.addRow("", self._closing_check)
 
         self._process_button = QPushButton("Procesar")
         self._cancel_button = QPushButton("Cancelar")
@@ -383,11 +396,22 @@ class DocumentWidget(TaskWidget):
     def _on_global_changed(self, checked: bool) -> None:
         self._prefs.set_bool(prefs.DOCUMENT_GLOBAL, checked)
 
-    def _update_global_enabled(self, disponible: bool = True) -> None:
-        """La casilla solo aplica al modo Resumen y nunca durante el trabajo."""
-        self._global_check.setEnabled(
-            disponible and dp.supports_global(self._mode.currentData())
-        )
+    def _restore_closing(self) -> None:
+        """Restaura la casilla de frase de cierre (apagada si no se usó nunca)."""
+        if not self._prefs.get_bool(prefs.DOCUMENT_CLOSING, False):
+            return
+        self._closing_check.blockSignals(True)
+        self._closing_check.setChecked(True)
+        self._closing_check.blockSignals(False)
+
+    def _on_closing_changed(self, checked: bool) -> None:
+        self._prefs.set_bool(prefs.DOCUMENT_CLOSING, checked)
+
+    def _update_summary_options(self, disponible: bool = True) -> None:
+        """Las casillas del resumen solo aplican al modo Resumen (y no al trabajar)."""
+        es_resumen = dp.supports_global(self._mode.currentData())
+        self._global_check.setEnabled(disponible and es_resumen)
+        self._closing_check.setEnabled(disponible and es_resumen)
 
     def _on_language_changed(self) -> None:
         self._prefs.set(prefs.DOCUMENT_LANGUAGE, self._language_combo.currentData())
@@ -395,7 +419,7 @@ class DocumentWidget(TaskWidget):
     def _on_mode_changed(self) -> None:
         self._prefs.set(prefs.DOCUMENT_MODE, self._mode.currentData())
         self._update_language_hint()
-        self._update_global_enabled()
+        self._update_summary_options()
 
     def _on_model_changed(self) -> None:
         self._prefs.set(prefs.DOCUMENT, self._model.currentData())
@@ -431,6 +455,7 @@ class DocumentWidget(TaskWidget):
             model,
             self._language_combo.currentData(),
             global_summary=self._global_check.isChecked(),
+            closing=self._closing_check.isChecked(),
             parent=self,
         )
         self._worker.page_progress.connect(self._on_progress)
@@ -497,7 +522,13 @@ class DocumentWidget(TaskWidget):
     # ---- Utilidades -----------------------------------------------
 
     def _busy_widgets(self) -> tuple:
-        return (self._select_button, self._mode, self._model, self._global_check)
+        return (
+            self._select_button,
+            self._mode,
+            self._model,
+            self._global_check,
+            self._closing_check,
+        )
 
     def _busy_only_widgets(self) -> tuple:
         return (self._cancel_button,)
@@ -507,7 +538,7 @@ class DocumentWidget(TaskWidget):
         if busy:
             self._save_button.setEnabled(False)
             self._copy_button.setEnabled(False)
-        self._update_global_enabled(not busy)
+        self._update_summary_options(not busy)
 
     def set_engine(self, engine: Engine | None) -> None:
         self._engine = engine

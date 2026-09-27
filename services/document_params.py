@@ -92,26 +92,43 @@ GLOBAL_MODES = (SUMMARY_MODE,)
 # resúmenes reales:
 # - el primero mezclaba apartados en un mismo párrafo, alternaba frases
 #   larguísimas con telegráficas y repetía la misma cifra en dos apartados;
-# - el segundo enseñó que pedir un "cierre" por apartado con "→" era un error:
-#   el modelo lo usaba para *interpretar* y llegó a inventar datos (hablaba de
-#   "equipamiento" donde el texto decía acumular la hora de lactancia). Por eso
-#   las reglas de fidelidad prohíben interpretar, inferir e inventar;
+# - el segundo enseñó que pedir un "cierre" por apartado con "→" era un error si
+#   se pide a secas: el modelo lo usaba para *interpretar* y llegó a inventar
+#   datos (hablaba de "equipamiento" donde el texto decía acumular la hora de
+#   lactancia). Por eso las reglas de fidelidad prohíben interpretar e inventar, y
+#   el cierre pasó a ser opcional y extractivo (ver CLOSING_STYLE);
 # - el tercero pedía títulos: sin ellos el resumen se lee como un texto corrido y
 #   cuesta localizar cada apartado. Los títulos salen de los epígrafes del propio
 #   documento y en texto plano, porque el área de resultado no pinta markdown.
 SUMMARY_STYLE = (
     "Style: organize the answer in short blocks, one per distinct topic, and "
     "start every block with a one-line title followed by its paragraph. Take "
-    "that title from the document's own headings, keep it short, write it in the "
-    "target language like the rest of the answer and in plain text (no markdown "
-    "symbols); do not invent titles. Keep the sentences of similar length (do "
-    "not mix very long sentences with very short ones); do not repeat data "
-    "already given in another block; and make sure every sentence adds "
-    "information taken from the document. "
+    "that title from the document's own headings —use every heading, one block "
+    "each—, keep it short, write it in the target language like the rest of the "
+    "answer and in plain text (no markdown symbols); do not invent titles. Write "
+    "the body of each block as complete sentences of similar length (roughly the "
+    "same number of words each), not as a list of telegraphic fragments; do not "
+    "repeat data already given in another block; and make sure every sentence "
+    "adds information taken from the document. "
     "Fidelity: summarize only what the document states. Do not interpret, "
     "infer, deduce, give opinions or add context that is not written in the "
-    "text, and do not invent terms, numbers or data. Do not add closing lines, "
-    "arrows or extra commentary."
+    "text, and do not invent terms, numbers or data."
+)
+
+#: Regla por defecto sobre los cierres: son lo que invitaba a interpretar.
+NO_CLOSING_STYLE = (
+    "Do not add closing lines, arrows, wrap-ups or extra commentary."
+)
+
+#: Frase de cierre por bloque («→ …»), **opcional** (casilla de la UI, apagada
+#: por defecto). Se pide extractiva a propósito: al pedirla sin más, el modelo
+#: inventaba datos para "concluir". Si el resumen es para un examen, mejor
+#: dejarla apagada: una frase interpretada resta puntos.
+CLOSING_STYLE = (
+    "After each block's paragraph, add one closing line that starts with '→'. "
+    "That line must recap the block using information already written in it "
+    "(quote or rephrase its own words): never add claims, opinions, advice or "
+    "data that the block does not state."
 )
 
 # Presupuesto de caracteres del texto que se manda al resumen global. El contexto
@@ -179,10 +196,12 @@ LANGUAGE_WARNING = (
 )
 
 
-def prompt_for(mode: str | None, language: str | None = None) -> str:
+def prompt_for(
+    mode: str | None, language: str | None = None, closing: bool = False
+) -> str:
     """Prompt de imagen del modo, con la instrucción de idioma si aplica."""
     base = PROMPTS.get(mode or "", PROMPTS["ocr"])
-    return _with_language(mode, base, language)
+    return _with_language(mode, base, language, closing)
 
 
 def language_instruction(language: str | None) -> str:
@@ -192,18 +211,26 @@ def language_instruction(language: str | None) -> str:
     )
 
 
-def _with_language(mode: str | None, base: str, language: str | None) -> str:
+def _with_language(
+    mode: str | None,
+    base: str,
+    language: str | None,
+    closing: bool = False,
+) -> str:
     """Añade las reglas de estilo, el idioma de salida y la regla de no comentar.
 
     En ``ocr`` no se toca: una transcripción debe conservar el idioma original.
     Las reglas de estilo (y de fidelidad al texto) son solo del resumen; ver
-    :data:`SUMMARY_STYLE`.
+    :data:`SUMMARY_STYLE`. ``closing`` decide entre prohibir las líneas de cierre
+    (:data:`NO_CLOSING_STYLE`, por defecto) o pedirlas de forma extractiva
+    (:data:`CLOSING_STYLE`).
     """
     if not needs_text_analysis(mode):
         return base
     parts = [base]
     if (mode or "") == SUMMARY_MODE:
         parts.append(SUMMARY_STYLE)
+        parts.append(CLOSING_STYLE if closing else NO_CLOSING_STYLE)
     parts.append(language_instruction(language))
     parts.append(_NO_META)
     return " ".join(parts)
@@ -230,7 +257,9 @@ def language_warning(model: str | None, mode: str | None) -> str | None:
     return LANGUAGE_WARNING
 
 
-def text_prompt_for(mode: str | None, language: str | None = None) -> str | None:
+def text_prompt_for(
+    mode: str | None, language: str | None = None, closing: bool = False
+) -> str | None:
     """Prompt para analizar texto ya extraído, o ``None`` si el modo no lo necesita.
 
     ``ocr`` no necesita modelo cuando el documento ya trae capa de texto: esa
@@ -239,7 +268,7 @@ def text_prompt_for(mode: str | None, language: str | None = None) -> str | None
     base = TEXT_PROMPTS.get(mode or "")
     if base is None:
         return None
-    return _with_language(mode, base, language)
+    return _with_language(mode, base, language, closing)
 
 
 def needs_text_analysis(mode: str | None) -> bool:
@@ -261,11 +290,13 @@ def wants_global(mode: str | None, requested: bool) -> bool:
     return bool(requested) and supports_global(mode)
 
 
-def global_prompt_for(mode: str | None, language: str | None = None) -> str | None:
+def global_prompt_for(
+    mode: str | None, language: str | None = None, closing: bool = False
+) -> str | None:
     """Prompt del resumen global, o ``None`` si el modo no lo admite."""
     if not supports_global(mode):
         return None
-    return _with_language(mode, GLOBAL_PROMPT, language)
+    return _with_language(mode, GLOBAL_PROMPT, language, closing)
 
 
 def merge_pages(pages: list[str], max_chars: int = MAX_GLOBAL_CHARS) -> tuple[str, bool]:

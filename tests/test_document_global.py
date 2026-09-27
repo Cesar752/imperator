@@ -137,15 +137,34 @@ class GlobalWorkerTest(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def _run(self, pages, mode="resumen", global_summary=True):
+    def _run(self, pages, mode="resumen", global_summary=True, closing=False):
         engine = _FakeEngine()
         doc = _FakeDoc(pages)
         worker = dw.DocumentWorker(
-            engine, self.pdf, mode, "modelo-x", global_summary=global_summary
+            engine,
+            self.pdf,
+            mode,
+            "modelo-x",
+            global_summary=global_summary,
+            closing=closing,
         )
         with mock.patch.object(dw, "pymupdf", _FakePymupdf(doc)):
             result = worker.work()
         return result, engine, doc
+
+    def test_la_frase_de_cierre_llega_al_prompt(self) -> None:
+        # Es una opción de la UI: sin ella el resumen prohíbe los cierres.
+        _, engine, _ = self._run([_FakePage(_TEXTO)])
+        self.assertIn(dp.NO_CLOSING_STYLE, engine.text_calls[0][1])
+
+        _, engine, _ = self._run([_FakePage(_TEXTO)], closing=True)
+        self.assertIn(dp.CLOSING_STYLE, engine.text_calls[0][1])
+
+    def test_la_frase_de_cierre_llega_al_resumen_global(self) -> None:
+        _, engine, _ = self._run(
+            [_FakePage(_TEXTO), _FakePage(_TEXTO)], closing=True
+        )
+        self.assertIn(dp.CLOSING_STYLE, engine.text_calls[0][1])
 
     def test_resume_el_documento_completo_en_una_sola_llamada(self) -> None:
         result, engine, doc = self._run([_FakePage(_TEXTO), _FakePage(_TEXTO)])
@@ -259,6 +278,42 @@ class GlobalWidgetTest(unittest.TestCase):
                 self.widget._engine = mock.Mock(is_available=lambda: True)
                 self.widget._process()
         self.assertTrue(worker_cls.call_args.kwargs["global_summary"])
+
+    def test_la_casilla_de_cierre_solo_se_activa_en_el_modo_resumen(self) -> None:
+        for mode_id, esperado in (("ocr", False), ("tablas", False), ("resumen", True)):
+            with self.subTest(modo=mode_id):
+                self._modo(mode_id)
+                self.assertEqual(self.widget._closing_check.isEnabled(), esperado)
+
+    def test_el_estado_de_la_casilla_de_cierre_se_guarda(self) -> None:
+        self.widget._closing_check.setChecked(True)
+        self.assertEqual(self.cm.load_last_models()[prefs.DOCUMENT_CLOSING], "1")
+
+    def test_restaura_la_casilla_de_cierre_guardada(self) -> None:
+        self.cm.save_last_model(prefs.DOCUMENT_CLOSING, "1")
+        widget = dw.DocumentWidget(None, self.cm)
+        try:
+            self.assertTrue(widget._closing_check.isChecked())
+        finally:
+            widget.close()
+
+    def test_la_casilla_de_cierre_se_bloquea_durante_el_trabajo(self) -> None:
+        self._modo("resumen")
+        self.widget._set_busy(True)
+        self.assertFalse(self.widget._closing_check.isEnabled())
+
+        self.widget._set_busy(False)
+        self.assertTrue(self.widget._closing_check.isEnabled())
+
+    def test_la_opcion_de_cierre_llega_al_worker(self) -> None:
+        self._modo("resumen")
+        self.widget._closing_check.setChecked(True)
+        self.widget._file_path = Path("documento.pdf")
+        with mock.patch.object(dw, "DocumentWorker") as worker_cls:
+            with mock.patch.object(self.widget, "_set_busy"):
+                self.widget._engine = mock.Mock(is_available=lambda: True)
+                self.widget._process()
+        self.assertTrue(worker_cls.call_args.kwargs["closing"])
 
 
 if __name__ == "__main__":

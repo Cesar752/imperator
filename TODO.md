@@ -129,8 +129,39 @@ el ducking con los MP3 reales). **297 tests en verde** (1 skip).
     de los epígrafes del propio documento, sin inventarlos, porque el área de
     resultado de Documentos no pinta markdown (mismo motivo por el que el chat,
     que sí lo pinta, tiene su propio módulo `ui/markdown.py`).
-- `tests/test_document_global.py`: 14 tests; las reglas del resumen se cubren con
-  6 tests en `tests/test_services.py`.
+  - Ronda 4: se **refuerzan** A y B ("usa *todos* los epígrafes del documento,
+    uno por bloque" y "frases completas de longitud parecida, no fragmentos
+    telegráficos") y el cierre vuelve como **opción** (abajo).
+- Las reglas y las dos casillas del resumen se cubren en
+  `tests/test_services.py` (prompts) y `tests/test_document_global.py` (worker y
+  widget).
+
+#### Frase de cierre por apartado: opcional y extractiva
+
+La ronda 2 quitó el cierre con "→" porque el modelo lo usaba para interpretar
+(inventó datos). La ronda 4 lo devuelve como **casilla** —"Frase de cierre por
+apartado (→)", apagada por defecto— para no perder ninguna de las dos cosas:
+
+- **Apagada** (por defecto): `NO_CLOSING_STYLE` prohíbe cierres y flechas. Es el
+  modo "de examen": todo lo que sale está en el documento.
+- **Encendida**: `CLOSING_STYLE` pide una línea de cierre que recoja lo que **ya
+  dice ese bloque** ("quote or rephrase its own words: never add claims, opinions,
+  advice or data that the block does not state").
+
+Medido con la misma página y `qwen3-vl:8b` (57 s con la casilla encendida), el
+cierre sale así:
+
+```
+Vacaciones
+Hilabetean 2,5 egun metatzen dira, gehienez 30 egun urtean.
+→ Hilabetean 2,5 egun metatzen dira, urtean gehienez 30 egun.
+```
+
+Con la restricción de fidelidad el cierre **no inventa** (objetivo cumplido),
+pero queda casi como una repetición del propio apartado. Es el compromiso real:
+un cierre que *aporte* algo nuevo es, por definición, una interpretación (lo que
+la ronda 2 descartó). Las dos casillas del resumen (alcance global y cierre) solo
+se activan en el modo Resumen y se persisten en `settings.json`.
 
 ### 5.4 Modelo por defecto del chat: qwen3.6:35b
 

@@ -365,14 +365,57 @@ class DocumentParamsTest(unittest.TestCase):
         self.assertIn("only what the document states", estilo)
         self.assertIn("Do not interpret", estilo)
         self.assertIn("do not invent", estilo)
-        self.assertIn("arrows", estilo)
 
+        # El cierre (y su flecha) pasó a ser opcional: lo que se pide por defecto
+        # es prohibirlo, y eso vive en su propia regla.
+        self.assertIn("arrows", dp.NO_CLOSING_STYLE)
         for prompt in (
             dp.prompt_for("resumen"),
             dp.text_prompt_for("resumen"),
             dp.global_prompt_for("resumen"),
         ):
             self.assertNotIn("→", prompt)
+            self.assertIn(dp.NO_CLOSING_STYLE, prompt)
+
+    # ---- Frase de cierre por apartado (opcional) --------------------
+
+    def test_la_frase_de_cierre_es_opcional(self) -> None:
+        sin_cierre = dp.prompt_for("resumen")
+        con_cierre = dp.prompt_for("resumen", closing=True)
+        self.assertIn(dp.NO_CLOSING_STYLE, sin_cierre)
+        self.assertNotIn("→", sin_cierre)
+        self.assertIn(dp.CLOSING_STYLE, con_cierre)
+        self.assertIn("→", con_cierre)
+        self.assertNotIn(dp.NO_CLOSING_STYLE, con_cierre)
+        # Las reglas de fidelidad siguen puestas con la casilla encendida.
+        for prompt in (sin_cierre, con_cierre):
+            self.assertIn("only what the document states", prompt)
+
+    def test_el_cierre_se_pide_extractivo(self) -> None:
+        # El problema no era la flecha, era que el modelo *inventaba* para
+        # "concluir": ahora se le prohíbe añadir nada que no esté en el bloque.
+        estilo = dp.CLOSING_STYLE
+        self.assertIn("already written in it", estilo)
+        self.assertIn("never add", estilo)
+
+    def test_el_cierre_llega_a_los_tres_prompts_de_resumen(self) -> None:
+        for prompt in (
+            dp.prompt_for("resumen", closing=True),
+            dp.text_prompt_for("resumen", closing=True),
+            dp.global_prompt_for("resumen", closing=True),
+        ):
+            self.assertIn(dp.CLOSING_STYLE, prompt)
+
+    def test_el_cierre_no_toca_ocr_ni_tablas(self) -> None:
+        prompts = (
+            dp.prompt_for("ocr", closing=True),
+            dp.prompt_for("tablas", closing=True),
+            dp.text_prompt_for("tablas", closing=True),
+            dp.global_prompt_for("tablas", closing=True) or "",
+        )
+        for prompt in prompts:
+            self.assertNotIn(dp.CLOSING_STYLE, prompt)
+            self.assertNotIn(dp.NO_CLOSING_STYLE, prompt)
 
     def test_las_reglas_de_estilo_no_tocan_los_demas_modos(self) -> None:
         # El OCR transcribe y las tablas devuelven celdas: no son prosa.
