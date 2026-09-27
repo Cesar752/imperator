@@ -31,6 +31,16 @@ class _FakeEngine:
         return []
 
 
+class _FakeEngineConNombre(_FakeEngine):
+    """Motor con nombre legible, para el caso en que no hay modelo elegido."""
+
+    nombre = "Ollama"
+
+
+#: Modelo de prueba que se añade al combo para poder etiquetar las respuestas.
+_MODELO = "qwen3.6:35b"
+
+
 class ChatFocusTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -127,7 +137,17 @@ class ChatFocusTest(unittest.TestCase):
     def _formato_de(self, aguja: str):
         return self.widget._conversation.document().find(aguja).charFormat()
 
+    def _selecciona_modelo(self, modelo: str) -> None:
+        """Añade el modelo al combo y lo selecciona.
+
+        Al construir el widget con el pool de tareas neutralizado, el combo se
+        queda con el placeholder "Cargando modelos…" (``currentData()`` None).
+        """
+        self.widget._model.addItem(modelo, modelo)
+        self.widget._model.setCurrentIndex(self.widget._model.count() - 1)
+
     def _dos_turnos(self) -> None:
+        self._selecciona_modelo(_MODELO)
         self.widget._input.setText("hola")
         with mock.patch.object(cw.ChatWorker, "start"):
             self.widget._send_message()
@@ -137,12 +157,44 @@ class ChatFocusTest(unittest.TestCase):
         self._dos_turnos()
         texto = self.widget._conversation.toPlainText()
         self.assertIn("Tú: hola", texto)
-        self.assertIn("Ollama: respuesta del motor", texto)
+        self.assertIn(f"{_MODELO}: respuesta del motor", texto)
+
+    def test_la_etiqueta_es_el_modelo_que_respondio(self) -> None:
+        self._dos_turnos()
+        self.assertIn(f"{_MODELO}:", self.widget._conversation.toPlainText())
+
+    def test_usa_el_modelo_enviado_aunque_cambie_el_combo(self) -> None:
+        self._selecciona_modelo(_MODELO)
+        self.widget._input.setText("hola")
+        with mock.patch.object(cw.ChatWorker, "start"):
+            self.widget._send_message()
+
+        # El usuario cambia de modelo mientras el motor responde.
+        with mock.patch.object(
+            cw.QMessageBox, "question", return_value=cw.QMessageBox.StandardButton.No
+        ):
+            self.widget._model.addItem("llama3:8b", "llama3:8b")
+            self.widget._model.setCurrentIndex(self.widget._model.count() - 1)
+        self.widget._on_reply("respuesta")
+
+        texto = self.widget._conversation.toPlainText()
+        self.assertIn(f"{_MODELO}: respuesta", texto)
+        self.assertNotIn("llama3:8b:", texto)
+
+    def test_sin_modelo_elegido_usa_el_nombre_del_motor(self) -> None:
+        with mock.patch.object(cw, "run_pool_task"):
+            widget = ChatWidget(engine=_FakeEngineConNombre())
+        widget._input.setText("hola")
+        with mock.patch.object(cw.ChatWorker, "start"):
+            widget._send_message()
+        widget._on_reply("respuesta")
+        self.assertIn("Ollama: respuesta", widget._conversation.toPlainText())
+        widget.close()
 
     def test_el_autor_va_resaltado_con_su_color(self) -> None:
         self._dos_turnos()
         usuario = self._formato_de("Tú:")
-        motor = self._formato_de("Ollama:")
+        motor = self._formato_de(f"{_MODELO}:")
         self.assertEqual(usuario.foreground().color().name(), cw._COLOR_USUARIO)
         self.assertEqual(motor.foreground().color().name(), cw._COLOR_MOTOR)
         negrita = int(QFont.Weight.Bold)
@@ -156,7 +208,7 @@ class ChatFocusTest(unittest.TestCase):
 
     def test_los_turnos_se_separan_con_linea_en_blanco(self) -> None:
         self._dos_turnos()
-        self.assertIn("\n\nOllama:", self.widget._conversation.toPlainText())
+        self.assertIn(f"\n\n{_MODELO}:", self.widget._conversation.toPlainText())
 
     def test_el_error_tambien_se_etiqueta(self) -> None:
         self.widget._on_failed("se cayó Ollama")
@@ -175,7 +227,7 @@ class ChatFocusTest(unittest.TestCase):
 
         texto = self.widget._conversation.toPlainText()
         self.assertIn("Aviso: el motor devolvió una respuesta vacía.", texto)
-        self.assertNotIn("Ollama:", texto)
+        self.assertNotIn(f"{_MODELO}:", texto)
         self.assertEqual(len(self.widget._messages), 1)
         self.assertEqual(self.widget._messages[0]["role"], "user")
         self.assertTrue(self.widget._input.isEnabled())

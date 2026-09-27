@@ -55,6 +55,9 @@ class ChatWidget(TaskWidget):
         # Historial completo (lo que ve el usuario). Al motor solo se le envía
         # una ventana reciente: ver services.chat_params.MAX_HISTORY_MESSAGES.
         self._messages: list[dict] = []
+        # Modelo que se envió en el turno en curso (para etiquetar la respuesta
+        # con el modelo real, aunque el usuario cambie el combo mientras espera).
+        self._pending_model: str | None = None
         self._worker: ChatWorker | None = None
         self._model_task = None
         self._build_ui()
@@ -97,6 +100,7 @@ class ChatWidget(TaskWidget):
         """Cambia el motor activo. Limpia el historial y el área."""
         self._engine = engine
         self._messages.clear()
+        self._pending_model = None
         self._conversation.clear()
         self._set_busy(False)
         self._populate_models()
@@ -200,10 +204,11 @@ class ChatWidget(TaskWidget):
         self._thinking_label.setVisible(True)
         self._set_busy(True)
 
+        self._pending_model = self._model.currentData()
         self._worker = ChatWorker(
             self._engine,
             cp.trim_history(self._messages),
-            self._model.currentData(),
+            self._pending_model,
             self,
         )
         self._worker.result.connect(self._on_reply)
@@ -222,8 +227,27 @@ class ChatWidget(TaskWidget):
             self._end_turn()
             return
         self._messages.append({"role": "assistant", "content": reply})
-        self._append_turn("Ollama", reply, _COLOR_MOTOR)
+        self._append_turn(self._motor_label(), reply, _COLOR_MOTOR)
         self._end_turn()
+
+    def _motor_label(self) -> str:
+        """Etiqueta de la respuesta: el modelo que la generó.
+
+        Orden de preferencia: el modelo que se envió (el combo puede haber
+        cambiado mientras el motor respondía), el seleccionado ahora, el modelo
+        por defecto del motor (mientras el combo aún carga) y, por último, el
+        nombre del motor.
+        """
+        candidatos = (
+            self._pending_model,
+            self._model.currentData(),
+            getattr(self._engine, "default_model", None),
+            getattr(self._engine, "nombre", None),
+        )
+        for candidato in candidatos:
+            if candidato:
+                return str(candidato)
+        return "Motor"
 
     def _on_cancelled(self, message: str) -> None:
         self._append_turn("Aviso", message, _COLOR_AVISO)
@@ -238,6 +262,7 @@ class ChatWidget(TaskWidget):
         self._thinking_label.setVisible(False)
         self._set_busy(False)
         self._worker = None
+        self._pending_model = None
         self._restore_focus()
 
     def _append_turn(self, autor: str, texto: str, color: str) -> None:
