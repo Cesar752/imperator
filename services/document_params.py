@@ -19,6 +19,11 @@ El *alcance* del resumen es la otra opción: por defecto cada página se analiza
 por separado, pero con el resumen global (:func:`global_prompt_for`) se recoge el
 texto de todas las páginas y se hace una única llamada al modelo, que así ve el
 documento completo en vez de páginas sueltas.
+
+Los resúmenes llevan además reglas de estilo propias (:data:`SUMMARY_STYLE`):
+apartados separados, frases de longitud parecida, sin repetir datos ya dados y
+con una frase de cierre por bloque. Son el resultado de revisar un resumen real
+que mezclaba temas, alternaba frases largas con telegráficas y repetía cifras.
 """
 
 # Formatos de imagen soportados (además de PDF).
@@ -75,9 +80,25 @@ GLOBAL_PROMPT = (
 # modelo (y el idioma de salida es configurable). En OCR basta transcribir.
 ANALYSIS_MODES = ("resumen", "tablas")
 
+#: Modo de resumen: el único que admite alcance global y reglas de estilo
+#: propias (el OCR transcribe y las tablas devuelven celdas, no prosa).
+SUMMARY_MODE = "resumen"
+
 # Modos que admiten resumir el documento *entero* de una vez. En OCR no hay nada
 # que resumir y en tablas cada página trae las suyas: unirlas no es un resumen.
-GLOBAL_MODES = ("resumen",)
+GLOBAL_MODES = (SUMMARY_MODE,)
+
+# Reglas de estilo de los resúmenes, por página y globales. Salen de revisar un
+# resumen real: el modelo mezclaba apartados en un mismo párrafo, alternaba
+# frases larguísimas con telegráficas, repetía la misma cifra en dos apartados y
+# no cerraba las ideas de cada bloque.
+SUMMARY_STYLE = (
+    "Style: organize the answer in short paragraphs, one per distinct topic, "
+    "without merging unrelated sections; keep the sentences of similar length "
+    "(do not mix very long sentences with very short ones); do not repeat data "
+    "already given in another paragraph; and end each paragraph with a one-line "
+    "takeaway that starts with '→'."
+)
 
 # Presupuesto de caracteres del texto que se manda al resumen global. El contexto
 # de Ollama está acotado, así que un documento largo se recorta por el final y se
@@ -155,13 +176,21 @@ def language_instruction(language: str | None) -> str:
 
 
 def _with_language(mode: str | None, base: str, language: str | None) -> str:
-    """Añade el idioma de salida y la regla de no comentar.
+    """Añade las reglas de estilo, el idioma de salida y la regla de no comentar.
 
     En ``ocr`` no se toca: una transcripción debe conservar el idioma original.
+    Las reglas de estilo son solo del resumen (:data:`SUMMARY_STYLE`); el cierre
+    de cada apartado se pide en el idioma de salida, así que va junto a la
+    instrucción de idioma.
     """
     if not needs_text_analysis(mode):
         return base
-    return f"{base} {language_instruction(language)} {_NO_META}"
+    parts = [base]
+    if (mode or "") == SUMMARY_MODE:
+        parts.append(SUMMARY_STYLE)
+    parts.append(language_instruction(language))
+    parts.append(_NO_META)
+    return " ".join(parts)
 
 
 def supports_minority_languages(model: str | None) -> bool:

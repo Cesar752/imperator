@@ -324,6 +324,40 @@ class DocumentParamsTest(unittest.TestCase):
             self.assertEqual(ext, ext.lower())
             self.assertIn(f"*{ext}", dp.FILE_FILTER)
 
+    # ---- Reglas de estilo del resumen ------------------------------
+
+    def test_los_resumenes_llevan_reglas_de_estilo(self) -> None:
+        # Revisando un resumen real: mezclaba apartados en un párrafo, alternaba
+        # frases largas con telegráficas y repetía la misma cifra dos veces.
+        for prompt in (
+            dp.prompt_for("resumen"),
+            dp.text_prompt_for("resumen"),
+            dp.global_prompt_for("resumen"),
+        ):
+            self.assertIn(dp.SUMMARY_STYLE, prompt)
+
+    def test_las_reglas_de_estilo_cubren_lo_pedido(self) -> None:
+        estilo = dp.SUMMARY_STYLE
+        self.assertIn("one per distinct topic", estilo)  # separar apartados
+        self.assertIn("similar length", estilo)          # unificar el estilo
+        self.assertIn("do not repeat", estilo)           # reducir repeticiones
+        self.assertIn("'→'", estilo)                     # cierre de cada apartado
+
+    def test_las_reglas_de_estilo_no_tocan_los_demas_modos(self) -> None:
+        # El OCR transcribe y las tablas devuelven celdas: no son prosa.
+        for prompt in (
+            dp.prompt_for("ocr"),
+            dp.prompt_for("ocr", "eu"),
+            dp.prompt_for("tablas"),
+            dp.text_prompt_for("tablas"),
+        ):
+            self.assertNotIn(dp.SUMMARY_STYLE, prompt)
+
+    def test_las_reglas_de_estilo_conviven_con_el_idioma(self) -> None:
+        prompt = dp.prompt_for("resumen", "eu")
+        self.assertIn(dp.SUMMARY_STYLE, prompt)
+        self.assertIn("Basque (euskera)", prompt)
+
 
 class ChatParamsTest(unittest.TestCase):
     def _history(self, count: int) -> list[dict]:

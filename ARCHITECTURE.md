@@ -303,7 +303,10 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
 - El chat renderiza markdown (`ui/markdown.py`): negritas, tablas y listas como
   texto enriquecido, con el código en monoespaciado y con los colores del tema.
 - Documentos puede resumir el documento **completo** (una sola llamada al
-  modelo, en vez de página a página) con la casilla "Resumen global".
+  modelo, en vez de página a página) con la casilla "Resumen global". Los
+  resúmenes (por página y globales) comparten reglas de estilo
+  (`document_params.SUMMARY_STYLE`): un apartado por tema, frases de longitud
+  parecida, sin repetir datos y con una frase de cierre por bloque.
 - `musicgen` es el motor de música: `audiocraft` es opcional, así que sin él la
   app arranca igual y el motor se marca como no disponible.
 - `ApiManager` (`core/api_manager.py`) da un consumidor real a `apis.json`.
