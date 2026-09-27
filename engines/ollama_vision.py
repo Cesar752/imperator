@@ -7,7 +7,7 @@ from pathlib import Path
 import requests
 
 from engines.base_engine import EngineError, VisionEngine
-from engines.ollama_api import fetch_tags, is_loaded
+from engines.ollama_api import DEFAULT_NUM_CTX, fetch_tags, http_error_message, is_loaded
 
 logger = logging.getLogger(__name__)
 
@@ -44,13 +44,21 @@ class OllamaVisionEngine(VisionEngine):
     _SHORT_TIMEOUT = 2.0       # /api/tags
     _ANALYZE_TIMEOUT = 180.0   # /api/chat (los PDFs grandes tardan)
 
+    #: Ventana de contexto que se pide al servidor. Sin pedirla, Ollama usa su
+    #: 4096: el análisis de una página con capa de texto —o el resumen global de
+    #: un documento entero— no cabía y Ollama respondía HTTP 400 ("request (4135
+    #: tokens) exceeds the available context size (4096 tokens)").
+    _NUM_CTX = DEFAULT_NUM_CTX
+
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
         default_model: str = "qwen3-vl:8b",
+        num_ctx: int = _NUM_CTX,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._default_model = default_model
+        self._num_ctx = int(num_ctx)
         self._last_used_model: str | None = None
 
     @property
@@ -115,7 +123,14 @@ class OllamaVisionEngine(VisionEngine):
         """Envía ``messages`` a ``/api/chat`` y devuelve el contenido de la respuesta."""
         model = model or self._default_model
         self._last_used_model = model
-        payload = {"model": model, "messages": messages, "stream": False}
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            # Sin esto Ollama usa su contexto por defecto (4096) y el documento
+            # no cabe: ver _NUM_CTX.
+            "options": {"num_ctx": self._num_ctx},
+        }
         try:
             resp = requests.post(
                 f"{self._base_url}/api/chat",
@@ -130,6 +145,11 @@ class OllamaVisionEngine(VisionEngine):
         except requests.exceptions.Timeout as exc:
             raise EngineError(
                 "Ollama Vision: timeout al procesar el documento."
+            ) from exc
+        except requests.exceptions.HTTPError as exc:
+            # El motivo real viaja en el cuerpo (ver ollama_api).
+            raise EngineError(
+                http_error_message(exc.response, self._num_ctx)
             ) from exc
         except requests.RequestException as exc:
             raise EngineError(f"Error al hablar con Ollama: {exc}") from exc

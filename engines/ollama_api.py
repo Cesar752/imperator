@@ -14,6 +14,13 @@ import requests
 _TAGS_CACHE: dict[str, tuple[float, dict]] = {}
 _TAGS_TTL = 30.0  # segundos
 
+#: Ventana de contexto que se pide a Ollama por defecto. La de Ollama (4096) se
+#: agota con conversaciones largas y con documentos (una página de PDF con capa de
+#: texto, o el resumen global de un documento entero): cuando el prompt no cabe,
+#: Ollama responde HTTP 400 y la tarea muere. Se pide desde el payload
+#: (``options.num_ctx``); el servidor lo respeta (comprobado con /api/ps).
+DEFAULT_NUM_CTX = 8192
+
 
 def fetch_tags(base_url: str, timeout: float = 2.0) -> dict:
     """Devuelve el JSON de ``GET /api/tags`` con una caché corta (TTL)."""
@@ -59,3 +66,42 @@ def is_loaded(base_url: str, model: str, timeout: float = 2.0) -> bool:
         name == model or name.startswith(f"{model}:") or model.startswith(f"{name}:")
         for name in loaded
     )
+
+
+def http_error_message(resp, num_ctx: int | None = None) -> str:
+    """Mensaje de error útil a partir de una respuesta de error de Ollama.
+
+    El texto de ``raise_for_status()`` ("400 Client Error: Bad Request for url:
+    ...") no dice nada: el motivo real viaja en el cuerpo (``{"error": "..."}``).
+    El caso habitual con documentos es que el prompt no quepa en el contexto.
+    """
+    detalle = _error_detail(resp)
+    if "exceeds the available context size" in detalle.lower():
+        ventana = f"num_ctx={num_ctx}" if num_ctx is not None else "el contexto del servidor"
+        return (
+            "El texto no cabe en el contexto de Ollama: el prompt es más largo "
+            f"que la ventana disponible ({ventana}). Acorta el mensaje o el "
+            "documento, o sube el contexto ('num_ctx' en engines.json y/o "
+            f"OLLAMA_CONTEXT_LENGTH en el servidor). Detalle de Ollama: {detalle}"
+        )
+    if detalle:
+        return f"Error al hablar con Ollama: {detalle}"
+    codigo = getattr(resp, "status_code", None)
+    return f"Error al hablar con Ollama: HTTP {codigo if codigo else 'desconocido'}"
+
+
+def _error_detail(resp) -> str:
+    """Motivo que Ollama puso en el cuerpo de la respuesta (o ``text`` crudo)."""
+    if resp is None:
+        return ""
+    try:
+        data = resp.json()
+    except ValueError:
+        return (getattr(resp, "text", "") or "").strip()
+    if isinstance(data, dict):
+        error = data.get("error")
+        if isinstance(error, str):
+            return error.strip()
+        if error is not None:
+            return str(error)
+    return ""

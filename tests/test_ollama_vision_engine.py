@@ -1,5 +1,6 @@
 """Tests de engines.ollama_vision (imagen y texto) con ``requests`` mockeado."""
 
+import json
 import sys
 import tempfile
 import unittest
@@ -23,6 +24,14 @@ def _response(payload=None, error=None):
         resp.json.return_value = payload
     if error is not None:
         resp.raise_for_status.side_effect = error
+    return resp
+
+
+def _respuesta_de_error(payload: dict, status_code: int = 400):
+    """Respuesta real de requests con cuerpo, para probar el mensaje del error."""
+    resp = requests.models.Response()
+    resp.status_code = status_code
+    resp._content = json.dumps(payload).encode("utf-8")
     return resp
 
 
@@ -55,6 +64,15 @@ class ImageAnalysisTest(unittest.TestCase):
     def test_analyze_image_sin_fichero_lanza(self) -> None:
         with self.assertRaises(EngineError):
             self.engine.analyze_image(Path("no-existe.png"), "p")
+
+    def test_pide_ventana_de_contexto(self) -> None:
+        # Sin ``options.num_ctx`` Ollama usa 4096 y una página con mucho texto no
+        # cabe: responde 400 y la tarea falla.
+        resp = _response({"message": {"content": "texto visto"}})
+        with mock.patch.object(ov.requests, "post", return_value=resp) as post:
+            self.engine.analyze_image(self.image, "transcribe")
+        opciones = post.call_args.kwargs["json"]["options"]
+        self.assertEqual(opciones["num_ctx"], OllamaVisionEngine._NUM_CTX)
 
 
 class TextAnalysisTest(unittest.TestCase):
@@ -121,6 +139,25 @@ class TextAnalysisTest(unittest.TestCase):
         with mock.patch.object(ov.requests, "post", return_value=resp):
             with self.assertRaises(EngineError):
                 self.engine.analyze_text("c", "p")
+
+    def test_400_por_contexto_explica_el_motivo(self) -> None:
+        resp = mock.Mock()
+        resp.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            "400",
+            response=_respuesta_de_error(
+                {
+                    "error": "request (4135 tokens) exceeds the available "
+                    "context size (4096 tokens), try increasing it"
+                }
+            ),
+        )
+        with mock.patch.object(ov.requests, "post", return_value=resp):
+            with self.assertRaises(EngineError) as ctx:
+                self.engine.analyze_text("c", "p")
+        mensaje = str(ctx.exception)
+        self.assertIn("no cabe en el contexto", mensaje)
+        self.assertIn(f"num_ctx={OllamaVisionEngine._NUM_CTX}", mensaje)
+        self.assertIn("4135", mensaje)
 
     def test_analyze_text_por_defecto_no_esta_soportado(self) -> None:
         class _SoloImagen(VisionEngine):

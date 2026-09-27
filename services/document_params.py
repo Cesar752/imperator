@@ -116,7 +116,10 @@ SUMMARY_STYLE = (
 
 # Presupuesto de caracteres del texto que se manda al resumen global. El contexto
 # de Ollama está acotado, así que un documento largo se recorta por el final y se
-# avisa en el resultado.
+# avisa en el resultado. Está atado al contexto que piden los motores
+# (``ollama_api.DEFAULT_NUM_CTX`` = 8192): 12000 caracteres son ~3000 tokens en
+# castellano y hasta ~5000 en euskera, que es el idioma que peor se tokeniza. Si
+# se sube este presupuesto, hay que subir también ``num_ctx``.
 MAX_GLOBAL_CHARS = 12_000
 
 # Aviso que se añade al resultado cuando el documento no cupo entero.

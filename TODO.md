@@ -151,6 +151,40 @@ red de seguridad, así que se mantiene, pero ahora no salta.
 - `qwen3.6:35b` está entre los modelos instalados en Ollama (comprobado con
   `/api/tags`), así que el combo lo selecciona sin avisos.
 
+### 5.5 El 400 de Ollama en Documentos: el motor de visión no pedía contexto
+
+**Síntoma:** al procesar un documento, la tarea moría con "Error al hablar con
+Ollama: 400 Client Error: Bad Request for url: <http://localhost:11434/api/chat>".
+El motivo real solo se veía en el log de Ollama:
+
+```
+srv send_error: task id = 0, error: request (4135 tokens) exceeds the available
+context size (4096 tokens), try increasing it
+```
+
+**Causa:** `OllamaVisionEngine._chat()` montaba el payload **sin `options`**, así
+que Ollama usaba su contexto por defecto (4096). Una página con capa de texto —y
+sobre todo el resumen global, que manda hasta `MAX_GLOBAL_CHARS` (12000
+caracteres, y en euskera se tokeniza peor)— no cabía. El motor de chat sí pedía
+`num_ctx`; por eso solo fallaba Documentos.
+
+- `engines/ollama_vision.py`: añade `options.num_ctx` al payload y el contexto es
+  configurable (`_NUM_CTX`, por defecto el compartido).
+- `engines/ollama_api.py`: `DEFAULT_NUM_CTX = 8192` como única fuente para chat y
+  visión, y `http_error_message()`, que lee el motivo del cuerpo de la respuesta
+  y, cuando es el contexto, lo explica y dice qué tocar (`num_ctx` en
+  `engines.json` y/o `OLLAMA_CONTEXT_LENGTH` en el servidor). Antes se mostraba
+  el texto genérico de `raise_for_status`, que no decía nada.
+- `core/engine_manager.py`: `num_ctx` (y `num_predict` en el chat) se pueden fijar
+  por motor en `engines.json`; si no están, mandan los valores del motor.
+- **Verificado contra Ollama** (no solo en teoría): `/api/ps` publica
+  `context_length`, y con `num_ctx=8192` en la petición devuelve **8192** tanto
+  en `qwen3.5:9b` como en `qwen3.6:35b` (13,3 GB de VRAM), es decir, el servidor
+  respeta lo que se le pide. Por defecto servía 4096.
+- 9 tests nuevos: payload de visión con contexto, mensaje del 400 (con detalle,
+  sin detalle, sin JSON y sin respuesta) y coherencia del valor por defecto entre
+  chat y visión.
+
 ### 5.3 Motor local MusicGen
 
 - `engines/base_engine.py`: nueva familia `MusicEngine` con

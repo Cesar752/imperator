@@ -98,15 +98,21 @@ class EngineManager:
     def _build(engine_id: str, entry: dict) -> Engine:
         """Construye la instancia de un motor a partir de su configuración."""
         params = entry.get("parametros", {})
+        # ``num_ctx`` (y ``num_predict`` en el chat) se pueden fijar por motor en
+        # engines.json; si no están, se usan los valores del propio motor, que son
+        # la única fuente de verdad.
         if engine_id == "ollama":
             return OllamaEngine(
                 base_url=entry.get("ruta", _OLLAMA_DEFAULT_BASE_URL),
                 default_model=params.get("model", _OLLAMA_DEFAULT_MODEL),
+                num_ctx=params.get("num_ctx", OllamaEngine._NUM_CTX),
+                num_predict=params.get("num_predict", OllamaEngine._NUM_PREDICT),
             )
         if engine_id == "ollama_vision":
             return OllamaVisionEngine(
                 base_url=entry.get("ruta", _OLLAMA_VISION_DEFAULT_BASE_URL),
                 default_model=params.get("model", _OLLAMA_VISION_DEFAULT_MODEL),
+                num_ctx=params.get("num_ctx", OllamaVisionEngine._NUM_CTX),
             )
         if engine_id == "comfyui":
             return ComfyUIEngine(

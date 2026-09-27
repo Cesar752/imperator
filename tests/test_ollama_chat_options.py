@@ -4,8 +4,14 @@ Contexto del bug: con la ventana de contexto llena (``truncated``) o el
 presupuesto de salida gastado pensando, Ollama responde **HTTP 200** con
 ``message.content`` vacío. El chat lo pintaba como un turno en blanco
 (``Ollama:``) y guardaba un mensaje de asistente vacío en el historial.
+
+Aquí vive también el mapeo del HTTP 400: el texto de ``raise_for_status`` ("400
+Client Error: Bad Request for url: ...") ocultaba el motivo real, que viaja en el
+cuerpo (``{"error": "request (4135 tokens) exceeds the available context size
+(4096 tokens), try increasing it"}``).
 """
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -124,6 +130,60 @@ class EmptyReplyTest(unittest.TestCase):
     def test_sin_mensaje_en_la_respuesta_tambien_lanza(self) -> None:
         error = self._error({"done_reason": "stop"})
         self.assertIn("vacía", str(error))
+
+
+class ContextErrorTest(unittest.TestCase):
+    """El 400 por contexto se explica: el prompt no cabía, y qué hacer."""
+
+    _DETALLE = (
+        "request (4135 tokens) exceeds the available context size (4096 tokens), "
+        "try increasing it"
+    )
+
+    def _chat_error(self, payload: dict, status_code: int = 400) -> EngineError:
+        respuesta = requests.models.Response()
+        respuesta.status_code = status_code
+        respuesta._content = json.dumps(payload).encode("utf-8")
+        resp = mock.Mock()
+        resp.raise_for_status.side_effect = requests.HTTPError(
+            str(status_code), response=respuesta
+        )
+        with mock.patch.object(ollama_mod.requests, "post", return_value=resp):
+            with self.assertRaises(EngineError) as ctx:
+                OllamaEngine().chat([{"role": "user", "content": "hola"}])
+        return ctx.exception
+
+    def test_el_contexto_excedido_se_explica(self) -> None:
+        mensaje = str(self._chat_error({"error": self._DETALLE}))
+        self.assertIn("no cabe en el contexto", mensaje)
+        self.assertIn(f"num_ctx={OllamaEngine._NUM_CTX}", mensaje)
+        self.assertIn("4135", mensaje)
+        self.assertIn("OLLAMA_CONTEXT_LENGTH", mensaje)
+
+    def test_un_400_sin_detalle_no_pierde_el_codigo(self) -> None:
+        self.assertIn("HTTP 400", str(self._chat_error({})))
+
+    def test_un_400_con_cuerpo_no_json_usa_el_texto(self) -> None:
+        respuesta = requests.models.Response()
+        respuesta.status_code = 400
+        respuesta._content = b"bad request"
+        resp = mock.Mock()
+        resp.raise_for_status.side_effect = requests.HTTPError(
+            "400", response=respuesta
+        )
+        with mock.patch.object(ollama_mod.requests, "post", return_value=resp):
+            with self.assertRaises(EngineError) as ctx:
+                OllamaEngine().chat([{"role": "user", "content": "hola"}])
+        self.assertIn("bad request", str(ctx.exception))
+
+    def test_un_error_http_sin_cuerpo_no_revienta(self) -> None:
+        # ``requests`` puede elevar HTTPError sin respuesta asociada.
+        resp = mock.Mock()
+        resp.raise_for_status.side_effect = requests.HTTPError("400")
+        with mock.patch.object(ollama_mod.requests, "post", return_value=resp):
+            with self.assertRaises(EngineError) as ctx:
+                OllamaEngine().chat([{"role": "user", "content": "hola"}])
+        self.assertIn("desconocido", str(ctx.exception))
 
 
 class OllamaPsTest(unittest.TestCase):

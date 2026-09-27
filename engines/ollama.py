@@ -5,7 +5,7 @@ import logging
 import requests
 
 from engines.base_engine import ChatEngine, EngineError
-from engines.ollama_api import fetch_tags, is_loaded
+from engines.ollama_api import DEFAULT_NUM_CTX, fetch_tags, http_error_message, is_loaded
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ class OllamaEngine(ChatEngine):
     #: Ventana de contexto que se pide al servidor. El valor por defecto de
     #: Ollama (4096) se agota con modelos que "piensan" y respuestas largas; al
     #: truncarse la generación, el contenido llega vacío.
-    _NUM_CTX = 8192
+    _NUM_CTX = DEFAULT_NUM_CTX
 
     #: Tokens máximos de salida. ``-1`` = sin límite explícito: el techo real es
     #: la ventana de contexto (``num_ctx``). Un tope bajo corta las respuestas a
@@ -111,6 +111,11 @@ class OllamaEngine(ChatEngine):
             raise EngineError("No se pudo conectar a Ollama. ¿Está arrancado?") from exc
         except requests.exceptions.Timeout as exc:
             raise EngineError("Ollama tardó demasiado en responder (timeout).") from exc
+        except requests.exceptions.HTTPError as exc:
+            # El motivo real viaja en el cuerpo de la respuesta (ver ollama_api).
+            raise EngineError(
+                http_error_message(exc.response, self._num_ctx)
+            ) from exc
         except requests.RequestException as exc:
             raise EngineError(f"Error al hablar con Ollama: {exc}") from exc
 

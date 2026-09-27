@@ -288,7 +288,7 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   (`config/*.json`) y se descartó el intento de config unificada
   (`~/.imperator/config.json`).
 - `bfl` incluido en `DEFAULT_ENGINES` (antes solo existía en el factory).
-- Suite de tests (stdlib `unittest`, 305 tests) + CI en GitHub Actions. Incluye
+- Suite de tests (stdlib `unittest`, 314 tests) + CI en GitHub Actions. Incluye
   un smoke test de la `MainWindow` opt-in (`IMPERATOR_GUI_SMOKE=1`), que el CI
   activa.
 - El CI instala `requirements-test.txt` (PyQt6, requests, python-dotenv, numpy),
@@ -313,6 +313,11 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
 - El modelo por defecto del chat es `qwen3.6:35b`, definido en un solo sitio
   (`_OLLAMA_DEFAULT_MODEL`) y replicado en la configuración y la UI, con un
   test-guarda (`test_ollama_defaults.py`) que impide que se desincronicen.
+- Los dos motores de Ollama (chat y visión) piden la misma ventana de contexto
+  (`ollama_api.DEFAULT_NUM_CTX`, 8192) y esta se puede fijar por motor con
+  `num_ctx` en `engines.json`. Sin pedirla, Ollama usaba 4096 y el análisis de un
+  documento fallaba con HTTP 400 ("exceeds the available context size"); ese 400
+  ahora se traduce a un mensaje que dice qué hacer (`ollama_api.http_error_message`).
 - `musicgen` es el motor de música: `audiocraft` es opcional, así que sin él la
   app arranca igual y el motor se marca como no disponible.
 - `ApiManager` (`core/api_manager.py`) da un consumidor real a `apis.json`.
