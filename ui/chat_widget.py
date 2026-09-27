@@ -3,6 +3,7 @@
 import logging
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -227,6 +228,19 @@ class ChatWidget(TaskWidget):
 
     def _append_line(self, text: str) -> None:
         self._conversation.appendPlainText(text)
+        self._scroll_to_bottom()
+
+    def _scroll_to_bottom(self) -> None:
+        """Baja la conversación al último mensaje.
+
+        ``appendPlainText`` no garantiza el desplazamiento (si el usuario movió
+        la rueda, el texto nuevo se añade fuera de la vista), así que se lleva el
+        cursor al final y se asegura de que sea visible.
+        """
+        cursor = self._conversation.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self._conversation.setTextCursor(cursor)
+        self._conversation.ensureCursorVisible()
 
     def _busy_widgets(self) -> tuple:
         return (self._model, self._input, self._send_button)

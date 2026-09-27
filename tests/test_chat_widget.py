@@ -98,6 +98,37 @@ class ChatFocusTest(unittest.TestCase):
         start.assert_not_called()
         self.assertEqual(self.widget._messages, [])
 
+    def _llenar_conversacion(self) -> None:
+        self.widget.resize(240, 120)
+        self.app.processEvents()
+        for i in range(200):
+            self.widget._conversation.appendPlainText(f"linea {i}")
+        self.app.processEvents()
+
+    def test_baja_al_final_aunque_el_usuario_haya_subido(self) -> None:
+        self._llenar_conversacion()
+        barra = self.widget._conversation.verticalScrollBar()
+        self.assertGreater(barra.maximum(), 0, "la conversación debe desbordar")
+
+        barra.setValue(0)  # el usuario se ha ido arriba a leer
+        self.widget._append_line("Tú: mensaje nuevo")
+        self.app.processEvents()
+
+        self.assertEqual(barra.value(), barra.maximum())
+
+    def test_el_mensaje_del_humano_queda_visible(self) -> None:
+        self._llenar_conversacion()
+        barra = self.widget._conversation.verticalScrollBar()
+        barra.setValue(0)
+
+        self.widget._input.setText("hola")
+        with mock.patch.object(cw.ChatWorker, "start"):
+            self.widget._send_message()
+        self.app.processEvents()
+
+        self.assertEqual(barra.value(), barra.maximum())
+        self.assertIn("Tú: hola", self.widget._conversation.toPlainText())
+
 
 if __name__ == "__main__":
     unittest.main()
