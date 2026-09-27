@@ -210,6 +210,21 @@ class DocumentParamsTest(unittest.TestCase):
             dp.text_prompt_for("resumen"), dp.text_prompt_for("tablas")
         )
 
+    def test_los_prompts_piden_conservar_el_idioma(self) -> None:
+        # Los modelos locales (qwen3-vl, qwen3.x) cubren euskera: el OCR no debe
+        # traducir, el resumen debe responder en el idioma del documento y las
+        # tablas deben conservar el texto original en las celdas.
+        ocr = dp.prompt_for("ocr")
+        self.assertIn("euskera", ocr)
+        self.assertIn("Do NOT translate", ocr)
+
+        for prompt in (dp.prompt_for("resumen"), dp.text_prompt_for("resumen")):
+            self.assertIn("euskera", prompt)
+            self.assertIn("SAME language", prompt)
+
+        for prompt in (dp.prompt_for("tablas"), dp.text_prompt_for("tablas")):
+            self.assertIn("original language", prompt)
+
     def test_ocr_no_necesita_analisis_de_texto(self) -> None:
         # En OCR la capa de texto del PDF ya es la transcripción.
         self.assertIsNone(dp.text_prompt_for("ocr"))

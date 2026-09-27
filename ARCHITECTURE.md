@@ -257,7 +257,10 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   `QThread`/`QThreadPool`); el logging se configura desde `settings.json`
   (`log_level` y `rutas.logs`).
 - **F5-TTS**: intentado y descartado (watermarking ElevenLabs + sin euskera).
-- **Kokoro**: sin euskera (solo cubre 9 idiomas); para euskera se usa Piper.
+- **Kokoro**: sin euskera (solo cubre 9 idiomas); para voces en euskera se usa
+  Piper. Es una limitación **solo de TTS**: los modelos locales de texto y visión
+  de Ollama (`qwen3-vl`, familia `qwen3.x`) sí trabajan en euskera, y los prompts
+  de Documentos piden conservar el idioma original y responder en él.
 
 ## 8. Estado actual
 

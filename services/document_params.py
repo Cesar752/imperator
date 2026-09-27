@@ -3,6 +3,13 @@
 Reúne lo que antes vivía en ``ui/document_widget.py``: formatos soportados,
 modelo por defecto, prompts por modo y el formateo de la previsualización
 (tipo y tamaño legible del archivo).
+
+Sobre idiomas: los modelos locales de Ollama que se usan aquí (``qwen3-vl`` y la
+familia ``qwen3.x``) sí trabajan en euskera, así que los prompts piden conservar
+el idioma original y responder en él. La limitación "sin euskera" del proyecto
+es exclusiva de TTS: Kokoro no lo cubre y para voces en euskera se usa Piper.
+Las instrucciones van en inglés (los modelos las siguen mejor), pero el idioma
+de la *respuesta* se fija explícitamente.
 """
 
 # Formatos de imagen soportados (además de PDF).
@@ -14,20 +21,23 @@ FILE_FILTER = "Documentos (*.pdf *.png *.jpg *.jpeg *.bmp *.webp *.tiff *.tif)"
 # Modelo por defecto (fallback si /api/tags no responde o no hay modelos de visión).
 DEFAULT_MODEL = "qwen3-vl:8b"
 
-# Prompts por modo.
+# Prompts por modo (imagen: página rasterizada o foto).
 PROMPTS = {
     "ocr": (
         "Extract and transcribe all visible text from this image. Preserve the "
-        "original layout, line breaks, and the original language. Do NOT translate. "
-        "Do not add any commentary or explanations."
+        "original layout, line breaks, and the original language (the text may be "
+        "in Basque/euskera or any other language). Do NOT translate, summarise or "
+        "normalise it. Do not add any commentary or explanations."
     ),
     "resumen": (
-        "Summarize the content of this document in 3-5 sentences. Focus on the "
-        "key information and main points."
+        "Summarize the content of this document in 3-5 sentences, in the SAME "
+        "language as the document: if it is written in Basque/euskera, answer in "
+        "Basque. Focus on the key information and main points."
     ),
     "tablas": (
-        "Extract all tables from this image and return them as HTML tables. "
-        "If there is no table, return 'No tables found'."
+        "Extract all tables from this image and return them as HTML tables. Keep "
+        "the cell text in the original language. If there is no table, return "
+        "'No tables found'."
     ),
 }
 
@@ -35,12 +45,14 @@ PROMPTS = {
 # En ``ocr`` no hacen falta: el texto extraído ya es la transcripción.
 TEXT_PROMPTS = {
     "resumen": (
-        "Summarize the following document content in 3-5 sentences. Focus on the "
-        "key information and main points."
+        "Summarize the following document content in 3-5 sentences, in the SAME "
+        "language as the text: if it is written in Basque/euskera, answer in "
+        "Basque. Focus on the key information and main points."
     ),
     "tablas": (
-        "Extract all tables from the following text and return them as HTML tables. "
-        "If there is no table, return 'No tables found'."
+        "Extract all tables from the following text and return them as HTML "
+        "tables. Keep the cell text in the original language. If there is no "
+        "table, return 'No tables found'."
     ),
 }
 
