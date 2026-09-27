@@ -7,6 +7,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
@@ -36,12 +37,19 @@ except ImportError:  # pragma: no cover - dependencia declarada en requirements.
 
 
 class DocumentWorker(ThreadWorker):
-    """Procesa una imagen o un PDF (página a página) fuera del hilo de la UI."""
+    """Procesa una imagen o un PDF fuera del hilo de la UI."""
 
     page_progress = pyqtSignal(int, int)   # página actual, total de páginas
 
     def __init__(
-        self, engine, file_path, mode, model, language=None, parent=None
+        self,
+        engine,
+        file_path,
+        mode,
+        model,
+        language=None,
+        global_summary=False,
+        parent=None,
     ) -> None:
         super().__init__(parent)
         self._engine = engine
@@ -49,16 +57,27 @@ class DocumentWorker(ThreadWorker):
         self._mode = mode
         self._model = model
         self._language = language
+        self._global_summary = global_summary
 
     def work(self) -> str:
         image_prompt = dp.prompt_for(self._mode, self._language)
-        if dp.is_pdf(self._file_path.suffix):
-            return self._process_pdf(image_prompt)
-        return self._process_image(image_prompt)
+        if not dp.is_pdf(self._file_path.suffix):
+            return self._process_image(image_prompt)
+        if dp.wants_global(self._mode, self._global_summary):
+            return self._process_pdf_global()
+        return self._process_pdf(image_prompt)
 
     def _process_image(self, prompt: str) -> str:
         self.page_progress.emit(1, 1)
         return self._engine.analyze_image(self._file_path, prompt, self._model)
+
+    def _open_pdf(self):
+        """Abre el PDF (PyMuPDF es opcional: sin él la app sigue arrancando)."""
+        if pymupdf is None:
+            raise EngineError(
+                "PyMuPDF no está instalado. Instálalo con: pip install PyMuPDF>=1.24.0"
+            )
+        return pymupdf.open(str(self._file_path))
 
     def _process_pdf(self, image_prompt: str) -> str:
         """Procesa el PDF página a página según el modo elegido.
@@ -68,12 +87,8 @@ class DocumentWorker(ThreadWorker):
         texto es la *entrada* del análisis, así que también pasa por el modelo
         con su prompt de texto. Si no, los tres modos devolvían el mismo texto.
         """
-        if pymupdf is None:
-            raise EngineError(
-                "PyMuPDF no está instalado. Instálalo con: pip install PyMuPDF>=1.24.0"
-            )
         text_prompt = dp.text_prompt_for(self._mode, self._language)
-        doc = pymupdf.open(str(self._file_path))
+        doc = self._open_pdf()
         try:
             total = doc.page_count
             blocks: list[str] = []
@@ -96,6 +111,43 @@ class DocumentWorker(ThreadWorker):
                     ocr = self._ocr_page(page, image_prompt)
                     blocks.append(f"--- Página {index + 1} (OCR) ---\n\n{ocr}")
             return "\n\n".join(blocks)
+        finally:
+            doc.close()
+
+    def _process_pdf_global(self) -> str:
+        """Resume el documento completo con una sola llamada al modelo.
+
+        Dos pasadas: primero se recoge el texto de cada página (capa nativa u
+        OCR, transcrita con el prompt de OCR porque aquí hacen falta las
+        palabras, no un resumen de cada página) y después se pide un único
+        resumen global. Así el modelo ve el documento entero y no fragmentos.
+        """
+        ocr_prompt = dp.prompt_for("ocr")
+        doc = self._open_pdf()
+        try:
+            total = doc.page_count
+            pages: list[str] = []
+            for index, page in enumerate(doc):
+                if self.isInterruptionRequested():
+                    raise EngineError(CANCEL_MESSAGE)
+                self.page_progress.emit(index + 1, total)
+                text = (page.get_text() or "").strip()
+                if dp.has_native_text(text):
+                    pages.append(text)
+                else:
+                    pages.append(self._ocr_page(page, ocr_prompt))
+
+            if self.isInterruptionRequested():
+                raise EngineError(CANCEL_MESSAGE)
+            joined, truncated = dp.merge_pages(pages)
+            summary = self._engine.analyze_text(
+                joined,
+                dp.global_prompt_for(self._mode, self._language),
+                self._model,
+            )
+            if truncated:
+                summary = f"{summary}\n\n{dp.TRUNCATED_NOTICE}"
+            return summary
         finally:
             doc.close()
 
@@ -131,6 +183,8 @@ class DocumentWidget(TaskWidget):
         self._populate_models()
         self._restore_mode()
         self._restore_language()
+        self._restore_global()
+        self._update_global_enabled()
         if engine is None:
             self._set_status("Ollama Vision no está configurado o deshabilitado.")
             self._process_button.setEnabled(False)
@@ -160,10 +214,18 @@ class DocumentWidget(TaskWidget):
             self._language_combo.addItem(label, language_id)
         self._language_combo.currentIndexChanged.connect(self._on_language_changed)
 
+        self._global_check = QCheckBox("Resumen global (documento completo)")
+        self._global_check.setToolTip(
+            "Resume todas las páginas juntas en una sola consulta, en vez de un "
+            "resumen por página. Solo se aplica al modo Resumen."
+        )
+        self._global_check.toggled.connect(self._on_global_changed)
+
         form = QFormLayout()
         form.addRow("Modo:", self._mode)
         form.addRow("Modelo:", self._model)
         form.addRow("Idioma:", self._language_combo)
+        form.addRow("Alcance:", self._global_check)
 
         self._process_button = QPushButton("Procesar")
         self._cancel_button = QPushButton("Cancelar")
@@ -310,12 +372,30 @@ class DocumentWidget(TaskWidget):
             self._language_combo.setCurrentIndex(idx)
             self._language_combo.blockSignals(False)
 
+    def _restore_global(self) -> None:
+        """Restaura la casilla de resumen global (apagada si no se usó nunca)."""
+        if not self._prefs.get_bool(prefs.DOCUMENT_GLOBAL, False):
+            return
+        self._global_check.blockSignals(True)
+        self._global_check.setChecked(True)
+        self._global_check.blockSignals(False)
+
+    def _on_global_changed(self, checked: bool) -> None:
+        self._prefs.set_bool(prefs.DOCUMENT_GLOBAL, checked)
+
+    def _update_global_enabled(self, disponible: bool = True) -> None:
+        """La casilla solo aplica al modo Resumen y nunca durante el trabajo."""
+        self._global_check.setEnabled(
+            disponible and dp.supports_global(self._mode.currentData())
+        )
+
     def _on_language_changed(self) -> None:
         self._prefs.set(prefs.DOCUMENT_LANGUAGE, self._language_combo.currentData())
 
     def _on_mode_changed(self) -> None:
         self._prefs.set(prefs.DOCUMENT_MODE, self._mode.currentData())
         self._update_language_hint()
+        self._update_global_enabled()
 
     def _on_model_changed(self) -> None:
         self._prefs.set(prefs.DOCUMENT, self._model.currentData())
@@ -350,7 +430,8 @@ class DocumentWidget(TaskWidget):
             mode,
             model,
             self._language_combo.currentData(),
-            self,
+            global_summary=self._global_check.isChecked(),
+            parent=self,
         )
         self._worker.page_progress.connect(self._on_progress)
         self._worker.result.connect(self._on_result_ready)
@@ -416,7 +497,7 @@ class DocumentWidget(TaskWidget):
     # ---- Utilidades -----------------------------------------------
 
     def _busy_widgets(self) -> tuple:
-        return (self._select_button, self._mode, self._model)
+        return (self._select_button, self._mode, self._model, self._global_check)
 
     def _busy_only_widgets(self) -> tuple:
         return (self._cancel_button,)
@@ -426,6 +507,7 @@ class DocumentWidget(TaskWidget):
         if busy:
             self._save_button.setEnabled(False)
             self._copy_button.setEnabled(False)
+        self._update_global_enabled(not busy)
 
     def set_engine(self, engine: Engine | None) -> None:
         self._engine = engine

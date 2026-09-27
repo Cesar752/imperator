@@ -14,6 +14,11 @@ respeta el del documento y ``es``/``eu``/``en`` lo fuerzan a español, euskera o
 inglés, que es lo que permite pedir el resumen en euskera aunque el documento
 venga en castellano (o al revés). El OCR nunca se traduce. Las instrucciones van
 en inglés porque los modelos las siguen mejor.
+
+El *alcance* del resumen es la otra opción: por defecto cada página se analiza
+por separado, pero con el resumen global (:func:`global_prompt_for`) se recoge el
+texto de todas las páginas y se hace una única llamada al modelo, que así ve el
+documento completo en vez de páginas sueltas.
 """
 
 # Formatos de imagen soportados (además de PDF).
@@ -59,9 +64,31 @@ TEXT_PROMPTS = {
     ),
 }
 
+# Prompt del resumen global: el mismo análisis, pero sobre el documento completo
+# (todas las páginas juntas) en vez de página a página.
+GLOBAL_PROMPT = (
+    "Summarize the following complete document in 5-10 sentences. Cover the key "
+    "information, the main points and the overall conclusions."
+)
+
 # Modos que *analizan* el contenido: en ellos el texto nativo también pasa por el
 # modelo (y el idioma de salida es configurable). En OCR basta transcribir.
 ANALYSIS_MODES = ("resumen", "tablas")
+
+# Modos que admiten resumir el documento *entero* de una vez. En OCR no hay nada
+# que resumir y en tablas cada página trae las suyas: unirlas no es un resumen.
+GLOBAL_MODES = ("resumen",)
+
+# Presupuesto de caracteres del texto que se manda al resumen global. El contexto
+# de Ollama está acotado, así que un documento largo se recorta por el final y se
+# avisa en el resultado.
+MAX_GLOBAL_CHARS = 12_000
+
+# Aviso que se añade al resultado cuando el documento no cupo entero.
+TRUNCATED_NOTICE = (
+    "Aviso: el documento es más largo de lo que cabe en una sola consulta; "
+    "este resumen cubre únicamente su primera parte."
+)
 
 # Idiomas de salida para resumen y tablas. El OCR no se traduce nunca: una
 # transcripción debe conservar el idioma original del documento.
@@ -177,6 +204,36 @@ def needs_text_analysis(mode: str | None) -> bool:
     para no crear un ciclo (esa función consulta este mismo predicado).
     """
     return (mode or "") in ANALYSIS_MODES
+
+
+def supports_global(mode: str | None) -> bool:
+    """¿El modo admite resumir el documento completo de una vez?"""
+    return (mode or "") in GLOBAL_MODES
+
+
+def wants_global(mode: str | None, requested: bool) -> bool:
+    """¿Procede el resumen global con este modo y esta opción de la UI?"""
+    return bool(requested) and supports_global(mode)
+
+
+def global_prompt_for(mode: str | None, language: str | None = None) -> str | None:
+    """Prompt del resumen global, o ``None`` si el modo no lo admite."""
+    if not supports_global(mode):
+        return None
+    return _with_language(mode, GLOBAL_PROMPT, language)
+
+
+def merge_pages(pages: list[str], max_chars: int = MAX_GLOBAL_CHARS) -> tuple[str, bool]:
+    """Une las páginas para el resumen global: ``(texto, recortado)``.
+
+    Las páginas vacías se descartan para no gastar presupuesto en separadores.
+    Si el resultado no cabe en ``max_chars`` se recorta por el final y se marca
+    como recortado, para que quien lo mande pueda avisar.
+    """
+    texto = "\n\n".join(page.strip() for page in pages if page and page.strip())
+    if len(texto) <= max_chars:
+        return texto, False
+    return texto[:max_chars], True
 
 
 def is_pdf(suffix: str) -> bool:
