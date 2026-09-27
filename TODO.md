@@ -38,3 +38,42 @@ Notas pendientes (revisar al retomar el proyecto).
   un `MusicEngine` (o `AudioEngine`) con `generate_music(...)` en lugar de
   forzar `chat()`.
 - Registrar el motor en `core/engine_manager.py` y exponerlo en la UI de motores.
+
+## 3. Punto de retorno de la sesión (2026-09-27)
+
+**Para retomar:** proyecto Imperator (`C:\Imperator`, PyQt6 + Ollama + ComfyUI).
+Sesión del 2026-09-27: refactor a `services/`, foco y formato del chat, idioma de
+salida en Documentos, límites de Ollama y descarga de VRAM. 245 tests en verde.
+Siguiente: markdown en el chat y resumen global de documentos.
+
+**Qué se hizo** (commits `c8748b8` … `201b99a`):
+
+- `services/`: nuevos `audio_params.py`, `document_params.py`, `chat_params.py` y
+  `system_stats.py`; `preferences.py` ampliado. Todo con tests.
+- `ui/task_widget.py`: base común de los 6 widgets (foco, estado y ciclo del
+  worker); `_focus_widget()` devuelve el cursor al campo de escritura.
+- Chat: turnos con autor resaltado (el **modelo**, no "Ollama"), scroll
+  automático, sin turnos vacíos y con aviso si el motor no responde.
+- Documentos: el prompt del modo se aplica también al texto nativo de un PDF;
+  aviso si el modelo elegido no cubre el euskera; **selector de idioma de salida**
+  (`auto`/`es`/`eu`/`en`, solo para resumen y tablas; el OCR nunca traduce).
+- Ollama: `num_ctx=8192`, sin tope de `num_predict`, aviso cuando la respuesta se
+  trunca, y descarga de VRAM **solo** de lo que está cargado (`/api/ps`).
+- `ffmpeg` con `timeout` y kill; `pyrightconfig.json`; CI con
+  `requirements-test.txt`.
+
+**Verificación rápida** (245 tests, 1 skip):
+
+```
+venv\Scripts\python.exe -m unittest discover -s tests -t .
+```
+
+**Candidatos para la próxima sesión:**
+
+1. Renderizar markdown en las respuestas del chat (hoy se ven `**` y las tablas
+   en crudo); requiere `QTextEdit` + `QTextDocument.setMarkdown()` y traducir los
+   estilos al tema oscuro.
+2. Resumen de documento completo en vez de página a página (opción en la UI).
+3. `TODO(fase 6)` de `core/task_manager.py`: dependencias de tareas por `kwargs`.
+4. Los MP3 en `music/` para validar el ducking (bloqueado por material de prueba).
+5. Fase opcional: motor local MusicGen.
