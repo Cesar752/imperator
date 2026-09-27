@@ -21,13 +21,21 @@ _TAGS_TTL = 30.0  # segundos
 #: (``options.num_ctx``); el servidor lo respeta (comprobado con /api/ps).
 DEFAULT_NUM_CTX = 8192
 
-#: Ventana de contexto para el análisis de documentos, mayor que la del chat. No
-#: es por el prompt (una página cabe de sobra) sino por el **razonamiento**: los
-#: modelos de visión tipo qwen3-vl gastan ~90% de los tokens en ``thinking``
-#: (medido: 4143 tokens generados para 390 caracteres de respuesta), así que con
-#: 8192 el prompt + el razonamiento llenaban la ventana y la respuesta llegaba
-#: vacía. Medido con ``/api/ps``: el modelo por defecto (``qwen3-vl:8b``) ocupa
-#: 7,2 GB y cabe entero en VRAM a 16384, así que ampliar no cuesta rendimiento.
+#: Ventana de contexto para el análisis de documentos, mayor que la del chat por
+#: dos motivos que se suman:
+#:
+#: 1. El **razonamiento**: los modelos de visión tipo qwen3-vl gastan ~90% de los
+#:    tokens en ``thinking`` (medido: 4143 tokens generados para 390 caracteres
+#:    de respuesta), así que con 8192 el prompt + el razonamiento llenaban la
+#:    ventana y la respuesta llegaba vacía.
+#: 2. El **reparto entre slots**: si se activa el procesado por lotes
+#:    (``ui.document_widget.MAX_PARALLEL_PAGES``) hay que doblar este valor,
+#:    porque Ollama divide ``num_ctx`` entre las peticiones que atiende a la vez:
+#:    con 16384 pedidos, cada página se quedaría en 8192 y volverían los fallos de
+#:    contexto. Para dos páginas a la vez, 32768 (medido: 9,5 GB de VRAM con
+#:    ``qwen3-vl:8b``, cabe entero en los 16 GB de la GPU).
+#:
+#: Por defecto 16384, que es lo verificado con una página a la vez.
 DEFAULT_VISION_NUM_CTX = 16384
 
 

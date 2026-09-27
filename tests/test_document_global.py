@@ -68,6 +68,9 @@ class _FakeDoc:
     def __iter__(self):
         return iter(self._pages)
 
+    def load_page(self, index: int):
+        return self._pages[index]
+
     def close(self) -> None:
         self.closed = True
 
@@ -165,6 +168,15 @@ class GlobalWorkerTest(unittest.TestCase):
             [_FakePage(_TEXTO), _FakePage(_TEXTO)], closing=True
         )
         self.assertIn(dp.CLOSING_STYLE, engine.text_calls[0][1])
+
+    def test_el_resumen_global_conserva_el_orden_con_lotes(self) -> None:
+        # La pasada de transcripción también va por lotes: el texto unido debe
+        # seguir el orden del PDF (se recompone por índice, no por llegada).
+        paginas = [_FakePage(f"{_TEXTO} pagina {i}") for i in range(4)]
+        _, engine, _ = self._run(paginas)
+        unido = engine.text_calls[0][0]
+        posiciones = [unido.index(f"pagina {i}") for i in range(4)]
+        self.assertEqual(posiciones, sorted(posiciones))
 
     def test_resume_el_documento_completo_en_una_sola_llamada(self) -> None:
         result, engine, doc = self._run([_FakePage(_TEXTO), _FakePage(_TEXTO)])

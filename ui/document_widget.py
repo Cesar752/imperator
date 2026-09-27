@@ -2,6 +2,8 @@
 
 import logging
 import tempfile
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -35,6 +37,28 @@ try:
 except ImportError:  # pragma: no cover - dependencia declarada en requirements.txt
     pymupdf = None
 
+#: Páginas que se analizan a la vez. **Por defecto 1 (en serie)**: Ollama decide
+#: cuántos "slots" abre al cargar el modelo y, con uno solo, las peticiones se
+#: encolan y el paralelismo únicamente añade sobrecarga. Medido con
+#: ``qwen3-vl:8b``:
+#:
+#: - peticiones crudas por HTTP, con dos slots activos: 140 s en serie frente a
+#:   83 s en paralelo (**1,68x** a favor);
+#: - ``DocumentWorker`` completo (3 páginas), carga con un slot: 106 s en serie
+#:   frente a 126 s en paralelo (**0,84x**, es decir, más lento).
+#:
+#: Para aprovecharlo hay que forzar dos slots en el servidor
+#: (``OLLAMA_NUM_PARALLEL=2`` y reiniciar Ollama) y subir ``num_ctx`` al doble
+#: (32768), porque Ollama reparte el contexto entre los slots. Con eso, poner
+#: este valor en 2 y medirlo con un documento real.
+MAX_PARALLEL_PAGES = 1
+
+
+def _chunks(total: int, size: int) -> Iterator[range]:
+    """Rangos de índices de página, de ``size`` en ``size`` (el último, más corto)."""
+    for inicio in range(0, total, size):
+        yield range(inicio, min(inicio + size, total))
+
 
 class DocumentWorker(ThreadWorker):
     """Procesa una imagen o un PDF fuera del hilo de la UI."""
@@ -50,6 +74,7 @@ class DocumentWorker(ThreadWorker):
         language=None,
         global_summary=False,
         closing=False,
+        parallel=MAX_PARALLEL_PAGES,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -60,6 +85,7 @@ class DocumentWorker(ThreadWorker):
         self._language = language
         self._global_summary = global_summary
         self._closing = closing
+        self._parallel = max(1, int(parallel))
 
     def work(self) -> str:
         image_prompt = dp.prompt_for(self._mode, self._language, self._closing)
@@ -82,39 +108,79 @@ class DocumentWorker(ThreadWorker):
         return pymupdf.open(str(self._file_path))
 
     def _process_pdf(self, image_prompt: str) -> str:
-        """Procesa el PDF página a página según el modo elegido.
+        """Procesa el PDF por lotes de páginas según el modo elegido.
 
         Con capa de texto nativa, en ``ocr`` se devuelve tal cual (esa capa *es*
         la transcripción y no hace falta modelo); en ``resumen``/``tablas`` el
         texto es la *entrada* del análisis, así que también pasa por el modelo
         con su prompt de texto. Si no, los tres modos devolvían el mismo texto.
+
+        Las páginas se analizan de ``_parallel`` en ``_parallel`` (Ollama atiende
+        varias peticiones a la vez y la GPU se solapa), pero **leer** cada página
+        y montar el resultado se hace en este hilo: PyMuPDF no es thread-safe y el
+        orden de las páginas debe ser el del PDF.
         """
         text_prompt = dp.text_prompt_for(self._mode, self._language, self._closing)
         doc = self._open_pdf()
         try:
             total = doc.page_count
             blocks: list[str] = []
-            for index, page in enumerate(doc):
-                if self.isInterruptionRequested():
-                    raise EngineError(CANCEL_MESSAGE)
-                self.page_progress.emit(index + 1, total)
-                text = (page.get_text() or "").strip()
-                if dp.has_native_text(text):
-                    if text_prompt is None:
-                        blocks.append(f"--- Página {index + 1} (texto) ---\n\n{text}")
-                    else:
-                        analysed = self._engine.analyze_text(
-                            text, text_prompt, self._model
-                        )
-                        blocks.append(
-                            f"--- Página {index + 1} (texto) ---\n\n{analysed}"
-                        )
-                else:
-                    ocr = self._ocr_page(page, image_prompt)
-                    blocks.append(f"--- Página {index + 1} (OCR) ---\n\n{ocr}")
+            for indices in _chunks(total, self._parallel):
+                etiquetas: list[str] = []
+                tareas: list[Callable[[], str]] = []
+                for index in indices:
+                    self._ensure_not_cancelled()
+                    etiqueta, tarea = self._page_task(
+                        doc, index, image_prompt, text_prompt
+                    )
+                    etiquetas.append(etiqueta)
+                    tareas.append(tarea)
+                for index, etiqueta, resultado in zip(
+                    indices, etiquetas, self._run_parallel(tareas)
+                ):
+                    blocks.append(
+                        f"--- Página {index + 1} ({etiqueta}) ---\n\n{resultado}"
+                    )
+                self.page_progress.emit(indices.stop, total)
             return "\n\n".join(blocks)
         finally:
             doc.close()
+
+    def _page_task(
+        self, doc, index: int, image_prompt: str, text_prompt: str | None
+    ) -> tuple[str, Callable[[], str]]:
+        """Devuelve ``(etiqueta, tarea)`` de una página.
+
+        Aquí solo se *lee* la página; la tarea devuelta contiene la llamada al
+        modelo, que es la parte lenta y la que se ejecuta en paralelo.
+        """
+        page = doc.load_page(index)
+        text = (page.get_text() or "").strip()
+        if dp.has_native_text(text):
+            if text_prompt is None:
+                # OCR: la capa de texto *es* la transcripción, no hay modelo.
+                return "texto", lambda: text
+            return "texto", lambda: self._engine.analyze_text(
+                text, text_prompt, self._model
+            )
+        png = self._rasterize_page(page)
+        return "OCR", lambda: self._analyze_rendered_page(png, image_prompt)
+
+    def _run_parallel(self, tareas: list[Callable[[], str]]) -> list[str]:
+        """Ejecuta las tareas del lote a la vez y devuelve los resultados en orden.
+
+        Con una sola tarea (o ``parallel=1``) no se abre pool: no aportaría nada
+        y solo añadiría ruido.
+        """
+        if len(tareas) <= 1 or self._parallel <= 1:
+            return [tarea() for tarea in tareas]
+        with ThreadPoolExecutor(max_workers=self._parallel) as pool:
+            return list(pool.map(lambda tarea: tarea(), tareas))
+
+    def _ensure_not_cancelled(self) -> None:
+        """Corta el trabajo si el usuario pidió cancelar."""
+        if self.isInterruptionRequested():
+            raise EngineError(CANCEL_MESSAGE)
 
     def _process_pdf_global(self) -> str:
         """Resume el documento completo con una sola llamada al modelo.
@@ -123,24 +189,32 @@ class DocumentWorker(ThreadWorker):
         OCR, transcrita con el prompt de OCR porque aquí hacen falta las
         palabras, no un resumen de cada página) y después se pide un único
         resumen global. Así el modelo ve el documento entero y no fragmentos.
+        La primera pasada va por lotes, como el modo página a página.
         """
         ocr_prompt = dp.prompt_for("ocr")
         doc = self._open_pdf()
         try:
             total = doc.page_count
             pages: list[str] = []
-            for index, page in enumerate(doc):
-                if self.isInterruptionRequested():
-                    raise EngineError(CANCEL_MESSAGE)
-                self.page_progress.emit(index + 1, total)
-                text = (page.get_text() or "").strip()
-                if dp.has_native_text(text):
-                    pages.append(text)
-                else:
-                    pages.append(self._ocr_page(page, ocr_prompt))
+            for indices in _chunks(total, self._parallel):
+                tareas: list[Callable[[], str]] = []
+                for index in indices:
+                    self._ensure_not_cancelled()
+                    page = doc.load_page(index)
+                    text = (page.get_text() or "").strip()
+                    if dp.has_native_text(text):
+                        tareas.append(lambda pagina=text: pagina)
+                    else:
+                        png = self._rasterize_page(page)
+                        tareas.append(
+                            lambda imagen=png: self._analyze_rendered_page(
+                                imagen, ocr_prompt
+                            )
+                        )
+                pages.extend(self._run_parallel(tareas))
+                self.page_progress.emit(indices.stop, total)
 
-            if self.isInterruptionRequested():
-                raise EngineError(CANCEL_MESSAGE)
+            self._ensure_not_cancelled()
             joined, truncated = dp.merge_pages(pages)
             summary = self._engine.analyze_text(
                 joined,
@@ -153,16 +227,23 @@ class DocumentWorker(ThreadWorker):
         finally:
             doc.close()
 
-    def _ocr_page(self, page, prompt: str) -> str:
-        """Rasteriza una página a PNG (200 DPI) y la pasa al motor de visión."""
+    def _rasterize_page(self, page) -> Path:
+        """Rasteriza una página a un PNG temporal y devuelve su ruta.
+
+        Va aparte de la llamada al modelo a propósito: esto toca PyMuPDF (que no
+        es thread-safe) y debe quedarse en el hilo del worker.
+        """
         png = page.get_pixmap(dpi=dp.PDF_DPI).tobytes("png")
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as fh:
             fh.write(png)
-            tmp_path = Path(fh.name)
+            return Path(fh.name)
+
+    def _analyze_rendered_page(self, path: Path, prompt: str) -> str:
+        """Pasa un PNG temporal al motor de visión y lo borra pase lo que pase."""
         try:
-            return self._engine.analyze_image(tmp_path, prompt, self._model)
+            return self._engine.analyze_image(path, prompt, self._model)
         finally:
-            tmp_path.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
 
 
 class DocumentWidget(TaskWidget):

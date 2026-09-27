@@ -3,11 +3,17 @@
 Reproduce el bug reportado: en un PDF con capa de texto nativa, OCR, resumen y
 tablas devolvían el mismo resultado porque el texto se entregaba en crudo sin
 pasar por el prompt del modo.
+
+Incluye el procesado por lotes: las páginas se analizan de ``parallel`` en
+``parallel`` (medido 1,68x con dos), pero el orden del PDF, el progreso y la
+cancelación se mantienen.
 """
 
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -40,6 +46,47 @@ class _FakeEngine:
         return "RESULTADO-TEXTO"
 
 
+class _EchoConcurrentEngine(_FakeEngine):
+    """Motor que hace eco del texto y mide el paralelismo real.
+
+    ``max_en_vuelo`` es el máximo de peticiones que coincidieron en el tiempo: es
+    la forma de comprobar que las páginas se analizan a la vez de verdad.
+    """
+
+    def __init__(self, retardo: float = 0.05) -> None:
+        super().__init__()
+        self._retardo = retardo
+        self._lock = threading.Lock()
+        self.en_vuelo = 0
+        self.max_en_vuelo = 0
+
+    def _entrar(self) -> None:
+        with self._lock:
+            self.en_vuelo += 1
+            self.max_en_vuelo = max(self.max_en_vuelo, self.en_vuelo)
+        time.sleep(self._retardo)
+
+    def _salir(self) -> None:
+        with self._lock:
+            self.en_vuelo -= 1
+
+    def analyze_text(self, text, prompt, model=None) -> str:
+        self._entrar()
+        try:
+            self.text_calls.append((text, prompt, model))
+            return f"ECO[{text[-8:]}]"
+        finally:
+            self._salir()
+
+    def analyze_image(self, path, prompt, model=None) -> str:
+        self._entrar()
+        try:
+            self.image_calls.append((str(path), prompt, model))
+            return "ECO-IMAGEN"
+        finally:
+            self._salir()
+
+
 class _FakePage:
     def __init__(self, text: str) -> None:
         self._text = text
@@ -67,6 +114,9 @@ class _FakeDoc:
     def __iter__(self):
         return iter(self._pages)
 
+    def load_page(self, index: int):
+        return self._pages[index]
+
     def close(self) -> None:
         self.closed = True
 
@@ -81,13 +131,15 @@ class _FakePymupdf:
         return self._doc
 
 
-class DocumentWorkerPdfTest(unittest.TestCase):
+class _QtTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         from PyQt6.QtWidgets import QApplication
 
         cls.app = QApplication.instance() or QApplication([])
 
+
+class DocumentWorkerPdfTest(_QtTestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.pdf = Path(self._tmp.name) / "documento.pdf"
@@ -189,6 +241,75 @@ class DocumentWorkerPdfTest(unittest.TestCase):
                 worker.work()
         self.assertEqual(str(ctx.exception), dw.CANCEL_MESSAGE)
         self.assertTrue(doc.closed)
+
+
+class DocumentWorkerParallelTest(_QtTestCase):
+    """Las páginas se analizan por lotes, sin perder orden ni cancelación."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.pdf = Path(self._tmp.name) / "documento.pdf"
+        self.pdf.write_bytes(b"%PDF-1.4 (falso para el test)")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _paginas(self, total: int):
+        # Cada página lleva su marca para poder comprobar el orden.
+        return [_FakePage(f"{_TEXT} pagina {i}") for i in range(total)]
+
+    def _run(self, pages, parallel):
+        engine = _EchoConcurrentEngine()
+        doc = _FakeDoc(pages)
+        worker = dw.DocumentWorker(
+            engine, self.pdf, "resumen", "modelo-x", parallel=parallel
+        )
+        with mock.patch.object(dw, "pymupdf", _FakePymupdf(doc)):
+            result = worker.work()
+        return result, engine
+
+    def test_las_paginas_se_analizan_de_dos_en_dos(self) -> None:
+        _, engine = self._run(self._paginas(4), parallel=2)
+        self.assertEqual(engine.max_en_vuelo, 2, "deben coincidir dos peticiones")
+        self.assertEqual(len(engine.text_calls), 4)
+
+    def test_con_parallel_uno_van_de_una_en_una(self) -> None:
+        _, engine = self._run(self._paginas(3), parallel=1)
+        self.assertEqual(engine.max_en_vuelo, 1)
+        self.assertEqual(len(engine.text_calls), 3)
+
+    def test_el_orden_de_las_paginas_se_conserva(self) -> None:
+        result, _ = self._run(self._paginas(4), parallel=2)
+        posiciones = [result.index(f"--- Página {i} (texto) ---") for i in range(1, 5)]
+        self.assertEqual(posiciones, sorted(posiciones))
+
+    def test_cada_pagina_recibe_su_propio_resultado(self) -> None:
+        result, _ = self._run(self._paginas(4), parallel=2)
+        for i in range(4):
+            with self.subTest(pagina=i + 1):
+                cuerpo = result.split(f"--- Página {i + 1} (texto) ---")[1]
+                self.assertIn(f"ECO[pagina {i}]", cuerpo.split("---")[0])
+
+    def test_la_cancelacion_para_entre_lotes(self) -> None:
+        class _CancelaEnElTercerChequeo(dw.DocumentWorker):
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__(*args, **kwargs)
+                self._comprobaciones = 0
+
+            def isInterruptionRequested(self) -> bool:
+                self._comprobaciones += 1
+                return self._comprobaciones > 2
+
+        engine = _EchoConcurrentEngine()
+        doc = _FakeDoc(self._paginas(6))
+        worker = _CancelaEnElTercerChequeo(
+            engine, self.pdf, "resumen", "m", parallel=2
+        )
+        with mock.patch.object(dw, "pymupdf", _FakePymupdf(doc)):
+            with self.assertRaises(EngineError) as ctx:
+                worker.work()
+        self.assertEqual(str(ctx.exception), dw.CANCEL_MESSAGE)
+        self.assertEqual(len(engine.text_calls), 2, "el primer lote sí se analizó")
 
 
 if __name__ == "__main__":

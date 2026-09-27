@@ -288,7 +288,7 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   (`config/*.json`) y se descartó el intento de config unificada
   (`~/.imperator/config.json`).
 - `bfl` incluido en `DEFAULT_ENGINES` (antes solo existía en el factory).
-- Suite de tests (stdlib `unittest`, 331 tests) + CI en GitHub Actions. Incluye
+- Suite de tests (stdlib `unittest`, 337 tests) + CI en GitHub Actions. Incluye
   un smoke test de la `MainWindow` opt-in (`IMPERATOR_GUI_SMOKE=1`), que el CI
   activa.
 - El CI instala `requirements-test.txt` (PyQt6, requests, python-dotenv, numpy),
@@ -334,6 +334,12 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   `think: false` no lo desactiva en qwen3-vl y `num_predict` los deja sin
   respuesta, así que la respuesta cortada por contexto y la respuesta vacía por
   razonamiento se avisan explícitamente.
+- El procesado va por lotes configurables
+  (`ui.document_widget.MAX_PARALLEL_PAGES`, por defecto **1**, igual que antes):
+  solapar páginas solo compensa si Ollama trae varios slots
+  (`OLLAMA_NUM_PARALLEL`), porque con uno las peticiones se encolan y solo añade
+  sobrecarga. Medido: **1,68x** con dos slots y **0,84x** con uno. Activarlo
+  exige subir `num_ctx` al doble, ya que Ollama reparte el contexto entre slots.
 - `musicgen` es el motor de música: `audiocraft` es opcional, así que sin él la
   app arranca igual y el motor se marca como no disponible.
 - `ApiManager` (`core/api_manager.py`) da un consumidor real a `apis.json`.
