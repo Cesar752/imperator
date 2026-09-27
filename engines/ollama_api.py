@@ -35,8 +35,9 @@ DEFAULT_NUM_CTX = 8192
 #:    contexto. Para dos páginas a la vez, 32768 (medido: 9,5 GB de VRAM con
 #:    ``qwen3-vl:8b``, cabe entero en los 16 GB de la GPU).
 #:
-#: Por defecto 16384, que es lo verificado con una página a la vez.
-DEFAULT_VISION_NUM_CTX = 16384
+#: Es el valor que se usa por defecto, porque el procesado va de dos en dos
+#: (``ui.document_widget.MAX_PARALLEL_PAGES``).
+DEFAULT_VISION_NUM_CTX = 32768
 
 
 def fetch_tags(base_url: str, timeout: float = 2.0) -> dict:

@@ -37,21 +37,22 @@ try:
 except ImportError:  # pragma: no cover - dependencia declarada en requirements.txt
     pymupdf = None
 
-#: Páginas que se analizan a la vez. **Por defecto 1 (en serie)**: Ollama decide
-#: cuántos "slots" abre al cargar el modelo y, con uno solo, las peticiones se
-#: encolan y el paralelismo únicamente añade sobrecarga. Medido con
-#: ``qwen3-vl:8b``:
+#: Páginas que se analizan a la vez. Ollama reparte el contexto entre las
+#: peticiones que atiende a la vez, así que esto va de la mano de
+#: ``ollama_api.DEFAULT_VISION_NUM_CTX`` (32768 = 16384 por página).
 #:
-#: - peticiones crudas por HTTP, con dos slots activos: 140 s en serie frente a
-#:   83 s en paralelo (**1,68x** a favor);
-#: - ``DocumentWorker`` completo (3 páginas), carga con un slot: 106 s en serie
-#:   frente a 126 s en paralelo (**0,84x**, es decir, más lento).
+#: Medido con ``qwen3-vl:8b``, en tres escenarios:
 #:
-#: Para aprovecharlo hay que forzar dos slots en el servidor
-#: (``OLLAMA_NUM_PARALLEL=2`` y reiniciar Ollama) y subir ``num_ctx`` al doble
-#: (32768), porque Ollama reparte el contexto entre los slots. Con eso, poner
-#: este valor en 2 y medirlo con un documento real.
-MAX_PARALLEL_PAGES = 1
+#: - peticiones crudas por HTTP, con dos slots disponibles: 140 s en serie frente
+#:   a 83 s en paralelo (**1,68x**);
+#: - ``DocumentWorker`` completo, con Ollama sin slots forzados (abrió uno):
+#:   106 s en serie frente a 126 s en paralelo (**0,84x**: encoladas + sobrecarga);
+#: - con ``OLLAMA_NUM_PARALLEL=2`` en el servidor: ver §5.8 del `todo.md`.
+#:
+#: De ahí la receta: forzar dos slots en el servidor (variable de entorno y
+#: reiniciar Ollama) y pedir el doble de contexto, porque con un solo slot activo
+#: el paralelismo solo añade sobrecarga.
+MAX_PARALLEL_PAGES = 2
 
 
 def _chunks(total: int, size: int) -> Iterator[range]:

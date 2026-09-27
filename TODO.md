@@ -315,7 +315,7 @@ usados. Queda margen para páginas algo mayores.
 - `requirements.txt`: `audiocraft` queda comentada como dependencia opcional.
 - `tests/test_musicgen_engine.py`: 15 tests con dobles del modelo.
 
-### 5.8 Procesado por lotes (2 páginas a la vez): medido, apagado por defecto
+### 5.8 Procesado por lotes: activado tras forzar los slots en Ollama
 
 Idea: solapar páginas aprovechando que Ollama atiende varias peticiones a la vez.
 Se implementó en `DocumentWorker` (`parallel=`, lotes con `_chunks`), dejando la
@@ -327,19 +327,36 @@ con `qwen3-vl:8b`:
 | --- | --- | --- |
 | 2 peticiones crudas por HTTP, con dos slots activos | 140 s serie / 83 s paralelo | **1,68x** |
 | `DocumentWorker` completo, 3 páginas, carga con **un** slot | 106 s serie / 126 s paralelo | **0,84x** |
+| `DocumentWorker` completo, 3 páginas, con `OLLAMA_NUM_PARALLEL=2` y `num_ctx=32768` | 205 s serie / 155 s paralelo | **1,32x** |
 
 La diferencia enseña lo importante: **Ollama decide cuántos slots abre al cargar
 el modelo** y el cliente no lo controla. Con un solo slot las peticiones se
 encolan y el paralelismo solo añade sobrecarga y contención de caché; con dos, se
 solapan de verdad (1,68x).
 
-Decisión: `MAX_PARALLEL_PAGES = 1`, es decir **el mismo comportamiento que antes
-de esta sesión** (así nada puede ir más lento), con la función ya escrita y
-probada para activarla cuando interese: forzar dos slots en el servidor
-(`OLLAMA_NUM_PARALLEL=2` y reiniciar Ollama), subir `num_ctx` de la visión a
-**32768** (Ollama reparte el contexto entre slots: 16384 por página) y poner
-`MAX_PARALLEL_PAGES = 2`. 6 tests cubren lotes de dos en vuelo, lotes de uno,
-orden de las páginas, resultado correcto por página y cancelación entre lotes.
+Decisión final: **activado** (`MAX_PARALLEL_PAGES = 2`) con estos ajustes:
+
+- `OLLAMA_NUM_PARALLEL=2` como variable de entorno del usuario y **reinicio de
+  Ollama** (la variable decide cuántos slots abre al cargar: uno solo no
+  paraleliza nada). Verificado: `setx` + reinicio y el servidor vuelve en ~10 s.
+- `ollama_vision.parametros.num_ctx: 32768` (16 384 para cada página), porque
+  Ollama **reparte el contexto entre los slots**.
+- `ollama.parametros.num_ctx: 16384` para el **chat**: con dos slots le tocan
+  8192 por petición, los mismos que tenía antes del cambio. Medido: el 35b ocupa
+  12,2 GB de VRAM con 16384, así que cabe y no empeora el chat. Sin este ajuste,
+  el chat se habría quedado con 4096 por petición.
+- `config/engines.json` y `config/settings.json` son locales (no versionados); el
+  único cambio de código es `MAX_PARALLEL_PAGES` y el `num_ctx` por defecto.
+
+**Aviso sobre las medidas:** el razonamiento del modelo hace que el tiempo
+absoluto varíe mucho entre ejecuciones (las mismas 3 páginas en serie tardaron
+106 s en una prueba y 205 s en otra). Por eso la ganancia de 1,32x se refiere a
+esa comparación concreta, y con documentos de más páginas debería acercarse al
+1,68x de las peticiones crudas (con 3 páginas, el segundo lote va cojo: solo una
+página). Conviene medirlo con el documento real.
+
+6 tests cubren lotes de dos en vuelo, lotes de uno, orden de las páginas,
+resultado correcto por página y cancelación entre lotes.
 
 ## 4. TODO(fase 6) resuelto: factories con dependencias (2026-09-27)
 

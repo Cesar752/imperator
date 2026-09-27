@@ -334,12 +334,14 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   `think: false` no lo desactiva en qwen3-vl y `num_predict` los deja sin
   respuesta, así que la respuesta cortada por contexto y la respuesta vacía por
   razonamiento se avisan explícitamente.
-- El procesado va por lotes configurables
-  (`ui.document_widget.MAX_PARALLEL_PAGES`, por defecto **1**, igual que antes):
-  solapar páginas solo compensa si Ollama trae varios slots
-  (`OLLAMA_NUM_PARALLEL`), porque con uno las peticiones se encolan y solo añade
-  sobrecarga. Medido: **1,68x** con dos slots y **0,84x** con uno. Activarlo
-  exige subir `num_ctx` al doble, ya que Ollama reparte el contexto entre slots.
+- El procesado de documentos va por lotes (`ui.document_widget.MAX_PARALLEL_PAGES
+  = 2`): solapar páginas solo compensa si Ollama trae varios slots
+  (`OLLAMA_NUM_PARALLEL=2` y reiniciar el servidor), porque con uno las
+  peticiones se encolan y el paralelismo solo añade sobrecarga (medido **0,84x**).
+  Con dos slots: **1,68x** en peticiones crudas y **1,32x** en el camino real con
+  3 páginas. Como Ollama **reparte el contexto entre slots**, cada motor pide el
+  doble: visión 32768 (16384 por página) y chat 16384 (los 8192 por petición de
+  antes).
 - `musicgen` es el motor de música: `audiocraft` es opcional, así que sin él la
   app arranca igual y el motor se marca como no disponible.
 - `ApiManager` (`core/api_manager.py`) da un consumidor real a `apis.json`.
