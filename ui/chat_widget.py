@@ -1,4 +1,4 @@
-"""Widget de chat mínimo: entrada del usuario y respuesta del motor local."""
+"""Widget de chat: entrada del usuario y respuesta del motor en markdown."""
 
 import logging
 
@@ -10,14 +10,15 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
+    QTextEdit,
     QVBoxLayout,
 )
 
 from engines.base_engine import ChatEngine
 from services import chat_params as cp
 from services import preferences as prefs
+from ui import markdown as md
 from ui.task_widget import TaskWidget
 from ui.workers import ThreadWorker, run_pool_task
 
@@ -71,8 +72,11 @@ class ChatWidget(TaskWidget):
         model_row.addWidget(QLabel("Modelo:"))
         model_row.addWidget(self._model, 1)
 
-        self._conversation = QPlainTextEdit()
+        # QTextEdit (no QPlainTextEdit) para poder insertar como texto
+        # enriquecido el markdown que devuelve el motor.
+        self._conversation = QTextEdit()
         self._conversation.setReadOnly(True)
+        self._conversation.setAcceptRichText(True)
         self._conversation.setPlaceholderText("La conversación aparecerá aquí.")
 
         self._thinking_label = QLabel("Pensando...")
@@ -270,6 +274,8 @@ class ChatWidget(TaskWidget):
 
         Del cuerpo solo se deja el color del tema (no se fija), así que se lee
         igual en claro y en oscuro; el color distingue únicamente a quién habla.
+        El cuerpo que trae markdown (negritas, tablas, código) se renderiza; el
+        texto llano se inserta tal cual, sin pasar por HTML.
         """
         cursor = self._conversation.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
@@ -282,20 +288,24 @@ class ChatWidget(TaskWidget):
         cursor.setCharFormat(etiqueta)
         cursor.insertText(f"{autor}: ")
         cursor.setCharFormat(QTextCharFormat())   # el cuerpo, con el color del tema
-        cursor.insertText(texto)
+        md.insert_markdown(cursor, texto, md.is_dark(self.palette()))
         self._scroll_to_bottom()
 
     def _scroll_to_bottom(self) -> None:
         """Baja la conversación al último mensaje.
 
-        ``appendPlainText`` no garantiza el desplazamiento (si el usuario movió
-        la rueda, el texto nuevo se añade fuera de la vista), así que se lleva el
-        cursor al final y se asegura de que sea visible.
+        Insertar texto no garantiza el desplazamiento (si el usuario movió la
+        rueda, el texto nuevo se añade fuera de la vista), así que se lleva el
+        cursor al final y se asegura de que sea visible. En ``QTextEdit``
+        ``ensureCursorVisible`` deja el final a un margen de documento de
+        distancia, así que además se fuerza la barra a su máximo.
         """
         cursor = self._conversation.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self._conversation.setTextCursor(cursor)
         self._conversation.ensureCursorVisible()
+        bar = self._conversation.verticalScrollBar()
+        bar.setValue(bar.maximum())
 
     def _busy_widgets(self) -> tuple:
         return (self._model, self._input, self._send_button)
