@@ -113,14 +113,38 @@ el ducking con los MP3 reales). **297 tests en verde** (1 skip).
   resume el conjunto en una única llamada— y la pestaña gana la casilla
   "Resumen global (documento completo)", activa solo en modo Resumen y
   persistida en `prefs.DOCUMENT_GLOBAL`.
-- Reglas de estilo del resumen (`SUMMARY_STYLE`, revisando un resumen real): un
-  párrafo corto por apartado (sin mezclar temas), frases de longitud parecida
-  (sin alternar larguísimas con telegráficas), sin repetir datos ya dados en otro
-  apartado y con una frase de cierre por bloque empezando por "→" (en el idioma
-  de salida). Valen para el resumen por página y para el global; el OCR y las
-  tablas no las llevan.
-- `tests/test_document_global.py`: 14 tests, más 4 de las reglas de estilo en
-  `tests/test_services.py`.
+- Reglas del resumen (`SUMMARY_STYLE`), en dos rondas de revisión con documentos
+  reales. Valen para el resumen por página y para el global; el OCR y las tablas
+  no las llevan.
+  - Ronda 1: un párrafo corto por apartado (sin mezclar temas), frases de
+    longitud parecida y sin repetir datos ya dados en otro apartado.
+  - Ronda 2: **se quitó el cierre por apartado con "→"** que se había pedido en
+    la ronda 1. Invitaba a *interpretar* y el modelo llegó a inventar datos
+    (hablaba de "equipamiento" donde el documento decía acumular la hora de
+    lactancia). Ahora lleva reglas de **fidelidad**: resumir solo lo que dice el
+    documento, sin interpretar, inferir, opinar ni inventar términos o cifras, y
+    sin líneas de cierre ni flechas.
+- `tests/test_document_global.py`: 14 tests; las reglas del resumen se cubren con
+  5 tests en `tests/test_services.py`.
+
+### 5.4 Modelo por defecto del chat: qwen3.6:35b
+
+El default era `qwen3.5:9b` y la preferencia guardada apuntaba a `qwen3.8:27b`
+(que ya no está en Ollama): de ahí el aviso "Modelo guardado 'qwen3.8:27b' ya no
+existe en Ollama; usando el primero del combo". El aviso en sí es correcto como
+red de seguridad, así que se mantiene, pero ahora no salta.
+
+- El valor vive en cuatro copias y **las cuatro** pasan a `qwen3.6:35b`:
+  `_OLLAMA_DEFAULT_MODEL` (`core/engine_manager.py`), `DEFAULT_ENGINES`
+  (`core/config_manager.py`), la plantilla de `ui/engines_dialog.py` y
+  `config/engines.example.json`.
+- `tests/test_ollama_defaults.py` (2 tests) evita que vuelvan a desincronizarse.
+- Actualizados también los ficheros **locales** (no versionados), para que el
+  cambio surta efecto en el próximo arranque: `config/engines.json`
+  (`ollama.parametros.model`) y `config/settings.json` (`last_models.chat`, que
+  era `qwen3.8:27b`).
+- `qwen3.6:35b` está entre los modelos instalados en Ollama (comprobado con
+  `/api/tags`), así que el combo lo selecciona sin avisos.
 
 ### 5.3 Motor local MusicGen
 

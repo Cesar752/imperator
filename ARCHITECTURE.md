@@ -161,7 +161,7 @@ ENGINE_FACTORY = {
 
 | Motor | Responsabilidad | Backend / modelos |
 | ------- | ----------------- | ------------------- |
-| `ollama` | Chat | Ollama (qwen3.5:9b, deepseek-r1, …) |
+| `ollama` | Chat | Ollama (qwen3.6:35b por defecto, deepseek-r1, …) |
 | `ollama_vision` | OCR / resumen / tablas | Ollama (qwen2.5vl:7b) |
 | `comfyui` | Imágenes | ComfyUI (Flux Dev / Schnell / Z-Image / Kontext) |
 | `bfl` | Imágenes | Black Forest Labs API de pago (FLUX.1 Kontext Pro/Max, FLUX.2 Pro) |
@@ -288,7 +288,7 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   (`config/*.json`) y se descartó el intento de config unificada
   (`~/.imperator/config.json`).
 - `bfl` incluido en `DEFAULT_ENGINES` (antes solo existía en el factory).
-- Suite de tests (stdlib `unittest`, 297 tests) + CI en GitHub Actions. Incluye
+- Suite de tests (stdlib `unittest`, 304 tests) + CI en GitHub Actions. Incluye
   un smoke test de la `MainWindow` opt-in (`IMPERATOR_GUI_SMOKE=1`), que el CI
   activa.
 - El CI instala `requirements-test.txt` (PyQt6, requests, python-dotenv, numpy),
@@ -304,9 +304,14 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   texto enriquecido, con el código en monoespaciado y con los colores del tema.
 - Documentos puede resumir el documento **completo** (una sola llamada al
   modelo, en vez de página a página) con la casilla "Resumen global". Los
-  resúmenes (por página y globales) comparten reglas de estilo
-  (`document_params.SUMMARY_STYLE`): un apartado por tema, frases de longitud
-  parecida, sin repetir datos y con una frase de cierre por bloque.
+  resúmenes (por página y globales) comparten reglas en
+  `document_params.SUMMARY_STYLE`: un apartado por tema, frases de longitud
+  parecida, sin repetir datos y **fidelidad al texto** (sin interpretar,
+  inferir ni inventar; se descartó pedir un cierre por apartado porque el
+  modelo lo usaba para interpretar).
+- El modelo por defecto del chat es `qwen3.6:35b`, definido en un solo sitio
+  (`_OLLAMA_DEFAULT_MODEL`) y replicado en la configuración y la UI, con un
+  test-guarda (`test_ollama_defaults.py`) que impide que se desincronicen.
 - `musicgen` es el motor de música: `audiocraft` es opcional, así que sin él la
   app arranca igual y el motor se marca como no disponible.
 - `ApiManager` (`core/api_manager.py`) da un consumidor real a `apis.json`.
