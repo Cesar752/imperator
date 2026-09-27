@@ -113,9 +113,9 @@ el ducking con los MP3 reales). **297 tests en verde** (1 skip).
   resume el conjunto en una única llamada— y la pestaña gana la casilla
   "Resumen global (documento completo)", activa solo en modo Resumen y
   persistida en `prefs.DOCUMENT_GLOBAL`.
-- Reglas del resumen (`SUMMARY_STYLE`), en dos rondas de revisión con documentos
-  reales. Valen para el resumen por página y para el global; el OCR y las tablas
-  no las llevan.
+- Reglas del resumen (`SUMMARY_STYLE`), en tres rondas de revisión con
+  documentos reales. Valen para el resumen por página y para el global; el OCR y
+  las tablas no las llevan.
   - Ronda 1: un párrafo corto por apartado (sin mezclar temas), frases de
     longitud parecida y sin repetir datos ya dados en otro apartado.
   - Ronda 2: **se quitó el cierre por apartado con "→"** que se había pedido en
@@ -124,8 +124,13 @@ el ducking con los MP3 reales). **297 tests en verde** (1 skip).
     lactancia). Ahora lleva reglas de **fidelidad**: resumir solo lo que dice el
     documento, sin interpretar, inferir, opinar ni inventar términos o cifras, y
     sin líneas de cierre ni flechas.
+  - Ronda 3: **títulos por bloque** (sin ellos el resumen se lee como un texto
+    corrido y cuesta localizar cada apartado). Se piden en texto plano y tomados
+    de los epígrafes del propio documento, sin inventarlos, porque el área de
+    resultado de Documentos no pinta markdown (mismo motivo por el que el chat,
+    que sí lo pinta, tiene su propio módulo `ui/markdown.py`).
 - `tests/test_document_global.py`: 14 tests; las reglas del resumen se cubren con
-  5 tests en `tests/test_services.py`.
+  6 tests en `tests/test_services.py`.
 
 ### 5.4 Modelo por defecto del chat: qwen3.6:35b
 

@@ -345,6 +345,16 @@ class DocumentParamsTest(unittest.TestCase):
         self.assertIn("do not repeat", estilo)
         self.assertIn("every sentence adds information", estilo)
 
+    def test_las_reglas_piden_un_titulo_por_bloque(self) -> None:
+        # Tercera revisión: sin títulos, el resumen se lee como un texto corrido
+        # y cuesta localizar cada apartado. Se piden en texto plano porque el
+        # área de resultado de Documentos no pinta markdown.
+        estilo = dp.SUMMARY_STYLE
+        self.assertIn("start every block with a one-line title", estilo)
+        self.assertIn("document's own headings", estilo)
+        self.assertIn("plain text", estilo)
+        self.assertIn("do not invent titles", estilo)
+
     def test_las_reglas_exigen_fidelidad_al_texto(self) -> None:
         # Segunda revisión: pedir un "cierre" con "→" invitaba a interpretar y el
         # modelo llegó a inventar datos (habló de "equipamiento" donde el

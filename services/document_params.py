@@ -88,19 +88,25 @@ SUMMARY_MODE = "resumen"
 # que resumir y en tablas cada página trae las suyas: unirlas no es un resumen.
 GLOBAL_MODES = (SUMMARY_MODE,)
 
-# Reglas de estilo de los resúmenes, por página y globales. Salen de revisar dos
+# Reglas de estilo de los resúmenes, por página y globales. Salen de revisar tres
 # resúmenes reales:
 # - el primero mezclaba apartados en un mismo párrafo, alternaba frases
 #   larguísimas con telegráficas y repetía la misma cifra en dos apartados;
 # - el segundo enseñó que pedir un "cierre" por apartado con "→" era un error:
 #   el modelo lo usaba para *interpretar* y llegó a inventar datos (hablaba de
 #   "equipamiento" donde el texto decía acumular la hora de lactancia). Por eso
-#   las reglas de fidelidad prohíben interpretar, inferir e inventar.
+#   las reglas de fidelidad prohíben interpretar, inferir e inventar;
+# - el tercero pedía títulos: sin ellos el resumen se lee como un texto corrido y
+#   cuesta localizar cada apartado. Los títulos salen de los epígrafes del propio
+#   documento y en texto plano, porque el área de resultado no pinta markdown.
 SUMMARY_STYLE = (
-    "Style: organize the answer in short paragraphs, one per distinct topic, "
-    "without merging unrelated sections; keep the sentences of similar length "
-    "(do not mix very long sentences with very short ones); do not repeat data "
-    "already given in another paragraph; and make sure every sentence adds "
+    "Style: organize the answer in short blocks, one per distinct topic, and "
+    "start every block with a one-line title followed by its paragraph. Take "
+    "that title from the document's own headings, keep it short, write it in the "
+    "target language like the rest of the answer and in plain text (no markdown "
+    "symbols); do not invent titles. Keep the sentences of similar length (do "
+    "not mix very long sentences with very short ones); do not repeat data "
+    "already given in another block; and make sure every sentence adds "
     "information taken from the document. "
     "Fidelity: summarize only what the document states. Do not interpret, "
     "infer, deduce, give opinions or add context that is not written in the "
