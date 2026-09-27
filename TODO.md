@@ -301,7 +301,7 @@ prompt, frente a los 4135 del log real) con 16384: **113 s, status 200, respuest
 completa (473 caracteres, con títulos y `done=stop`)**, 11 899 de 16 384 tokens
 usados. Queda margen para páginas algo mayores.
 
-### 5.3 Motor local MusicGen
+### 5.7 Motor local MusicGen
 
 - `engines/base_engine.py`: nueva familia `MusicEngine` con
   `generate_music(prompt, **kwargs) -> Path`.
@@ -314,6 +314,32 @@ usados. Queda margen para páginas algo mayores.
   tipos del factory).
 - `requirements.txt`: `audiocraft` queda comentada como dependencia opcional.
 - `tests/test_musicgen_engine.py`: 15 tests con dobles del modelo.
+
+### 5.8 Procesado por lotes (2 páginas a la vez): medido, apagado por defecto
+
+Idea: solapar páginas aprovechando que Ollama atiende varias peticiones a la vez.
+Se implementó en `DocumentWorker` (`parallel=`, lotes con `_chunks`), dejando la
+**lectura** de cada página y el montaje del resultado en el hilo del worker
+(PyMuPDF no es thread-safe) y conservando orden, progreso y cancelación. Medido
+con `qwen3-vl:8b`:
+
+| caso | tiempo | ganancia |
+| --- | --- | --- |
+| 2 peticiones crudas por HTTP, con dos slots activos | 140 s serie / 83 s paralelo | **1,68x** |
+| `DocumentWorker` completo, 3 páginas, carga con **un** slot | 106 s serie / 126 s paralelo | **0,84x** |
+
+La diferencia enseña lo importante: **Ollama decide cuántos slots abre al cargar
+el modelo** y el cliente no lo controla. Con un solo slot las peticiones se
+encolan y el paralelismo solo añade sobrecarga y contención de caché; con dos, se
+solapan de verdad (1,68x).
+
+Decisión: `MAX_PARALLEL_PAGES = 1`, es decir **el mismo comportamiento que antes
+de esta sesión** (así nada puede ir más lento), con la función ya escrita y
+probada para activarla cuando interese: forzar dos slots en el servidor
+(`OLLAMA_NUM_PARALLEL=2` y reiniciar Ollama), subir `num_ctx` de la visión a
+**32768** (Ollama reparte el contexto entre slots: 16384 por página) y poner
+`MAX_PARALLEL_PAGES = 2`. 6 tests cubren lotes de dos en vuelo, lotes de uno,
+orden de las páginas, resultado correcto por página y cancelación entre lotes.
 
 ## 4. TODO(fase 6) resuelto: factories con dependencias (2026-09-27)
 
