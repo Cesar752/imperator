@@ -26,18 +26,18 @@ Notas pendientes (revisar al retomar el proyecto).
 
 ## 2. Fase 13e (opcional): MusicGen local
 
-**Estado:** no iniciada — motor opcional.
+**Estado:** hecha — ver §5.3.
 
-- Añadir un motor local `engines/musicgen.py` que genere música con
+- `engines/musicgen.py` genera música con
   [Meta MusicGen](https://github.com/facebookresearch/audiocraft).
-- Seguir el patrón de `engines/base_engine.py` (`Engine`: `id`, `nombre`,
-  `is_available()`, `list_models()`).
-- **Ojo:** el ABC `Engine` actual está orientado a texto (obliga a `chat()`).
-  En `base_engine.py` hay un `TODO(fase N)` para separar
-  `Engine` / `ImageEngine` / `VideoEngine` / `AudioEngine`. Convendría crear
-  un `MusicEngine` (o `AudioEngine`) con `generate_music(...)` en lugar de
-  forzar `chat()`.
-- Registrar el motor en `core/engine_manager.py` y exponerlo en la UI de motores.
+- Sigue el patrón de `engines/base_engine.py` (`id`, `nombre`, `is_available()`,
+  `list_models()`) y añade `generate_music(prompt, model, duration,
+  output_path)`.
+- **Nota:** el aviso de que `Engine` obligaba a `chat()` y había un
+  `TODO(fase N)` estaba **desfasado**: el ABC ya estaba dividido por familias.
+  Lo que faltaba era la familia `MusicEngine` (añadida en §5.3).
+- Registrado en `core/engine_manager.py` (+ `DEFAULT_ENGINES` y plantillas de la
+  UI de motores).
 
 ## 3. Punto de retorno de la sesión (2026-09-27)
 
@@ -74,10 +74,60 @@ venv\Scripts\python.exe -m unittest discover -s tests -t .
    en crudo); requiere `QTextEdit` + `QTextDocument.setMarkdown()` y traducir los
    estilos al tema oscuro.
 2. Resumen de documento completo en vez de página a página (opción en la UI).
-3. ~~`TODO(fase 6)` de `core/task_manager.py`: dependencias de tareas por `kwargs`.~~
+3. ~~Renderizar markdown en las respuestas del chat.~~ **Hecho** — ver §5.1.
+4. ~~Resumen de documento completo en vez de página a página.~~ **Hecho** — ver §5.2.
+5. ~~`TODO(fase 6)` de `core/task_manager.py`: dependencias de tareas por `kwargs`.~~
    **Hecho** — ver §4. Ahora son factories con `TaskDeps`, no `kwargs`.
-4. Los MP3 en `music/` para validar el ducking (ya hay 3 MP3 en `music/`; ver §1).
-5. Fase opcional: motor local MusicGen.
+6. Los MP3 en `music/` para validar el ducking (ya hay 3 MP3 en `music/`; ver §1).
+7. ~~Fase opcional: motor local MusicGen.~~ **Hecho** — ver §5.3.
+
+## 5. Sesión de continuación (2026-09-27): chat, documentos y música
+
+Se abordaron los tres candidatos que quedaban del §3 (§1 sigue pendiente: probar
+el ducking con los MP3 reales). **297 tests en verde** (1 skip).
+
+### 5.1 Markdown en el chat
+
+- `ui/markdown.py` (nuevo): `build_html(markdown, dark)` importa el markdown con
+  `QTextDocument.setMarkdown()` y traduce al tema lo que Qt deja sin tratar: los
+  bloques de código (los marca con `nonBreakableLines`) y el código en línea
+  (`fontFixedPitch`) reciben monoespaciado, fondo y color según claro/oscuro. El
+  texto sin marcadores se inserta tal cual, sin pasar por HTML.
+- `ui/chat_widget.py`: el área de conversación pasa de `QPlainTextEdit` a
+  `QTextEdit`; el cuerpo de cada turno lo pinta `md.insert_markdown()` (Qt fusiona
+  el primer bloque con el párrafo en curso, así que la etiqueta del autor sigue
+  en su línea).
+- **Ojo con el scroll:** `ensureCursorVisible()` en `QTextEdit` deja el final a un
+  margen de documento (4 px) de distancia; `_scroll_to_bottom()` fuerza además la
+  barra a su máximo (los tests de scroll de `test_chat_widget` lo cubren).
+- `tests/test_markdown.py`: 10 tests.
+
+### 5.2 Resumen global de documento
+
+- `services/document_params.py`: `GLOBAL_MODES`, `supports_global`,
+  `wants_global`, `GLOBAL_PROMPT` + `global_prompt_for` (respeta el idioma de
+  salida), `merge_pages` (une las páginas y dice si hubo que recortar),
+  `MAX_GLOBAL_CHARS` y `TRUNCATED_NOTICE`.
+- `ui/document_widget.py`: `DocumentWorker(..., global_summary=)` hace dos
+  pasadas —transcribe cada página (capa nativa u OCR, con el prompt de OCR) y
+  resume el conjunto en una única llamada— y la pestaña gana la casilla
+  "Resumen global (documento completo)", activa solo en modo Resumen y
+  persistida en `prefs.DOCUMENT_GLOBAL`.
+- `tests/test_document_global.py`: 14 tests.
+
+### 5.3 Motor local MusicGen
+
+- `engines/base_engine.py`: nueva familia `MusicEngine` con
+  `generate_music(prompt, **kwargs) -> Path`.
+- `engines/musicgen.py`: motor opcional (import de `audiocraft` protegido),
+  tamaños `small`/`medium`/`large`, duración acotada a 1-30 s, modelo cacheado y
+  escritura del WAV con `audio_write`.
+- Registro: `ENGINE_FACTORY` + rama en `EngineManager._build`, entrada en
+  `DEFAULT_ENGINES` y en `config/engines.example.json`, y plantillas de
+  `ui/engines_dialog.py` (un test-guarda comprueba que la UI cubre todos los
+  tipos del factory).
+- `requirements.txt`: `audiocraft` queda comentada como dependencia opcional.
+- `tests/test_musicgen_engine.py`: 15 tests con dobles del modelo.
 
 ## 4. TODO(fase 6) resuelto: factories con dependencias (2026-09-27)
 

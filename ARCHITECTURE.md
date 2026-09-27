@@ -8,8 +8,8 @@ extenderlo.
 ## 1. Visión general
 
 Imperator unifica en una única app de escritorio los motores de IA locales
-(Ollama, ComfyUI, Piper, Kokoro, faster-whisper) y las tareas de alto nivel
-que el usuario ve como pestañas: Chat, Documentos, Imagen, Vídeo, Audio y
+(Ollama, ComfyUI, Piper, Kokoro, faster-whisper, MusicGen) y las tareas de alto
+nivel que el usuario ve como pestañas: Chat, Documentos, Imagen, Vídeo, Audio y
 Ensamblador.
 
 ### Hardware objetivo
@@ -23,7 +23,7 @@ Ensamblador.
 | ------ | ------------ |
 | UI | PyQt6 (señales/slots, `QThread`, `QTabWidget`) |
 | Lenguaje | Python 3.12 |
-| Motores | Ollama (HTTP), ComfyUI (HTTP + WebSocket), Piper TTS (ONNX), Kokoro TTS (PyTorch CPU), faster-whisper (CTranslate2) |
+| Motores | Ollama (HTTP), ComfyUI (HTTP + WebSocket), Piper TTS (ONNX), Kokoro TTS (PyTorch CPU), faster-whisper (CTranslate2), MusicGen (audiocraft, opcional) |
 | Utilidades | `requests`, `websocket-client`, `imageio-ffmpeg`, `PyMuPDF`, `python-dotenv` |
 
 ### Principios de diseño
@@ -65,7 +65,8 @@ C:\Imperator\
 │   ├── wanvideo.py         # Generación de vídeo (Wan 2.2)
 │   ├── piper_tts.py        # TTS rápido (ONNX)
 │   ├── kokoro_tts.py       # TTS de calidad (CPU)
-│   └── whisper_engine.py   # Transcripción a SRT
+│   ├── whisper_engine.py   # Transcripción a SRT
+│   └── musicgen.py         # Música a partir de texto (opcional: audiocraft)
 ├── tasks/                  # Una tarea por fichero
 │   ├── base_task.py        # Contrato Task
 │   ├── chat.py             # Chat
@@ -79,6 +80,7 @@ C:\Imperator\
 │   ├── engines_dialog.py   # Gestión CRUD de motores
 │   ├── task_widget.py      # Base común: estado y ciclo de vida del worker
 │   ├── workers.py          # ThreadWorker / PoolTask (QThread, QThreadPool)
+│   ├── markdown.py         # Markdown del chat (tema claro/oscuro)
 │   ├── chat_widget.py
 │   ├── document_widget.py
 │   ├── image_widget.py
@@ -127,6 +129,7 @@ class VisionEngine(Engine): # analyze_image(image_path, prompt, model=None) -> s
 class ImageEngine(Engine):  # generate_image(prompt, **kwargs) -> Path
 class VideoEngine(Engine):  # generate_video(prompt, **kwargs) -> Path
 class AudioEngine(Engine):  # synthesize(text, voice=None, **kwargs) -> Path
+class MusicEngine(Engine):  # generate_music(prompt, **kwargs) -> Path
 class TranscriptionEngine(Engine):  # transcribe(audio_path, **kwargs) -> Path
 ```
 
@@ -147,6 +150,7 @@ ENGINE_FACTORY = {
     "piper_tts": PiperTTSEngine,
     "kokoro_tts": KokoroTTSEngine,
     "whisper": WhisperEngine,
+    "musicgen": MusicGenEngine,
 }
 ```
 
@@ -165,6 +169,7 @@ ENGINE_FACTORY = {
 | `piper_tts` | TTS rápido | ONNX (6 voces ES/EU) |
 | `kokoro_tts` | TTS de calidad | PyTorch CPU (ef_dora, em_alex, em_santa) |
 | `whisper` | Transcripción a SRT | faster-whisper (CTranslate2) |
+| `musicgen` | Música a partir de texto | audiocraft / Meta MusicGen (small/medium/large; opcional) |
 
 ## 4. Arquitectura de tareas
 
@@ -283,7 +288,7 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   (`config/*.json`) y se descartó el intento de config unificada
   (`~/.imperator/config.json`).
 - `bfl` incluido en `DEFAULT_ENGINES` (antes solo existía en el factory).
-- Suite de tests (stdlib `unittest`, 154 tests) + CI en GitHub Actions. Incluye
+- Suite de tests (stdlib `unittest`, 297 tests) + CI en GitHub Actions. Incluye
   un smoke test de la `MainWindow` opt-in (`IMPERATOR_GUI_SMOKE=1`), que el CI
   activa.
 - El CI instala `requirements-test.txt` (PyQt6, requests, python-dotenv, numpy),
@@ -294,5 +299,11 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
 - Las llamadas a `ffmpeg` (`core/video_assembler.py`) llevan `timeout` y kill:
   un ffmpeg atascado ya no puede colgar el hilo del worker.
 - Motores divididos por familias (`Chat`/`Vision`/`Image`/`Video`/`Audio`/
-  `Transcription`) en `engines/base_engine.py`.
+  `Music`/`Transcription`) en `engines/base_engine.py`.
+- El chat renderiza markdown (`ui/markdown.py`): negritas, tablas y listas como
+  texto enriquecido, con el código en monoespaciado y con los colores del tema.
+- Documentos puede resumir el documento **completo** (una sola llamada al
+  modelo, en vez de página a página) con la casilla "Resumen global".
+- `musicgen` es el motor de música: `audiocraft` es opcional, así que sin él la
+  app arranca igual y el motor se marca como no disponible.
 - `ApiManager` (`core/api_manager.py`) da un consumidor real a `apis.json`.
