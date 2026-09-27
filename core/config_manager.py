@@ -78,7 +78,7 @@ DEFAULT_ENGINES: list[dict[str, Any]] = [
         "nombre": "Ollama",
         "ruta": "http://localhost:11434",
         "enabled": True,
-        "parametros": {"model": "qwen3.5:9b"},
+        "parametros": {"model": "qwen3.6:35b"},
     },
     {
         "id": "ollama_vision",

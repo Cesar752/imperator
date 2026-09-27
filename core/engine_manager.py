@@ -33,7 +33,7 @@ ENGINE_FACTORY: dict[str, type[Engine]] = {
 
 # Defaults por tipo de motor (si faltan en la configuración).
 _OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
-_OLLAMA_DEFAULT_MODEL = "qwen3.5:9b"
+_OLLAMA_DEFAULT_MODEL = "qwen3.6:35b"
 _OLLAMA_VISION_DEFAULT_BASE_URL = "http://localhost:11434"
 _OLLAMA_VISION_DEFAULT_MODEL = "qwen3-vl:8b"
 _COMFYUI_DEFAULT_BASE_URL = "http://127.0.0.1:8188"

@@ -36,7 +36,7 @@ COL_CONEXION = 3
 # no partir de un dict vacío (evita configuraciones incompletas imposibles de
 # construir, p. ej. ComfyUI sin workflows). El usuario puede editarla como JSON.
 _TYPE_TEMPLATES: dict[str, dict] = {
-    "ollama": {"model": "qwen3.5:9b"},
+    "ollama": {"model": "qwen3.6:35b"},
     "ollama_vision": {"model": "qwen3-vl:8b"},
     "comfyui": {
         "workflows": {"flux_dev": "C:/CComfyUI/flux_dev_workflow_api.json"},
