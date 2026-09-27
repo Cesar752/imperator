@@ -40,7 +40,10 @@ class MainWindow(QMainWindow):
         logger.info(
             "APIs externas configuradas: %d", len(self._api_manager.list_apis())
         )
-        self._task_manager = TaskManager(self._engine_manager)
+        # Se comparte el ApiManager ya construido: el TaskManager no vuelve a
+        # leer config/apis.json (y una tarea que lo necesite lo recibirá vía
+        # TaskDeps).
+        self._task_manager = TaskManager(self._engine_manager, self._api_manager)
         # Índice de pestaña -> motor cuyo modelo se descarga al abandonarla. Se
         # deriva del registro de tareas (Task.engine_id) para no duplicar aquí
         # el orden de las pestañas (única fuente de verdad: TASK_FACTORY).

@@ -181,18 +181,31 @@ class Task(ABC):
 
 ### `TASK_FACTORY`
 
-`core/task_manager.py` registra cada tarea en un mapa `id -> clase`:
+`core/task_manager.py` registra cada tarea en un mapa `id -> factory`. Cada
+factory recibe las dependencias compartidas (`TaskDeps`: `engine_manager` y
+`api_manager`) y devuelve la tarea construida:
 
 ```python
-TASK_FACTORY = {
-    "chat": ChatTask,
-    "document": DocumentTask,
-    "image": ImageTask,
-    "video": VideoTask,
-    "audio": AudioTask,
-    "assembler": AssemblerTask,
+@dataclass(frozen=True)
+class TaskDeps:
+    engine_manager: EngineManager
+    api_manager: ApiManager
+
+TASK_FACTORY: dict[str, TaskFactory] = {
+    "chat": _engine_only(ChatTask),
+    "document": _engine_only(DocumentTask),
+    "image": _engine_only(ImageTask),
+    "video": _engine_only(VideoTask),
+    "audio": _engine_only(AudioTask),
+    "assembler": _engine_only(AssemblerTask),
 }
 ```
+
+`_engine_only(cls)` adapta las tareas cuyo constructor solo pide el motor; una
+tarea que necesite otra dependencia (p. ej. `ApiManager`) define su propia
+factory y la toma de `TaskDeps`, sin romper el bucle uniforme de registro.
+`TaskManager(engine_manager, api_manager=None)` crea el `ApiManager` si no se
+inyecta y lo expone en `TaskManager.api_manager`.
 
 Cada tarea construye su widget (`ui/<nombre>_widget.py`) y se muestra como
 **pestaña** en el `QTabWidget` de `MainWindow`. El orden de pestañas es el

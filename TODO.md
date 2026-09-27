@@ -74,6 +74,26 @@ venv\Scripts\python.exe -m unittest discover -s tests -t .
    en crudo); requiere `QTextEdit` + `QTextDocument.setMarkdown()` y traducir los
    estilos al tema oscuro.
 2. Resumen de documento completo en vez de página a página (opción en la UI).
-3. `TODO(fase 6)` de `core/task_manager.py`: dependencias de tareas por `kwargs`.
-4. Los MP3 en `music/` para validar el ducking (bloqueado por material de prueba).
+3. ~~`TODO(fase 6)` de `core/task_manager.py`: dependencias de tareas por `kwargs`.~~
+   **Hecho** — ver §4. Ahora son factories con `TaskDeps`, no `kwargs`.
+4. Los MP3 en `music/` para validar el ducking (ya hay 3 MP3 en `music/`; ver §1).
 5. Fase opcional: motor local MusicGen.
+
+## 4. TODO(fase 6) resuelto: factories con dependencias (2026-09-27)
+
+`core/task_manager.py` asumía `cls(engine_manager)` para todas las tareas: al
+añadir una que necesitara otra dependencia (p. ej. `ApiManager`) había que romper
+la construcción uniforme. Migrado a factories que reciben un contenedor:
+
+- `core/task_manager.py`: nuevo `TaskDeps` (frozen) con `engine_manager` y
+  `api_manager`; `TASK_FACTORY` pasa de `dict[str, type[Task]]` a
+  `dict[str, TaskFactory]`. `_engine_only(cls)` adapta las tareas que solo piden
+  el motor; una tarea con más dependencias usa su propia factory.
+- `TaskManager(engine_manager, api_manager=None)`: si no se inyecta, crea el
+  `ApiManager` con el `ConfigManager` del `EngineManager`; expone
+  `TaskManager.api_manager`.
+- `ui/main_window.py`: comparte su `ApiManager` con el `TaskManager` (una sola
+  lectura de `config/apis.json`).
+- `tests/test_task_manager.py` (6 tests): orden/ids de las tareas, contrato
+  `Task`, `get_task`, `ApiManager` inyectado vs. creado, factory con
+  dependencias extra y `TaskDeps` inmutable.
