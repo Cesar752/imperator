@@ -185,6 +185,51 @@ caracteres, y en euskera se tokeniza peor)— no cabía. El motor de chat sí pe
   sin detalle, sin JSON y sin respuesta) y coherencia del valor por defecto entre
   chat y visión.
 
+### 5.6 Timeout en Documentos: el modelo de visión razona antes de responder
+
+Con el 400 resuelto, el siguiente fallo fue "Ollama Vision: timeout al procesar el
+documento". El log de Ollama mostraba la petición viva y cortada por nosotros:
+
+```
+slot print_timing: id 0 | task 18900 | n_gen = 5173, tg = 29.04 t/s
+[GIN] 2026/09/27 - 21:06:30 | 500 |  3m0s | POST "/api/chat"   <- timeout de 180 s
+```
+
+**Medido con `qwen3-vl:8b`** (página de 3000 caracteres, prompt de 4026):
+
+| caso | tiempo | tokens generados | «thinking» | respuesta |
+| --- | --- | --- | --- | --- |
+| normal | 41,5 s | 4143 | 13.859 chars | 390 chars (`stop`) |
+| `think: false` | 54,6 s | 6728 | 22.644 chars | 0 (`length`) |
+| `num_predict: 700` | 7,3 s | 700 | 2755 chars | 0 (`length`) |
+
+Conclusiones de las medidas:
+
+1. El modelo **razona**: el ~90% de los tokens se van en `thinking`, y por eso una
+   página tarda 40 s (o minutos, si el modelo es un 30b) aunque la respuesta final
+   sea de 390 caracteres.
+2. **`think: false` no lo desactiva** en `qwen3-vl` (empeora: 22.644 caracteres
+   pensados y cero respuesta), y un tope de `num_predict` deja la respuesta
+   **vacía** porque el razonamiento se come el presupuesto. Ambas cosas quedan
+   descartadas con datos, no por intuición.
+3. Lo que fallaba de verdad era **nuestro** timeout de 180 s, que cortaba
+   peticiones que iban a terminar bien.
+
+Cambios:
+
+- `engines/ollama_vision.py`: timeout de análisis de **600 s** por defecto y
+  configurable (`parametros.timeout` en engines.json); aviso en la propia
+  respuesta cuando Ollama la corta por contexto; y error explicativo cuando no
+  hay respuesta por razonamiento o por contexto lleno (antes se devolvía una
+  página en blanco en silencio). Una página realmente sin texto sigue devolviendo
+  vacío, que eso no es un error.
+- 5 tests nuevos (timeout por defecto y configurado, aviso de respuesta cortada,
+  los dos casos de respuesta vacía y la página en blanco legítima).
+- **Recomendación** (no medida: ese modelo no está instalado aquí): en Documentos,
+  un modelo de visión **sin razonamiento** —p. ej. `qwen2.5vl:7b`, que el propio
+  `document_params` reconoce como multilingüe— debería procesar cada página en
+  segundos en vez de minutos. `qwen3-vl` entiende más, pero piensa de más.
+
 ### 5.3 Motor local MusicGen
 
 - `engines/base_engine.py`: nueva familia `MusicEngine` con

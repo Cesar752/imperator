@@ -113,6 +113,7 @@ class EngineManager:
                 base_url=entry.get("ruta", _OLLAMA_VISION_DEFAULT_BASE_URL),
                 default_model=params.get("model", _OLLAMA_VISION_DEFAULT_MODEL),
                 num_ctx=params.get("num_ctx", OllamaVisionEngine._NUM_CTX),
+                timeout=params.get("timeout"),
             )
         if engine_id == "comfyui":
             return ComfyUIEngine(

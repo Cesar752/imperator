@@ -85,6 +85,18 @@ class OllamaContextTest(unittest.TestCase):
         self.assertIsInstance(engine, OllamaVisionEngine)
         self.assertEqual(engine._num_ctx, 16384)
 
+    def test_la_vision_admite_un_timeout_configurado(self) -> None:
+        from core.engine_manager import EngineManager
+
+        engine = EngineManager._build(
+            "ollama_vision", {"parametros": {"timeout": 1800}}
+        )
+        self.assertEqual(engine._timeout, 1800)
+        self.assertEqual(
+            EngineManager._build("ollama_vision", {"parametros": {}})._timeout,
+            OllamaVisionEngine._ANALYZE_TIMEOUT,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

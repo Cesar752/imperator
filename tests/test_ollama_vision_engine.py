@@ -105,10 +105,57 @@ class TextAnalysisTest(unittest.TestCase):
             self.engine.analyze_text("c", "p")
         self.assertEqual(post.call_args.kwargs["json"]["model"], "qwen3-vl:8b")
 
-    def test_respuesta_sin_contenido_devuelve_vacio(self) -> None:
-        resp = _response({"message": {}})
+    def test_pagina_en_blanco_no_es_un_error(self) -> None:
+        # Una página sin texto (o una imagen sin letras) devuelve vacío: no hay
+        # nada que transcribir, pero tampoco un fallo.
+        resp = _response({"message": {}, "done_reason": "stop"})
         with mock.patch.object(ov.requests, "post", return_value=resp):
             self.assertEqual(self.engine.analyze_text("c", "p"), "")
+
+    def test_el_timeout_es_generoso_y_configurable(self) -> None:
+        # Medido: una página con qwen3-vl puede tardar minutos (razona antes de
+        # responder); con 180 s la tarea moría a mitad de documento.
+        resp = _response({"message": {"content": "ok"}})
+        with mock.patch.object(ov.requests, "post", return_value=resp) as post:
+            self.engine.analyze_text("c", "p")
+        self.assertEqual(post.call_args.kwargs["timeout"], self.engine._ANALYZE_TIMEOUT)
+        self.assertGreaterEqual(OllamaVisionEngine._ANALYZE_TIMEOUT, 600.0)
+
+        lento = OllamaVisionEngine(timeout=1800)
+        with mock.patch.object(ov.requests, "post", return_value=resp) as post:
+            lento.analyze_text("c", "p")
+        self.assertEqual(post.call_args.kwargs["timeout"], 1800)
+
+    def test_respuesta_cortada_avisa(self) -> None:
+        resp = _response(
+            {"message": {"content": "resumen a medias"}, "done_reason": "length"}
+        )
+        with mock.patch.object(ov.requests, "post", return_value=resp):
+            contenido = self.engine.analyze_text("c", "p")
+        self.assertTrue(contenido.startswith("resumen a medias"))
+        self.assertTrue(contenido.endswith(OllamaVisionEngine.TRUNCATED_NOTE))
+
+    def test_sin_respuesta_por_razonamiento_lo_explica(self) -> None:
+        # Es el caso real: el modelo piensa miles de tokens y no escribe nada.
+        resp = _response(
+            {
+                "message": {"content": "", "thinking": "pensando..." * 100},
+                "done_reason": "stop",
+            }
+        )
+        with mock.patch.object(ov.requests, "post", return_value=resp):
+            with self.assertRaises(EngineError) as ctx:
+                self.engine.analyze_text("c", "p")
+        mensaje = str(ctx.exception)
+        self.assertIn("razonando", mensaje)
+        self.assertIn("qwen2.5vl", mensaje)
+
+    def test_sin_respuesta_por_contexto_lleno_lo_explica(self) -> None:
+        resp = _response({"message": {"content": ""}, "done_reason": "length"})
+        with mock.patch.object(ov.requests, "post", return_value=resp):
+            with self.assertRaises(EngineError) as ctx:
+                self.engine.analyze_text("c", "p")
+        self.assertIn("contexto", str(ctx.exception))
 
     def test_error_de_conexion_sugiere_arrancar_ollama(self) -> None:
         with mock.patch.object(

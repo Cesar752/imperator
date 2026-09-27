@@ -42,7 +42,16 @@ class OllamaVisionEngine(VisionEngine):
     """
 
     _SHORT_TIMEOUT = 2.0       # /api/tags
-    _ANALYZE_TIMEOUT = 180.0   # /api/chat (los PDFs grandes tardan)
+
+    #: Timeout de una petición de análisis. Generoso a propósito: los modelos de
+    #: visión con razonamiento tardan minutos por página. Medido con
+    #: ``qwen3-vl:8b`` y una página de 3000 caracteres: 41,5 s y 4143 tokens
+    #: generados... para una respuesta de 390 caracteres, porque 13859 caracteres
+    #: se fueron en "thinking". Con 180 s la tarea moría a mitad de documento.
+    _ANALYZE_TIMEOUT = 600.0
+
+    #: Aviso cuando Ollama cortó la respuesta por llenarse la ventana de contexto.
+    TRUNCATED_NOTE = "\n\n[respuesta incompleta: se agotó la ventana de contexto]"
 
     #: Ventana de contexto que se pide al servidor. Sin pedirla, Ollama usa su
     #: 4096: el análisis de una página con capa de texto —o el resumen global de
@@ -55,10 +64,14 @@ class OllamaVisionEngine(VisionEngine):
         base_url: str = "http://localhost:11434",
         default_model: str = "qwen3-vl:8b",
         num_ctx: int = _NUM_CTX,
+        timeout: float | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._default_model = default_model
         self._num_ctx = int(num_ctx)
+        self._timeout = (
+            float(timeout) if timeout is not None else self._ANALYZE_TIMEOUT
+        )
         self._last_used_model: str | None = None
 
     @property
@@ -135,7 +148,7 @@ class OllamaVisionEngine(VisionEngine):
             resp = requests.post(
                 f"{self._base_url}/api/chat",
                 json=payload,
-                timeout=self._ANALYZE_TIMEOUT,
+                timeout=self._timeout,
             )
             resp.raise_for_status()
         except requests.exceptions.ConnectionError as exc:
@@ -161,9 +174,41 @@ class OllamaVisionEngine(VisionEngine):
                 "Ollama devolvió una respuesta que no es JSON válido."
             ) from exc
 
-        content = data.get("message", {}).get("content", "") or ""
+        message = data.get("message") or {}
+        content = (message.get("content") or "").strip()
+        razon = str(data.get("done_reason") or "")
+
+        if not content:
+            if (message.get("thinking") or "").strip() or razon == "length":
+                # El modelo razonó y no le quedó espacio para escribir: mejor
+                # explicarlo que devolver una página en blanco sin más.
+                raise EngineError(self._no_content_reason(message, razon))
+            # Página sin texto (en blanco): no es un error.
+            return ""
+        if razon == "length":
+            logger.warning("Ollama Vision: respuesta cortada por el contexto")
+            return f"{content}{self.TRUNCATED_NOTE}"
         logger.debug("Ollama Vision OK: %d chars", len(content))
         return content
+
+    def _no_content_reason(self, message: dict, razon: str) -> str:
+        """Explica por qué no hay respuesta (el razonamiento se comió el espacio)."""
+        if razon == "length":
+            motivo = (
+                f"se agotó la ventana de contexto (num_ctx={self._num_ctx}) antes "
+                "de escribir la respuesta"
+            )
+        else:
+            pensado = len((message.get("thinking") or "").strip())
+            motivo = (
+                "el modelo gastó la respuesta razonando "
+                f"({pensado} caracteres de «thinking»)"
+            )
+        return (
+            f"Ollama Vision: {motivo}. Los modelos de razonamiento (qwen3-vl) "
+            "piensan mucho más de lo que responden: usa un modelo de visión sin "
+            "razonamiento (p. ej. qwen2.5vl) o sube num_ctx en engines.json."
+        )
 
     def unload_model(self) -> bool:
         """Descarga el modelo en uso de la VRAM de Ollama (``keep_alive: 0``).

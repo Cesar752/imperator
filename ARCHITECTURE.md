@@ -288,7 +288,7 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   (`config/*.json`) y se descartó el intento de config unificada
   (`~/.imperator/config.json`).
 - `bfl` incluido en `DEFAULT_ENGINES` (antes solo existía en el factory).
-- Suite de tests (stdlib `unittest`, 314 tests) + CI en GitHub Actions. Incluye
+- Suite de tests (stdlib `unittest`, 319 tests) + CI en GitHub Actions. Incluye
   un smoke test de la `MainWindow` opt-in (`IMPERATOR_GUI_SMOKE=1`), que el CI
   activa.
 - El CI instala `requirements-test.txt` (PyQt6, requests, python-dotenv, numpy),
@@ -318,6 +318,12 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   `num_ctx` en `engines.json`. Sin pedirla, Ollama usaba 4096 y el análisis de un
   documento fallaba con HTTP 400 ("exceeds the available context size"); ese 400
   ahora se traduce a un mensaje que dice qué hacer (`ollama_api.http_error_message`).
+- El análisis de documentos tiene timeout propio (600 s por defecto,
+  `parametros.timeout`) porque los modelos de visión con razonamiento gastan ~90%
+  de los tokens en `thinking` (medido con `qwen3-vl:8b`: 4143 tokens generados
+  para 390 caracteres de respuesta). `think: false` no lo desactiva en qwen3-vl y
+  `num_predict` los deja sin respuesta, así que la respuesta cortada por contexto
+  y la respuesta vacía por razonamiento se avisan explícitamente.
 - `musicgen` es el motor de música: `audiocraft` es opcional, así que sin él la
   app arranca igual y el motor se marca como no disponible.
 - `ApiManager` (`core/api_manager.py`) da un consumidor real a `apis.json`.
