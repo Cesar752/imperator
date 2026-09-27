@@ -25,7 +25,7 @@ from core.engine_manager import _OLLAMA_DEFAULT_MODEL  # noqa: E402
 from core.paths import PROJECT_ROOT  # noqa: E402
 from engines import ollama as ollama_mod  # noqa: E402
 from engines.ollama import OllamaEngine  # noqa: E402
-from engines.ollama_api import DEFAULT_NUM_CTX  # noqa: E402
+from engines.ollama_api import DEFAULT_NUM_CTX, DEFAULT_VISION_NUM_CTX  # noqa: E402
 from engines.ollama_vision import OllamaVisionEngine  # noqa: E402
 
 
@@ -54,11 +54,17 @@ class OllamaDefaultModelTest(unittest.TestCase):
 
 
 class OllamaContextTest(unittest.TestCase):
-    """La ventana de contexto es la misma en el chat y en la visión."""
+    """Cada motor pide su contexto, y la visión pide más que el chat."""
 
-    def test_los_dos_motores_comparten_el_contexto(self) -> None:
+    def test_cada_motor_usa_su_contexto(self) -> None:
         self.assertEqual(OllamaEngine._NUM_CTX, DEFAULT_NUM_CTX)
-        self.assertEqual(OllamaVisionEngine._NUM_CTX, DEFAULT_NUM_CTX)
+        self.assertEqual(OllamaVisionEngine._NUM_CTX, DEFAULT_VISION_NUM_CTX)
+
+    def test_la_vision_pide_mas_contexto_que_el_chat(self) -> None:
+        # No es por el prompt, sino porque los modelos de visión razonan: el
+        # "thinking" se come la ventana antes de escribir la respuesta (medido:
+        # 4143 tokens generados para 390 caracteres de respuesta).
+        self.assertGreater(DEFAULT_VISION_NUM_CTX, DEFAULT_NUM_CTX)
 
     def test_la_configuracion_puede_fijar_el_contexto(self) -> None:
         # Sin este camino configurable, subir el contexto exigía tocar el código.

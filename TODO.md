@@ -230,6 +230,27 @@ Cambios:
   `document_params` reconoce como multilingüe— debería procesar cada página en
   segundos en vez de minutos. `qwen3-vl` entiende más, pero piensa de más.
 
+**Ajuste final, tras seguir fallando con `num_ctx=8192`:** el prompt + el
+razonamiento llenaban la ventana y la respuesta llegaba vacía, así que la visión
+pasa a pedir **16384** (`ollama_api.DEFAULT_VISION_NUM_CTX`, distinto del chat
+porque el motivo no es el prompt sino el `thinking`). Medido con `/api/ps` a
+16384:
+
+| modelo | peso | en VRAM | contexto servido |
+| --- | --- | --- | --- |
+| `qwen3-vl:8b` (por defecto) | 7,2 GB | 7,2 GB (todo) | 16384 |
+| `qwen3-vl:30b-a3b` | 19,4 GB | 12,9 GB (resto en RAM) | 16384 |
+
+Conclusiones:
+
+- Con el modelo por defecto (8b), subir la ventana **no cuesta rendimiento**: cabe
+  entero en VRAM incluso a 16384.
+- El `qwen3-vl:30b-a3b` que había guardado en Documentos **no cabe en 16 GB ni con
+  el contexto anterior** (19,4 GB de peso): conviene cambiarlo a `qwen3-vl:8b` en
+  el combo de la pestaña.
+- En la config local (`config/engines.json`, no versionado) queda explícito
+  `ollama_vision.parametros.num_ctx: 16384`.
+
 ### 5.3 Motor local MusicGen
 
 - `engines/base_engine.py`: nueva familia `MusicEngine` con

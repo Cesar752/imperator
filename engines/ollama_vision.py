@@ -7,7 +7,12 @@ from pathlib import Path
 import requests
 
 from engines.base_engine import EngineError, VisionEngine
-from engines.ollama_api import DEFAULT_NUM_CTX, fetch_tags, http_error_message, is_loaded
+from engines.ollama_api import (
+    DEFAULT_VISION_NUM_CTX,
+    fetch_tags,
+    http_error_message,
+    is_loaded,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +61,9 @@ class OllamaVisionEngine(VisionEngine):
     #: Ventana de contexto que se pide al servidor. Sin pedirla, Ollama usa su
     #: 4096: el análisis de una página con capa de texto —o el resumen global de
     #: un documento entero— no cabía y Ollama respondía HTTP 400 ("request (4135
-    #: tokens) exceeds the available context size (4096 tokens)").
-    _NUM_CTX = DEFAULT_NUM_CTX
+    #: tokens) exceeds the available context size (4096 tokens)"). Se pide más que
+    #: en el chat porque el modelo razona y el razonamiento consume ventana.
+    _NUM_CTX = DEFAULT_VISION_NUM_CTX
 
     def __init__(
         self,

@@ -313,9 +313,11 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
 - El modelo por defecto del chat es `qwen3.6:35b`, definido en un solo sitio
   (`_OLLAMA_DEFAULT_MODEL`) y replicado en la configuración y la UI, con un
   test-guarda (`test_ollama_defaults.py`) que impide que se desincronicen.
-- Los dos motores de Ollama (chat y visión) piden la misma ventana de contexto
-  (`ollama_api.DEFAULT_NUM_CTX`, 8192) y esta se puede fijar por motor con
-  `num_ctx` en `engines.json`. Sin pedirla, Ollama usaba 4096 y el análisis de un
+- Los motores de Ollama piden ventana de contexto explícita y esta se puede fijar
+  por motor con `num_ctx` en `engines.json`: 8192 en el chat
+  (`ollama_api.DEFAULT_NUM_CTX`) y 16384 en la visión
+  (`DEFAULT_VISION_NUM_CTX`, porque ahí el `thinking` consume ventana antes de
+  escribir la respuesta). Sin pedirla, Ollama usaba 4096 y el análisis de un
   documento fallaba con HTTP 400 ("exceeds the available context size"); ese 400
   ahora se traduce a un mensaje que dice qué hacer (`ollama_api.http_error_message`).
 - El análisis de documentos tiene timeout propio (600 s por defecto,

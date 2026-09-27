@@ -21,6 +21,15 @@ _TAGS_TTL = 30.0  # segundos
 #: (``options.num_ctx``); el servidor lo respeta (comprobado con /api/ps).
 DEFAULT_NUM_CTX = 8192
 
+#: Ventana de contexto para el análisis de documentos, mayor que la del chat. No
+#: es por el prompt (una página cabe de sobra) sino por el **razonamiento**: los
+#: modelos de visión tipo qwen3-vl gastan ~90% de los tokens en ``thinking``
+#: (medido: 4143 tokens generados para 390 caracteres de respuesta), así que con
+#: 8192 el prompt + el razonamiento llenaban la ventana y la respuesta llegaba
+#: vacía. Medido con ``/api/ps``: el modelo por defecto (``qwen3-vl:8b``) ocupa
+#: 7,2 GB y cabe entero en VRAM a 16384, así que ampliar no cuesta rendimiento.
+DEFAULT_VISION_NUM_CTX = 16384
+
 
 def fetch_tags(base_url: str, timeout: float = 2.0) -> dict:
     """Devuelve el JSON de ``GET /api/tags`` con una caché corta (TTL)."""
