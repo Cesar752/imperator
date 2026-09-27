@@ -323,9 +323,13 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
 - El análisis de documentos tiene timeout propio (600 s por defecto,
   `parametros.timeout`) porque los modelos de visión con razonamiento gastan ~90%
   de los tokens en `thinking` (medido con `qwen3-vl:8b`: 4143 tokens generados
-  para 390 caracteres de respuesta). `think: false` no lo desactiva en qwen3-vl y
-  `num_predict` los deja sin respuesta, así que la respuesta cortada por contexto
-  y la respuesta vacía por razonamiento se avisan explícitamente.
+  para 390 caracteres de respuesta), y ese razonamiento **llena la ventana que se
+  le dé** (2000 tokens de `thinking` con 4096 de contexto, 10 300 con 16384). Por
+  eso la visión pide 16384: una página de ~9800 caracteres (4303 tokens de prompt)
+  se resume en ~113 s, mientras que a 4096 se quedaba sin respuesta.
+  `think: false` no lo desactiva en qwen3-vl y `num_predict` los deja sin
+  respuesta, así que la respuesta cortada por contexto y la respuesta vacía por
+  razonamiento se avisan explícitamente.
 - `musicgen` es el motor de música: `audiocraft` es opcional, así que sin él la
   app arranca igual y el motor se marca como no disponible.
 - `ApiManager` (`core/api_manager.py`) da un consumidor real a `apis.json`.

@@ -251,6 +251,25 @@ Conclusiones:
 - En la config local (`config/engines.json`, no versionado) queda explícito
   `ollama_vision.parametros.num_ctx: 16384`.
 
+**¿Y esto lo rompió la ampliación del prompt del resumen?** No. Medido con una
+página larga (4460 caracteres), mismo modelo:
+
+| prompt | ctx | tiempo | prompt tokens | generados | «thinking» | respuesta |
+| --- | --- | --- | --- | --- | --- | --- |
+| viejo (sin reglas) | 4096 | 36,5 s | 1923 | 2173 | 7199 | **0** (`length`) |
+| nuevo | 4096 | 57,7 s | 2083 | 2013 | 8077 | **0** (`length`) |
+| nuevo | 16384 | 179 s | 2083 | 10300 | 37.337 | 475 (`stop`) |
+
+El prompt viejo **fallaba igual** en esa página: lo que decide si funciona es el
+tamaño de la página frente a la ventana, no las reglas de estilo (que añaden
+~60 tokens). Y un dato que explica el comportamiento: **el razonamiento llena la
+ventana que le des** — 2000 tokens de `thinking` con 4096 y 10 300 con 16384.
+
+Caso idéntico al del usuario (página de ~9800 caracteres → **4303 tokens** de
+prompt, frente a los 4135 del log real) con 16384: **113 s, status 200, respuesta
+completa (473 caracteres, con títulos y `done=stop`)**, 11 899 de 16 384 tokens
+usados. Queda margen para páginas algo mayores.
+
 ### 5.3 Motor local MusicGen
 
 - `engines/base_engine.py`: nueva familia `MusicEngine` con
