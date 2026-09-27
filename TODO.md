@@ -113,7 +113,14 @@ el ducking con los MP3 reales). **297 tests en verde** (1 skip).
   resume el conjunto en una única llamada— y la pestaña gana la casilla
   "Resumen global (documento completo)", activa solo en modo Resumen y
   persistida en `prefs.DOCUMENT_GLOBAL`.
-- `tests/test_document_global.py`: 14 tests.
+- Reglas de estilo del resumen (`SUMMARY_STYLE`, revisando un resumen real): un
+  párrafo corto por apartado (sin mezclar temas), frases de longitud parecida
+  (sin alternar larguísimas con telegráficas), sin repetir datos ya dados en otro
+  apartado y con una frase de cierre por bloque empezando por "→" (en el idioma
+  de salida). Valen para el resumen por página y para el global; el OCR y las
+  tablas no las llevan.
+- `tests/test_document_global.py`: 14 tests, más 4 de las reglas de estilo en
+  `tests/test_services.py`.
 
 ### 5.3 Motor local MusicGen
 
