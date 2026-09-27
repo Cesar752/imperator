@@ -212,6 +212,15 @@ class ChatWidget(TaskWidget):
         self._worker.start()
 
     def _on_reply(self, reply: str) -> None:
+        reply = (reply or "").strip()
+        if not reply:
+            # Un turno vacío no aporta nada y además ensuciaría el contexto del
+            # siguiente mensaje (se enviaría un mensaje de asistente vacío).
+            self._append_turn(
+                "Aviso", "el motor devolvió una respuesta vacía.", _COLOR_AVISO
+            )
+            self._end_turn()
+            return
         self._messages.append({"role": "assistant", "content": reply})
         self._append_turn("Ollama", reply, _COLOR_MOTOR)
         self._end_turn()

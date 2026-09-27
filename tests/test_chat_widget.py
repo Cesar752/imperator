@@ -166,6 +166,20 @@ class ChatFocusTest(unittest.TestCase):
             self._formato_de("Error:").foreground().color().name(), cw._COLOR_ERROR
         )
 
+    def test_una_respuesta_vacia_avisa_y_no_ensucia_el_historial(self) -> None:
+        self.widget._input.setText("hola")
+        with mock.patch.object(cw.ChatWorker, "start"):
+            self.widget._send_message()
+
+        self.widget._on_reply("   ")
+
+        texto = self.widget._conversation.toPlainText()
+        self.assertIn("Aviso: el motor devolvió una respuesta vacía.", texto)
+        self.assertNotIn("Ollama:", texto)
+        self.assertEqual(len(self.widget._messages), 1)
+        self.assertEqual(self.widget._messages[0]["role"], "user")
+        self.assertTrue(self.widget._input.isEnabled())
+
     # ---- Desplazamiento --------------------------------------------
 
     def _llenar_conversacion(self) -> None:

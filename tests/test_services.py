@@ -278,6 +278,37 @@ class ChatParamsTest(unittest.TestCase):
         self.assertEqual(cp.trim_history(history, 0), history)
         self.assertEqual(cp.trim_history(history, -1), history)
 
+    def test_recorta_tambien_por_tamano(self) -> None:
+        # Contar mensajes no basta: dos respuestas largas llenan la ventana de
+        # contexto del motor y la generación se trunca.
+        history = [
+            {"role": "assistant", "content": "a" * 5000},
+            {"role": "assistant", "content": "b" * 5000},
+            {"role": "user", "content": "corta"},
+        ]
+        recortado = cp.trim_history(history, max_messages=20, max_chars=6000)
+        self.assertEqual(len(recortado), 2)
+        self.assertTrue(recortado[0]["content"].startswith("b"))
+        self.assertEqual(recortado[-1]["content"], "corta")
+
+    def test_conserva_el_ultimo_aunque_supere_el_presupuesto(self) -> None:
+        history = [{"role": "user", "content": "x" * 20000}]
+        self.assertEqual(
+            cp.trim_history(history, max_messages=20, max_chars=100), history
+        )
+
+    def test_presupuesto_cero_desactiva_el_recorte_por_tamano(self) -> None:
+        history = [
+            {"role": "assistant", "content": "a" * 5000},
+            {"role": "user", "content": "b" * 5000},
+        ]
+        self.assertEqual(len(cp.trim_history(history, max_chars=100)), 1)
+        self.assertEqual(cp.trim_history(history, max_chars=0), history)
+
+    def test_mensajes_sin_contenido_no_rompen_el_recorte(self) -> None:
+        history = [{"role": "user"}, {"role": "assistant", "content": None}]
+        self.assertEqual(cp.trim_history(history, max_chars=10), history)
+
 
 class SystemStatsTest(unittest.TestCase):
     def _response(self, payload: dict) -> mock.Mock:

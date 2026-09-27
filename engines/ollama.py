@@ -13,13 +13,26 @@ logger = logging.getLogger(__name__)
 class OllamaEngine(ChatEngine):
     """Implementación de :class:`Engine` para un servidor local de Ollama."""
 
+    #: Ventana de contexto que se pide al servidor. El valor por defecto de
+    #: Ollama (4096) se agota con modelos que "piensan" y respuestas largas; al
+    #: truncarse la generación, el contenido llega vacío.
+    _NUM_CTX = 8192
+
+    #: Tokens máximos de salida. El defecto del servidor (128) puede consumirse
+    #: entero en el razonamiento previo de los modelos thinking.
+    _NUM_PREDICT = 2048
+
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
         default_model: str = "qwen3.5:9b",
+        num_ctx: int = _NUM_CTX,
+        num_predict: int = _NUM_PREDICT,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._default_model = default_model
+        self._num_ctx = int(num_ctx)
+        self._num_predict = int(num_predict)
         self._last_used_model: str | None = None
         self._short_timeout = 2.0   # para /api/tags
         self._chat_timeout = 120.0  # para /api/chat
@@ -73,7 +86,15 @@ class OllamaEngine(ChatEngine):
         model = model or self._default_model
         self._last_used_model = model
         logger.debug("Ollama chat: %d mensajes con '%s'", len(messages), model)
-        payload = {"model": model, "messages": messages, "stream": False}
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "num_ctx": self._num_ctx,
+                "num_predict": self._num_predict,
+            },
+        }
         try:
             resp = requests.post(
                 f"{self._base_url}/api/chat",
@@ -95,9 +116,35 @@ class OllamaEngine(ChatEngine):
                 "Ollama devolvió una respuesta que no es JSON válido."
             ) from exc
 
-        content = data.get("message", {}).get("content", "")
+        message = data.get("message") or {}
+        content = (message.get("content") or "").strip()
+        if not content:
+            raise EngineError(self._empty_reply_reason(data, message))
         logger.debug("Ollama chat OK: %d chars", len(content))
         return content
+
+    def _empty_reply_reason(self, data: dict, message: dict) -> str:
+        """Explica por qué Ollama respondió sin contenido.
+
+        Ocurría en silencio: con la ventana de contexto llena (``truncated``) o
+        con el presupuesto de salida gastado en el razonamiento, Ollama devuelve
+        HTTP 200 con ``message.content`` vacío y el chat pintaba un turno en
+        blanco.
+        """
+        if str(data.get("done_reason") or "") == "length":
+            motivo = (
+                f"se agotó el espacio de la respuesta "
+                f"(num_predict={self._num_predict}) o de la ventana de contexto"
+            )
+        elif (message.get("thinking") or "").strip():
+            motivo = "el modelo gastó la respuesta pensando (thinking)"
+        else:
+            motivo = "la respuesta llegó vacía"
+        return (
+            f"Ollama: {motivo}. Sube num_ctx/num_predict (ahora "
+            f"num_ctx={self._num_ctx}, num_predict={self._num_predict}) o usa un "
+            f"modelo sin razonamiento."
+        )
 
     def unload_model(self) -> bool:
         """Descarga el modelo en uso de la VRAM de Ollama (``keep_alive: 0``)."""
