@@ -8,6 +8,7 @@ from engines.base_engine import Engine
 from engines.bfl import BFLApiEngine
 from engines.comfyui import ComfyUIEngine
 from engines.kokoro_tts import KokoroTTSEngine
+from engines.musicgen import MusicGenEngine
 from engines.ollama import OllamaEngine
 from engines.ollama_vision import OllamaVisionEngine
 from engines.piper_tts import PiperTTSEngine
@@ -24,6 +25,7 @@ ENGINE_FACTORY: dict[str, type[Engine]] = {
     "comfyui": ComfyUIEngine,
     "bfl": BFLApiEngine,
     "kokoro_tts": KokoroTTSEngine,
+    "musicgen": MusicGenEngine,
     "wanvideo": WanVideoEngine,
     "piper_tts": PiperTTSEngine,
     "whisper": WhisperEngine,
@@ -39,6 +41,8 @@ _WANVIDEO_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
 _BFL_DEFAULT_BASE_URL = "https://api.bfl.ai"
 _PIPER_DEFAULT_VOICES_DIR = "voices"
 _KOKORO_DEFAULT_VOICE = "ef_dora"
+_MUSICGEN_DEFAULT_MODEL = "small"
+_MUSICGEN_DEFAULT_DURATION = 8.0
 _WHISPER_DEFAULT_MODEL = "small"
 _WHISPER_DEFAULT_DEVICE = "cpu"
 _WHISPER_DEFAULT_COMPUTE_TYPE = "int8"
@@ -139,6 +143,12 @@ class EngineManager:
         if engine_id == "kokoro_tts":
             return KokoroTTSEngine(
                 default_voice=params.get("default_voice", _KOKORO_DEFAULT_VOICE),
+            )
+        if engine_id == "musicgen":
+            return MusicGenEngine(
+                model_size=params.get("model", _MUSICGEN_DEFAULT_MODEL),
+                output_dir=params.get("output_dir"),
+                duration=params.get("duration", _MUSICGEN_DEFAULT_DURATION),
             )
         # Genérico para futuros motores: los parametros se pasan tal cual.
         cls = ENGINE_FACTORY[engine_id]

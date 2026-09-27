@@ -98,6 +98,14 @@ class AudioEngine(Engine):
         """Sintetiza ``text`` y devuelve la ruta del audio generado."""
 
 
+class MusicEngine(Engine):
+    """Motor de generación de música a partir de una descripción de texto."""
+
+    @abstractmethod
+    def generate_music(self, prompt: str, **kwargs) -> Path:
+        """Genera música según ``prompt`` y devuelve la ruta del audio creado."""
+
+
 class TranscriptionEngine(Engine):
     """Motor de transcripción de audio a subtítulos (STT)."""
 

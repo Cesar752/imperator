@@ -53,6 +53,7 @@ _TYPE_TEMPLATES: dict[str, dict] = {
     "piper_tts": {"voices_dir": "voices", "default_voice": ""},
     "kokoro_tts": {"default_voice": "ef_dora"},
     "whisper": {"model": "small", "device": "cpu", "compute_type": "int8"},
+    "musicgen": {"model": "small", "duration": 8},
 }
 
 # URL (ruta) por defecto al añadir un motor de cada tipo.
@@ -65,6 +66,7 @@ _TYPE_URLS: dict[str, str] = {
     "piper_tts": "voices",
     "kokoro_tts": "local",
     "whisper": "local",
+    "musicgen": "local",
 }
 
 

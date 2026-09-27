@@ -153,6 +153,16 @@ DEFAULT_ENGINES: list[dict[str, Any]] = [
             "compute_type": "int8",
         },
     },
+    {
+        "id": "musicgen",
+        "nombre": "MusicGen (música local)",
+        "ruta": "local",
+        "enabled": True,
+        "parametros": {
+            "model": "small",
+            "duration": 8,
+        },
+    },
 ]
 DEFAULT_APIS: list[dict[str, Any]] = []
 DEFAULT_SETTINGS: dict[str, Any] = {
