@@ -7,7 +7,7 @@ from pathlib import Path
 import requests
 
 from engines.base_engine import EngineError, VisionEngine
-from engines.ollama_api import fetch_tags
+from engines.ollama_api import fetch_tags, is_loaded
 
 logger = logging.getLogger(__name__)
 
@@ -146,9 +146,19 @@ class OllamaVisionEngine(VisionEngine):
         return content
 
     def unload_model(self) -> bool:
-        """Descarga el modelo en uso de la VRAM de Ollama (``keep_alive: 0``)."""
+        """Descarga el modelo en uso de la VRAM de Ollama (``keep_alive: 0``).
+
+        Solo si está realmente cargado: ``keep_alive: 0`` sobre un modelo que no
+        está en memoria hace que Ollama lo cargue para descargarlo después.
+        """
         model = self._last_used_model or self._default_model
         if not model:
+            return True
+        if not is_loaded(self._base_url, model, self._SHORT_TIMEOUT):
+            logger.debug(
+                "Ollama Vision: '%s' no está cargado; no hay nada que descargar",
+                model,
+            )
             return True
         try:
             requests.post(

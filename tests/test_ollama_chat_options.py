@@ -11,9 +11,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import requests
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from engines import ollama as ollama_mod  # noqa: E402
+from engines import ollama_api  # noqa: E402
 from engines.base_engine import EngineError  # noqa: E402
 from engines.ollama import OllamaEngine  # noqa: E402
 
@@ -121,6 +124,69 @@ class EmptyReplyTest(unittest.TestCase):
     def test_sin_mensaje_en_la_respuesta_tambien_lanza(self) -> None:
         error = self._error({"done_reason": "stop"})
         self.assertIn("vacía", str(error))
+
+
+class OllamaPsTest(unittest.TestCase):
+    """``/api/ps``: saber qué hay cargado y no descargar lo que no lo está."""
+
+    def test_fetch_loaded_devuelve_los_nombres(self) -> None:
+        resp = mock.Mock()
+        resp.json.return_value = {"models": [{"name": "qwen3.5:9b"}, {"model": "otro"}]}
+        with mock.patch.object(ollama_api.requests, "get", return_value=resp) as get:
+            self.assertEqual(ollama_api.fetch_loaded("http://x:1"), ["qwen3.5:9b", "otro"])
+        self.assertEqual(get.call_args.args[0], "http://x:1/api/ps")
+
+    def test_is_loaded_acepta_el_nombre_con_y_sin_tag(self) -> None:
+        nombres = ["qwen3.5:9b"]
+        with mock.patch.object(ollama_api, "fetch_loaded", return_value=nombres):
+            self.assertTrue(ollama_api.is_loaded("http://x:1", "qwen3.5:9b"))
+            self.assertTrue(ollama_api.is_loaded("http://x:1", "qwen3.5"))
+            self.assertFalse(ollama_api.is_loaded("http://x:1", "qwen3.6:35b"))
+
+    def test_is_loaded_falso_si_la_consulta_falla(self) -> None:
+        with mock.patch.object(
+            ollama_api,
+            "fetch_loaded",
+            side_effect=requests.RequestException("caido"),
+        ):
+            self.assertFalse(ollama_api.is_loaded("http://x:1", "qwen3.5:9b"))
+
+
+class UnloadTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.engine = OllamaEngine()
+
+    def test_no_descarga_si_el_modelo_no_esta_cargado(self) -> None:
+        # Este era el caso del log: "descargado de VRAM" de un modelo que nunca
+        # se había usado (y que Ollama cargaba para poder descargarlo).
+        with mock.patch.object(
+            ollama_mod, "is_loaded", return_value=False
+        ), mock.patch.object(ollama_mod.requests, "post") as post:
+            self.assertTrue(self.engine.unload_model())
+        post.assert_not_called()
+
+    def test_descarga_si_esta_cargado(self) -> None:
+        with mock.patch.object(
+            ollama_mod, "is_loaded", return_value=True
+        ), mock.patch.object(ollama_mod.requests, "post") as post:
+            self.assertTrue(self.engine.unload_model())
+        self.assertEqual(post.call_args.kwargs["json"]["keep_alive"], 0)
+        self.assertEqual(
+            post.call_args.kwargs["json"]["model"], self.engine._default_model
+        )
+
+    def test_usa_el_modelo_usado_si_lo_hay(self) -> None:
+        payload = {"message": {"content": "hola"}}
+        with mock.patch.object(
+            ollama_mod.requests, "post", return_value=_response(payload)
+        ):
+            self.engine.chat([{"role": "user", "content": "hola"}])
+        with mock.patch.object(
+            ollama_mod, "is_loaded", return_value=True
+        ), mock.patch.object(ollama_mod.requests, "post") as post:
+            self.engine.unload_model()
+        self.assertEqual(post.call_args.kwargs["json"]["model"], self.engine._default_model)
+        self.assertEqual(self.engine._last_used_model, self.engine._default_model)
 
 
 if __name__ == "__main__":

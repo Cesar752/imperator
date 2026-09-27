@@ -146,5 +146,29 @@ class TextAnalysisTest(unittest.TestCase):
         self.assertIn("no soporta análisis de texto", str(ctx.exception))
 
 
+class UnloadTest(unittest.TestCase):
+    """Solo se descarga de VRAM lo que está realmente cargado."""
+
+    def setUp(self) -> None:
+        self.engine = OllamaVisionEngine()
+
+    def test_no_descarga_si_no_esta_cargado(self) -> None:
+        with mock.patch.object(ov, "is_loaded", return_value=False), mock.patch.object(
+            ov.requests, "post"
+        ) as post:
+            self.assertTrue(self.engine.unload_model())
+        post.assert_not_called()
+
+    def test_descarga_si_esta_cargado(self) -> None:
+        with mock.patch.object(ov, "is_loaded", return_value=True), mock.patch.object(
+            ov.requests, "post"
+        ) as post:
+            self.assertTrue(self.engine.unload_model())
+        self.assertEqual(post.call_args.kwargs["json"]["keep_alive"], 0)
+        self.assertEqual(
+            post.call_args.kwargs["json"]["model"], self.engine._default_model
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

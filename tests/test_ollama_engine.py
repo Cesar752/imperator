@@ -60,12 +60,21 @@ class OllamaChatTest(unittest.TestCase):
         with self.assertRaises(EngineError):
             self.engine.chat([])
 
+    @mock.patch("engines.ollama.is_loaded", return_value=True)
     @mock.patch("requests.post")
-    def test_unload_model_posts_keep_alive_zero(self, post) -> None:
+    def test_unload_model_posts_keep_alive_zero(self, post, _loaded) -> None:
         post.return_value = _response({})
         self.engine._last_used_model = "llama-test"
         self.assertTrue(self.engine.unload_model())
         self.assertEqual(post.call_args.kwargs["json"]["keep_alive"], 0)
+
+    @mock.patch("engines.ollama.is_loaded", return_value=False)
+    @mock.patch("requests.post")
+    def test_unload_model_skips_when_not_loaded(self, post, _loaded) -> None:
+        # Sin nada cargado no se llama a Ollama: ese POST haría que cargase el
+        # modelo solo para descargarlo.
+        self.assertTrue(self.engine.unload_model())
+        post.assert_not_called()
 
 
 class OllamaModelsTest(unittest.TestCase):

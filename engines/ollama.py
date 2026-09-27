@@ -5,7 +5,7 @@ import logging
 import requests
 
 from engines.base_engine import ChatEngine, EngineError
-from engines.ollama_api import fetch_tags
+from engines.ollama_api import fetch_tags, is_loaded
 
 logger = logging.getLogger(__name__)
 
@@ -155,9 +155,20 @@ class OllamaEngine(ChatEngine):
         )
 
     def unload_model(self) -> bool:
-        """Descarga el modelo en uso de la VRAM de Ollama (``keep_alive: 0``)."""
+        """Descarga de la VRAM el modelo en uso (``keep_alive: 0``).
+
+        Solo se pide si el modelo está realmente cargado: con ``keep_alive: 0``
+        sobre un modelo que no lo está, Ollama lo **carga** para descargarlo
+        acto seguido (era lo que aparecía en el log al cambiar de pestaña:
+        "descargado de VRAM" de un modelo que nunca se había usado).
+        """
         model = self._last_used_model or self._default_model
         if not model:
+            return True
+        if not is_loaded(self._base_url, model, self._short_timeout):
+            logger.debug(
+                "Ollama: '%s' no está cargado; no hay nada que descargar", model
+            )
             return True
         try:
             requests.post(

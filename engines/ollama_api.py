@@ -27,3 +27,35 @@ def fetch_tags(base_url: str, timeout: float = 2.0) -> dict:
     data = resp.json()
     _TAGS_CACHE[base_url] = (now, data)
     return data
+
+
+def fetch_loaded(base_url: str, timeout: float = 2.0) -> list[str]:
+    """Nombres de los modelos cargados en memoria (``GET /api/ps``)."""
+    resp = requests.get(f"{base_url.rstrip('/')}/api/ps", timeout=timeout)
+    resp.raise_for_status()
+    names: list[str] = []
+    for model in resp.json().get("models", []):
+        name = model.get("name") or model.get("model")
+        if name:
+            names.append(name)
+    return names
+
+
+def is_loaded(base_url: str, model: str, timeout: float = 2.0) -> bool:
+    """¿``model`` está cargado en memoria ahora mismo?
+
+    Ollama no tiene un "descarga si procede": pedir ``/api/generate`` con
+    ``keep_alive: 0`` sobre un modelo que **no** está cargado hace que lo cargue
+    para acto seguido liberarlo, con el coste de tiempo y VRAM que eso supone.
+
+    Ante la duda (``/api/ps`` no responde) se devuelve ``False``: no se descarga
+    nada, que es el comportamiento seguro.
+    """
+    try:
+        loaded = fetch_loaded(base_url, timeout)
+    except (requests.RequestException, ValueError):
+        return False
+    return any(
+        name == model or name.startswith(f"{model}:") or model.startswith(f"{name}:")
+        for name in loaded
+    )
