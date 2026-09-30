@@ -11,6 +11,18 @@ pip install -r requirements.txt
 python main.py
 ```
 
+Para reproducir **las versiones exactas** con las que se probó esta copia, añade
+el fichero de restricciones: una actualización de `torch`, `onnxruntime` o
+`ctranslate2` (los arrastran Kokoro, Piper y Whisper) puede romper un motor sin
+haber tocado una línea del proyecto.
+
+```powershell
+pip install -r requirements.txt -c constraints.txt
+```
+
+`venv\Scripts\python.exe -m pip freeze > constraints.txt` lo regenera después de
+actualizar dependencias.
+
 Para uso diario en Windows, usa `Imperator.lnk` (acceso directo con el icono y el
 `AppUserModelID`): arranca con `pythonw.exe` (sin ventana de consola) y deja en
 la barra de tareas el icono de Imperator. Ancla ese acceso directo (clic derecho
@@ -31,13 +43,18 @@ Sin dependencias de runtime (stdlib `unittest`):
 
 ```powershell
 python -m compileall -q .
-python -m ruff check .                      # requiere: pip install ruff
+python -m ruff check .                      # requiere: pip install -r requirements-dev.txt
 python -m unittest discover -s tests -v
 ```
 
 El CI (`.github/workflows/ci.yml`) ejecuta los tres pasos, instala
-`requirements-test.txt` con las versiones congeladas de `constraints-test.txt` y
-activa el smoke test de la GUI.
+`requirements-test.txt` con las versiones congeladas de `constraints-test.txt`
+(incluida la de `ruff`) y activa el smoke test de la GUI.
+
+Las herramientas de desarrollo viven en `requirements-dev.txt` (`ruff` y
+`pyright`): no hacen falta para ejecutar ni para la suite, y `pyright` queda fuera
+del CI a propósito (necesita Node y con PyQt6 da más ruido que señal; ver TODO.md
+§0). Donde más informa es en las capas sin Qt: `pyright core services`.
 
 ## Configuración y secretos
 

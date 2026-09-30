@@ -1,0 +1,15 @@
+# Herramientas de desarrollo (opcionales: no hacen falta para ejecutar la app ni
+# para pasar la suite; el CI instala `ruff` con `-c constraints-test.txt`).
+#
+#   venv\Scripts\activate
+#   pip install -r requirements-dev.txt
+#
+# - ruff: lint con las reglas de `ruff.toml`. Es el mismo que corre el CI, así que
+#   conviene tenerlo en la misma versión (`python -m ruff check .`).
+# - pyright: análisis de tipos. NO está en el CI a propósito (necesita Node y en
+#   modo `basic` con PyQt6, que no trae stubs, da más ruido que señal; ver
+#   TODO.md §0). Se usa a mano, y donde más informa es en las capas sin Qt:
+#     venv\Scripts\pyright.exe core services
+#   El paquete de PyPI descarga su propio Node la primera vez que se ejecuta.
+ruff==0.16.9
+pyright>=1.1.300,<2
