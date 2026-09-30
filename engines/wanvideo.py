@@ -56,6 +56,12 @@ class WanVideoEngine(ComfyUIBaseEngine, VideoEngine):
     _KSAMPLER_HIGH = "57"       # etapa high-noise (pasos 0→2)
     _KSAMPLER_LOW = "58"        # etapa low-noise (pasos 2→4)
 
+    # class_types de los nodos de muestreo que el motor parchea (seed) y que
+    # validan los workflows. Las plantillas oficiales de Wan 2.2 (Lightning) usan
+    # ``KSamplerAdvanced`` (con ``noise_seed``), no ``KSampler``: aceptar solo
+    # este último hacía fallar la validación con "no tiene ningún KSampler".
+    _SAMPLER_TYPES = ("KSampler", "KSamplerAdvanced")
+
     # class_types del nodo de latent en cada modo.
     _LATENT_TYPES = ("EmptyHunyuanLatentVideo", "WanImageToVideo")
 
@@ -164,8 +170,11 @@ class WanVideoEngine(ComfyUIBaseEngine, VideoEngine):
                 )
         if not any(n.get("class_type") in self._LATENT_TYPES for n in workflow.values()):
             raise EngineError(f"WanVideo: workflow '{path.name}' no tiene nodo de latent")
-        if not any(n.get("class_type") == "KSampler" for n in workflow.values()):
-            raise EngineError(f"WanVideo: workflow '{path.name}' no tiene ningún KSampler")
+        if not any(n.get("class_type") in self._SAMPLER_TYPES for n in workflow.values()):
+            raise EngineError(
+                f"WanVideo: workflow '{path.name}' no tiene ningún KSampler "
+                f"(esperado uno de: {', '.join(self._SAMPLER_TYPES)})"
+            )
 
     def _patch_workflow(
         self,
@@ -198,8 +207,12 @@ class WanVideoEngine(ComfyUIBaseEngine, VideoEngine):
                 inputs["length"] = length
             elif ct == "LoadImage" and image_name is not None:
                 inputs["image"] = image_name
-            elif ct == "KSampler":
-                inputs["noise_seed"] = seed
+            elif ct in self._SAMPLER_TYPES:
+                # KSampler usa ``seed``; KSamplerAdvanced, ``noise_seed``. Se
+                # parchea la clave que el nodo tenga (así vale para ambos).
+                for key in ("noise_seed", "seed"):
+                    if key in inputs:
+                        inputs[key] = seed
             if "fps" in inputs:
                 inputs["fps"] = fps
 

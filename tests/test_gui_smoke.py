@@ -45,11 +45,19 @@ class GuiSmokeTest(unittest.TestCase):
             self.assertEqual(window.windowTitle(), "Imperator")
             tabs = window.findChild(QTabWidget)
             self.assertIsNotNone(tabs)
-            self.assertEqual(tabs.count(), 6)
+            self.assertEqual(tabs.count(), 7)
             titles = [tabs.tabText(i) for i in range(tabs.count())]
             self.assertEqual(
                 titles,
-                ["Chat", "Documentos", "Imagen", "Vídeo", "Audio", "Ensamblador"],
+                [
+                    "Chat",
+                    "Documentos",
+                    "Imagen",
+                    "Vídeo",
+                    "Comprensión",
+                    "Audio",
+                    "Ensamblador",
+                ],
             )
             # El mapa pestaña->motor se deriva de Task.engine_id (H4).
             self.assertEqual(window._tab_to_engine.get(0), "ollama")

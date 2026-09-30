@@ -25,6 +25,14 @@ class VideoParamsTest(unittest.TestCase):
         self.assertEqual(vp.sequence_length(4, 16), 65)
         self.assertEqual(vp.sequence_length(2, 16), 33)
 
+    def test_sequence_length_es_siempre_cuatro_n_mas_uno(self) -> None:
+        # Los nodos de latent de Wan 2.2 exigen length = 4n+1: con 30 fps y 3 s
+        # la cuenta directa daría 91 (rechazado por ComfyUI); se ajusta a 93.
+        self.assertEqual(vp.sequence_length(3, 30), 93)
+        for duration, fps in ((1, 30), (2, 30), (3, 24), (5, 25), (1, 60)):
+            length = vp.sequence_length(duration, fps)
+            self.assertEqual((length - 1) % 4, 0, (duration, fps, length))
+
     def test_build_params_t2v(self) -> None:
         params = vp.build_generate_params(
             mode="t2v",
@@ -329,12 +337,63 @@ class DocumentParamsTest(unittest.TestCase):
     def test_los_resumenes_llevan_reglas_de_estilo(self) -> None:
         # Revisando un resumen real: mezclaba apartados en un párrafo, alternaba
         # frases largas con telegráficas y repetía la misma cifra dos veces.
+        # Detalle «por apartado»: el ejecutivo es el de por defecto y tiene sus
+        # propias reglas (ver ResumenEjecutivoTest).
         for prompt in (
-            dp.prompt_for("resumen"),
-            dp.text_prompt_for("resumen"),
-            dp.global_prompt_for("resumen"),
+            dp.prompt_for("resumen", detail=dp.STYLE_DETAILED),
+            dp.text_prompt_for("resumen", detail=dp.STYLE_DETAILED),
+            dp.global_prompt_for("resumen", detail=dp.STYLE_DETAILED),
         ):
             self.assertIn(dp.SUMMARY_STYLE, prompt)
+
+    def test_el_detalle_por_defecto_es_ejecutivo_mas_apartados(self) -> None:
+        # Medido: el detallado devolvía el 89 % y el ejecutivo solo, el 54 %
+        # (no se puede bajar sin perder datos). Por defecto van los dos.
+        self.assertEqual(dp.DEFAULT_DETAIL, dp.STYLE_TWO_PARTS)
+        self.assertIn(dp.STYLE_TWO_PARTS, dp.DETAIL_LABELS)
+        prompt = dp.prompt_for("resumen")
+        self.assertIn("executive summary", prompt)
+        self.assertNotIn("One section, one block", prompt)
+        self.assertIn("around a fifth of the document", prompt)
+
+    def test_el_detalle_ejecutivo_se_puede_elegir_solo(self) -> None:
+        prompt = dp.prompt_for("resumen", detail=dp.STYLE_EXECUTIVE)
+        self.assertIn("executive summary", prompt)
+        self.assertNotIn("One section, one block", prompt)
+
+    def test_el_tope_de_palabras_se_calcula_del_documento(self) -> None:
+        # 400 palabras al 25 % → 100; y un documento muy corto no baja del suelo.
+        self.assertEqual(dp.max_words_for("palabra " * 400), 100)
+        self.assertEqual(dp.max_words_for("dos palabras"), dp.EXECUTIVE_MIN_WORDS)
+        self.assertIn(
+            f"at most {dp.max_words_for('palabra ' * 400)} words",
+            dp.prompt_for("resumen", max_words=dp.max_words_for("palabra " * 400)),
+        )
+
+    def test_se_comprime_solo_si_se_pasa_del_tope(self) -> None:
+        self.assertFalse(dp.excede_palabras("diez palabras cortas de prueba aqui", 10))
+        self.assertTrue(dp.excede_palabras("palabra " * 30, 10))
+        # El margen evita comprimir por una palabra de más (el modelo no mide).
+        self.assertFalse(dp.excede_palabras("palabra " * 11, 10))
+
+    def test_el_prompt_de_compresion_pide_el_tope(self) -> None:
+        prompt = dp.compress_prompt_for("resumen", max_words=120)
+        self.assertIn("still too long", prompt)
+        self.assertIn("at most 120 words", prompt)
+        self.assertIsNone(dp.compress_prompt_for("ocr"))
+
+    def test_el_detalle_detallado_se_puede_elegir(self) -> None:
+        prompt = dp.prompt_for("resumen", detail=dp.STYLE_DETAILED)
+        self.assertIn(dp.SUMMARY_STYLE, prompt)
+        self.assertNotIn("about a fifth of the document", prompt)
+
+    def test_normalize_detail_acepta_los_tres_y_cae_en_dos_partes(self) -> None:
+        self.assertEqual(dp.normalize_detail("detailed"), dp.STYLE_DETAILED)
+        self.assertEqual(dp.normalize_detail("executive"), dp.STYLE_EXECUTIVE)
+        self.assertEqual(dp.normalize_detail("two"), dp.STYLE_TWO_PARTS)
+        for heredado in (None, "vete a saber"):
+            with self.subTest(valor=heredado):
+                self.assertEqual(dp.normalize_detail(heredado), dp.STYLE_TWO_PARTS)
 
     def test_las_reglas_cubren_separar_apartados_y_no_repetir(self) -> None:
         # Primera revisión: apartados mezclados, frases muy desiguales y la misma
@@ -428,9 +487,13 @@ class DocumentParamsTest(unittest.TestCase):
             self.assertNotIn(dp.SUMMARY_STYLE, prompt)
 
     def test_las_reglas_de_estilo_conviven_con_el_idioma(self) -> None:
-        prompt = dp.prompt_for("resumen", "eu")
+        prompt = dp.prompt_for("resumen", "eu", detail=dp.STYLE_DETAILED)
         self.assertIn(dp.SUMMARY_STYLE, prompt)
         self.assertIn("Basque (euskera)", prompt)
+
+        ejecutivo = dp.prompt_for("resumen", "eu")
+        self.assertIn("executive summary", ejecutivo)
+        self.assertIn("Basque (euskera)", ejecutivo)
 
 
 class ChatParamsTest(unittest.TestCase):

@@ -69,6 +69,9 @@ SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
     "theme": {"type": str, "required": False, "allowed": ("dark", "light")},
     "geometry": {"type": dict, "required": False},
     "font_size": {"type": int, "required": False},
+    # Ajustes del planificador de GPU (core/gpu_scheduler.py). El detalle de los
+    # campos lo valida SchedulerConfig.from_settings, que es tolerante a fallos.
+    "gpu_scheduler": {"type": dict, "required": False},
 }
 
 # Valores por defecto (se escriben en disco cuando el archivo no existe).
@@ -163,6 +166,30 @@ DEFAULT_ENGINES: list[dict[str, Any]] = [
             "duration": 8,
         },
     },
+    # Percepción estructurada. Deshabilitados por defecto porque arrastran
+    # dependencias pesadas y opcionales (ultralytics, transformers/torch,
+    # paddleocr): sin ellas el motor aparece como no disponible, no rompe.
+    {
+        "id": "yolo",
+        "nombre": "YOLO (detección)",
+        "ruta": "local",
+        "enabled": False,
+        "parametros": {"model": "yolov8n.pt", "confidence": 0.25},
+    },
+    {
+        "id": "clip",
+        "nombre": "CLIP (etiquetado)",
+        "ruta": "local",
+        "enabled": False,
+        "parametros": {"model": "openai/clip-vit-base-patch32", "top_k": 4},
+    },
+    {
+        "id": "paddle_ocr",
+        "nombre": "OCR local (PaddleOCR)",
+        "ruta": "local",
+        "enabled": False,
+        "parametros": {"lang": "latin", "use_gpu": False},
+    },
 ]
 DEFAULT_APIS: list[dict[str, Any]] = []
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -172,6 +199,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "unload_on_tab_change": True,
     "theme": "dark",
     "font_size": 11,
+    "gpu_scheduler": {
+        "enabled": True,
+        "max_concurrent": 2,
+        "vram_headroom_mb": 1024,
+        "defer_batch_above_util": 70,
+        "defer_batch_below_free_mb": 2048,
+    },
 }
 
 

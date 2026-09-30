@@ -86,17 +86,71 @@ def _create_splash() -> ShimmerSplash | None:
     return ShimmerSplash(pixmap)
 
 
+def _force_taskbar_icon(window) -> None:
+    """Fuerza el icono de la barra de tareas vía Win32 (``WM_SETICON``).
+
+    Qt 6 en Windows a veces no propaga ``setWindowIcon`` al HWND nativo y la
+    barra de tareas se queda con el icono del ejecutable (``pythonw.exe`` = el
+    de Python). Aquí se envía ``WM_SETICON`` a mano usando ``assets/icono.ico``
+    (ya regenerado en DIB, que es lo que pinta el shell).
+    """
+    if sys.platform != "win32":
+        return
+    icon_path = ASSETS / "icono.ico"
+    if not icon_path.exists():
+        return
+
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    user32.LoadImageW.argtypes = [
+        wintypes.HINSTANCE,
+        wintypes.LPCWSTR,
+        wintypes.UINT,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.UINT,
+    ]
+    user32.LoadImageW.restype = wintypes.HANDLE
+    user32.SendMessageW.argtypes = [
+        wintypes.HWND,
+        wintypes.UINT,
+        wintypes.WPARAM,
+        wintypes.LPARAM,
+    ]
+    user32.SendMessageW.restype = wintypes.LPARAM
+
+    IMAGE_ICON = 1
+    LR_LOADFROMFILE = 0x00000010
+    ICON_SMALL = 0
+    ICON_BIG = 1
+    WM_SETICON = 0x0080
+
+    hwnd = int(window.winId())
+    for flag in (ICON_BIG, ICON_SMALL):
+        hicon = user32.LoadImageW(
+            None, str(icon_path), IMAGE_ICON, 0, 0, LR_LOADFROMFILE
+        )
+        if hicon:
+            user32.SendMessageW(hwnd, WM_SETICON, flag, hicon)
+
+
 def main() -> int:
     settings = _load_settings_safe()
     _configure_logging(settings)
 
+    # Fijar un AppUserModelID estable para que Windows asocie la app (y su icono)
+    # a una identidad propia en vez de la de pythonw.exe. Para que la barra de
+    # tareas muestre el icono hace falta, además, un acceso directo (.lnk) que
+    # declare este mismo AUMID (ver tools/create_shortcut.py).
     if sys.platform == "win32":
         try:
             set_app_id = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID
             set_app_id.argtypes = [ctypes.c_wchar_p]
             set_app_id("imperator.plataformaia.1.0")
-        except Exception as exc:  # noqa: BLE001 - shell32 puede no exponer el símbolo
+        except Exception as exc:
             logger.warning("No se pudo fijar el AppUserModelID: %s", exc)
+
     app = QApplication(sys.argv)
     app.setApplicationName("Imperator")
     apply_theme(app, settings.get("theme", "dark"))
@@ -105,10 +159,16 @@ def main() -> int:
     app.setFont(font)
 
     icon_path = ASSETS / "icono.ico"
-    if icon_path.exists():
-        app.setWindowIcon(QIcon(str(icon_path)))
-    else:
+    if not icon_path.exists():
         logger.warning("Falta el icono: %s", icon_path)
+    else:
+        icon = QIcon(str(icon_path))
+        # Un .ico con las entradas pequeñas en PNG carga en Qt (se ve en la
+        # ventana) pero Windows lo pinta en blanco en la barra de tareas:
+        # tools/make_icon.py las escribe en DIB.
+        if icon.isNull() or not icon.availableSizes():
+            logger.warning("El icono no tiene imágenes utilizables: %s", icon_path)
+        app.setWindowIcon(icon)
 
     # Mostrar el splash ANTES del trabajo pesado. Construir MainWindow carga
     # motores y widgets (la parte lenta del arranque); si el splash se muestra
@@ -128,6 +188,9 @@ def main() -> int:
     from ui.main_window import MainWindow
 
     window = MainWindow()
+
+    # Forzar el icono nativo de la barra de tareas (Qt a veces no lo propaga).
+    _force_taskbar_icon(window)
 
     if splash is not None:
         # Garantizar el tiempo mínimo visible del splash (evita que parpadee si

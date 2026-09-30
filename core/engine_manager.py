@@ -11,6 +11,7 @@ from engines.kokoro_tts import KokoroTTSEngine
 from engines.musicgen import MusicGenEngine
 from engines.ollama import OllamaEngine
 from engines.ollama_vision import OllamaVisionEngine
+from engines.perception import ClipEngine, PaddleOcrEngine, YoloEngine
 from engines.piper_tts import PiperTTSEngine
 from engines.wanvideo import WanVideoEngine
 from engines.whisper_engine import WhisperEngine
@@ -29,6 +30,11 @@ ENGINE_FACTORY: dict[str, type[Engine]] = {
     "wanvideo": WanVideoEngine,
     "piper_tts": PiperTTSEngine,
     "whisper": WhisperEngine,
+    # Percepción estructurada (opcional; sin sus dependencias quedan como no
+    # disponibles, igual que musicgen sin audiocraft).
+    "yolo": YoloEngine,
+    "clip": ClipEngine,
+    "paddle_ocr": PaddleOcrEngine,
 }
 
 # Defaults por tipo de motor (si faltan en la configuración).
@@ -43,6 +49,11 @@ _PIPER_DEFAULT_VOICES_DIR = "voices"
 _KOKORO_DEFAULT_VOICE = "ef_dora"
 _MUSICGEN_DEFAULT_MODEL = "small"
 _MUSICGEN_DEFAULT_DURATION = 8.0
+_YOLO_DEFAULT_MODEL = "yolov8n.pt"
+_YOLO_DEFAULT_CONFIDENCE = 0.25
+_CLIP_DEFAULT_MODEL = "openai/clip-vit-base-patch32"
+_CLIP_DEFAULT_TOP_K = 4
+_OCR_DEFAULT_LANG = "latin"
 _WHISPER_DEFAULT_MODEL = "small"
 _WHISPER_DEFAULT_DEVICE = "cpu"
 _WHISPER_DEFAULT_COMPUTE_TYPE = "int8"
@@ -156,6 +167,21 @@ class EngineManager:
                 model_size=params.get("model", _MUSICGEN_DEFAULT_MODEL),
                 output_dir=params.get("output_dir"),
                 duration=params.get("duration", _MUSICGEN_DEFAULT_DURATION),
+            )
+        if engine_id == "yolo":
+            return YoloEngine(
+                model_path=params.get("model", _YOLO_DEFAULT_MODEL),
+                confidence=params.get("confidence", _YOLO_DEFAULT_CONFIDENCE),
+            )
+        if engine_id == "clip":
+            return ClipEngine(
+                model_name=params.get("model", _CLIP_DEFAULT_MODEL),
+                top_k=params.get("top_k", _CLIP_DEFAULT_TOP_K),
+            )
+        if engine_id == "paddle_ocr":
+            return PaddleOcrEngine(
+                lang=params.get("lang", _OCR_DEFAULT_LANG),
+                use_gpu=bool(params.get("use_gpu", False)),
             )
         # Genérico para futuros motores: los parametros se pasan tal cual.
         cls = ENGINE_FACTORY[engine_id]

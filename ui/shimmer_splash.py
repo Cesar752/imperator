@@ -27,8 +27,8 @@ class ShimmerSplash(QSplashScreen):
     ) -> None:
         super().__init__(
             pixmap,
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.SplashScreen
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint,
         )
         self._base = pixmap

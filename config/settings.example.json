@@ -5,5 +5,15 @@
     "salida": "C:/ruta/a/tu/salida",
     "logs": "logs"
   },
-  "last_models": {}
+  "last_models": {},
+  "unload_on_tab_change": true,
+  "theme": "dark",
+  "font_size": 11,
+  "gpu_scheduler": {
+    "enabled": true,
+    "max_concurrent": 2,
+    "vram_headroom_mb": 1024,
+    "defer_batch_above_util": 70,
+    "defer_batch_below_free_mb": 2048
+  }
 }

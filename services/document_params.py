@@ -26,6 +26,8 @@ con una frase de cierre por bloque. Son el resultado de revisar un resumen real
 que mezclaba temas, alternaba frases largas con telegráficas y repetía cifras.
 """
 
+import re
+
 # Formatos de imagen soportados (además de PDF).
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tiff", ".tif")
 
@@ -71,9 +73,36 @@ TEXT_PROMPTS = {
 
 # Prompt del resumen global: el mismo análisis, pero sobre el documento completo
 # (todas las páginas juntas) en vez de página a página.
+#
+# NO lleva un número fijo de frases a propósito. El «5-10 sentences» anterior
+# obligaba al modelo a mezclar apartados en una misma frase y a resumir en
+# rangos («de 107.137 a 221.329 euros»), que es justo como se pierden los datos
+# de cada apartado en un documento largo.
 GLOBAL_PROMPT = (
-    "Summarize the following complete document in 5-10 sentences. Cover the key "
-    "information, the main points and the overall conclusions."
+    "Summarize the following complete document. Keep every section it contains, "
+    "in the order they appear: one block per section or numbered item, with the "
+    "key figure or decision each one states, and with every item of every list "
+    "it gives —compressed into a sentence or two, not copied—. This is a summary, "
+    "not a transcription: say it with your own words and much shorter, but never "
+    "drop a rule, an item or a figure, and never move information from one "
+    "section to another. If the document repeats the same section over and over "
+    "with different figures, group those repetitions into a single block with "
+    "the values the text states."
+)
+
+#: Prompt de un bloque cuando el documento no cabe en una sola consulta: se
+#: resume por partes y después se juntan (resumen de resúmenes). Es el mismo
+#: encargo que :data:`GLOBAL_PROMPT` sobre una parte del documento.
+CHUNK_PROMPT = (
+    "Summarize this part of a longer document. Keep every section it contains, "
+    "in the order they appear: one block per section or numbered item, with the "
+    "key figure or decision each one states, and with every item of every list "
+    "it gives —compressed into a sentence or two, not copied—. Keep each block "
+    "to one or two sentences. This is not a transcription: rewrite it with your "
+    "own words and much shorter, but never drop a rule, an item or a figure. If "
+    "the document repeats the same section over "
+    "and over with different figures, group those repetitions into a single "
+    "block with the values the text states."
 )
 
 # Modos que *analizan* el contenido: en ellos el texto nativo también pasa por el
@@ -88,8 +117,69 @@ SUMMARY_MODE = "resumen"
 # que resumir y en tablas cada página trae las suyas: unirlas no es un resumen.
 GLOBAL_MODES = (SUMMARY_MODE,)
 
-# Reglas de estilo de los resúmenes, por página y globales. Salen de revisar tres
-# resúmenes reales:
+# Alcance del resumen (selector de la UI). El valor se guarda en la preferencia
+# ``document_global``, que antes era un booleano ("1" = global, "0" = por
+# página): :func:`normalize_scope` sigue leyendo esos valores heredados.
+SCOPE_AUTO = "auto"
+SCOPE_GLOBAL = "global"
+SCOPE_PAGES = "pages"
+
+# Estilo del resumen (otro selector de la UI). El **ejecutivo** es el de por
+# defecto: medido, el detallado por apartado devolvía el 89 % del documento
+# —fiel, sin cifras inventadas ni omitidas, pero no resumía—. El usuario eligió
+# 20-30 % aceptando perder detalle secundario.
+STYLE_EXECUTIVE = "executive"
+STYLE_DETAILED = "detailed"
+#: Las dos cosas en la misma entrega: resumen ejecutivo breve **y** detalle por
+#: apartado debajo. Es la única forma de tener un resumen corto de verdad sin
+#: perder datos: medido, un documento denso en cifras no baja del ~50 % si se
+#: conserva todo, y bajar de ahí exige omitir.
+STYLE_TWO_PARTS = "two"
+
+DETAIL_LABELS: dict[str, str] = {
+    STYLE_TWO_PARTS: "Ejecutivo + detalle por apartados",
+    STYLE_EXECUTIVE: "Ejecutivo (breve)",
+    STYLE_DETAILED: "Por apartado (detallado)",
+}
+
+DEFAULT_DETAIL = STYLE_TWO_PARTS
+
+#: Encabezados de la entrega en dos partes.
+EXECUTIVE_HEADING = "== Resumen ejecutivo =="
+DETAIL_HEADING = "== Detalle por apartados =="
+
+SCOPE_LABELS: dict[str, str] = {
+    SCOPE_AUTO: "Automático (global si el documento es largo)",
+    SCOPE_GLOBAL: "Global (una sola llamada)",
+    SCOPE_PAGES: "Por página",
+}
+
+DEFAULT_SCOPE = SCOPE_AUTO
+
+#: A partir de este número de páginas, el alcance «automático» resume el
+#: documento completo en una sola llamada. Medido con ``qwen3-vl:8b`` y páginas
+#: de ~900 caracteres: una llamada por página cuesta ~50 s (19 páginas ≈ 16 min),
+#: mientras que el resumen global del mismo documento tarda **47,7 s**. El
+#: motivo del coste por página es el razonamiento del modelo: ~5 900 tokens
+#: generados por página para ~650 caracteres de respuesta, el resto «thinking».
+AUTO_GLOBAL_MIN_PAGES = 6
+
+# Reglas de estilo de los resúmenes, por página y globales. Salen de revisar
+# resúmenes reales. Los cuatro fallos que se repitieron en el resumen de un
+# convenio laboral, y la regla que los ataca:
+#  1. «24 horas» resumido como «24 días», y una cifra traída de otro apartado
+#     («no supera 24 horas en dos semanas») → cada cifra con su concepto y su
+#     unidad, y ninguna cifra que no esté en el texto.
+#  2. El trabajo nocturno aparecía dentro de «Ordutegia», y el descanso semanal
+#     dentro del descanso entre jornadas → un apartado, un bloque: nada se mueve
+#     de sitio.
+#  3. «prohibido para los nocturnos, salvo fuerza mayor» resumido como «excepto
+#     en trabajos nocturnos», justo al revés → no invertir el sentido: decir a
+#     quién se prohíbe y a quién se exceptúa.
+#  4. La lista de permisos retribuidos quedó en dos de nueve → las listas se
+#     conservan enteras, aunque el bloque crezca.
+#
+# Y de revisar tres resúmenes anteriores:
 # - el primero mezclaba apartados en un mismo párrafo, alternaba frases
 #   larguísimas con telegráficas y repetía la misma cifra en dos apartados;
 # - el segundo enseñó que pedir un "cierre" por apartado con "→" era un error si
@@ -105,14 +195,75 @@ SUMMARY_STYLE = (
     "start every block with a one-line title followed by its paragraph. Take "
     "that title from the document's own headings —use every heading, one block "
     "each—, keep it short, write it in the target language like the rest of the "
-    "answer and in plain text (no markdown symbols); do not invent titles. Write "
-    "the body of each block as complete sentences of similar length (roughly the "
-    "same number of words each), not as a list of telegraphic fragments; do not "
-    "repeat data already given in another block; and make sure every sentence "
-    "adds information taken from the document. "
+    "answer and in plain text (no markdown symbols); do not invent titles. "
+    "Rewrite, do not transcribe: never copy the document's sentences. Say the "
+    "same with your own words and shorter. Write the body of each block as "
+    "complete sentences of similar length (roughly the same number of words "
+    "each), not as a list of telegraphic fragments, and make sure every "
+    "sentence adds information taken from the document. "
+    "Never translate: keep the document's own language in the body of every "
+    "block, as in its headings. "
+    "One section, one block: a block must contain only what its own section "
+    "states. Never move a statement, a figure or a rule to another section, "
+    "never merge two different sections into one block, and do not repeat data "
+    "already given in another block. Keep every figure with the concept and the "
+    "unit it belongs to —do not turn hours into days, do not reuse a figure "
+    "taken from a different section—. "
+    "Lists and conditions: a list is summarised, not copied. Keep **every** "
+    "item, but compress the list into one or two sentences with each item's "
+    "figure in brackets —e.g. «Permisos retribuidos: entre 1 y 15 días según el "
+    "caso (matrimonio 15, hospitalización 5, fallecimiento 2, mudanza 1)»—. "
+    "Never drop an item and never drop a figure, but never transcribe the "
+    "original wording either. If the document forbids something to a group or "
+    "exempts it, state exactly who is forbidden and who is exempt, and never "
+    "invert the sense of the rule. "
+    "Length: one or two sentences per block, and the whole answer clearly "
+    "shorter than the document —a fraction of its length—: drop the wording, "
+    "never the rules, the items or the figures. Only if the document repeats the "
+    "same section over and over with different figures (the same record repeated "
+    "once per page) group those repetitions into one block; never group sections "
+    "that state different things. "
     "Fidelity: summarize only what the document states. Do not interpret, "
     "infer, deduce, give opinions or add context that is not written in the "
-    "text, and do not invent terms, numbers or data."
+    "text, and do not invent terms, numbers or data. Never quote a figure that "
+    "is not literally in the text: do not continue series or extrapolate "
+    "patterns, and never complete the values of items the document does not "
+    "state. A range is allowed only if both ends appear in the text."
+)
+
+#: Estilo del resumen **ejecutivo**. El objetivo es un quinto del documento: se
+#: conservan las reglas y cifras que cambian una decisión y se deja fuera el
+#: detalle secundario. Nada de «un bloque por apartado» (eso es el detallado).
+#: El tope de palabras se calcula del documento (`max_words_for`) y se inyecta
+#: aquí: pedir «un quinto» no basta —medido, el modelo devolvía el 83 %—, pero
+#: con un número explícito de palabras sí se ajusta.
+EXECUTIVE_STYLE = (
+    "Length: this is an executive summary of at most {max_words} words —around "
+    "a fifth of the document—. Write a few paragraphs —or one short block per "
+    "major topic at most—, not one block per section. "
+    "Keep the rules and figures that decide something: limits, deadlines, "
+    "entitlements, prohibitions and who they apply to. Drop the wording, the "
+    "examples, the explanatory clauses and whatever does not change a decision. "
+    "Rewrite, do not transcribe: never copy the document's sentences, and do "
+    "not list every value of a series —say its range or how it evolves—. "
+    "Fidelity: summarize only what the document states. Do not interpret, "
+    "infer, deduce or invent terms, numbers or data. Keep each figure with the "
+    "concept and the unit it belongs to, do not reuse a figure taken from a "
+    "different section, and never invert the sense of a rule: state who is "
+    "forbidden and who is exempt. A range is allowed only if both ends appear "
+    "in the text."
+)
+
+#: Prompt del **segundo pase** del resumen ejecutivo: si el primer resumen se
+#: pasa del tope de palabras, se le pide comprimirse a sí mismo. Reescribir el
+#: resumen (y no el documento) conserva las cifras ya seleccionadas y evita
+#: volver a leer el original. Medido: con el tope en el prompt el resumen
+#: ejecutivo bajó del 83 % al 54 %; con este pase baja al objetivo.
+COMPRESS_PROMPT = (
+    "The text below is a summary and it is still too long. Rewrite it in at "
+    "most {max_words} words, in the same language, keeping every rule, item and "
+    "figure it contains and dropping only the wording. Do not add anything new "
+    "and do not merge figures into ranges."
 )
 
 #: Regla por defecto sobre los cierres: son lo que invitaba a interpretar.
@@ -131,13 +282,22 @@ CLOSING_STYLE = (
     "data that the block does not state."
 )
 
-# Presupuesto de caracteres del texto que se manda al resumen global. El contexto
-# de Ollama está acotado, así que un documento largo se recorta por el final y se
-# avisa en el resultado. Está atado al contexto que piden los motores
-# (``ollama_api.DEFAULT_NUM_CTX`` = 8192): 12000 caracteres son ~3000 tokens en
-# castellano y hasta ~5000 en euskera, que es el idioma que peor se tokeniza. Si
-# se sube este presupuesto, hay que subir también ``num_ctx``.
-MAX_GLOBAL_CHARS = 12_000
+# Presupuesto de caracteres **por llamada** del resumen global. El contexto de
+# Ollama está acotado (16384 tokens por petición con la configuración actual:
+# `num_ctx` 32768 repartido entre dos slots), así que un documento que no quepa
+# no se recorta: se resume **por bloques** y luego se resume el conjunto
+# (ver `services/document_pipeline.summary_blocks`). 16000 caracteres son ~4600
+# tokens en castellano y hasta ~8000 en euskera, que es el idioma que peor se
+# tokeniza; con el razonamiento del modelo (~4500 tokens medidos) sigue habiendo
+# margen. Si se sube, hay que subir también `num_ctx`.
+MAX_GLOBAL_CHARS = 16_000
+
+#: Aviso que se añade al resultado cuando el documento hubo que resumirlo por
+#: bloques. No es un error: es la garantía de que no se ha perdido nada.
+BLOCKS_NOTICE = (
+    "Nota: el documento no cabía en una sola consulta; el resumen se ha "
+    "elaborado por bloques (resumen de resúmenes) y cubre el documento completo."
+)
 
 # Aviso que se añade al resultado cuando el documento no cupo entero.
 TRUNCATED_NOTICE = (
@@ -157,12 +317,23 @@ DEFAULT_LANGUAGE = "auto"
 
 _LANGUAGE_INSTRUCTIONS = {
     "auto": (
-        "Answer in the SAME language as the document: if it is written in "
-        "Basque/euskera, answer in Basque."
+        "Write the answer in the SAME language as the document text, whatever "
+        "the language of these instructions is: if the document is written in "
+        "Spanish, answer in Spanish; if it is in Basque/euskera, answer in "
+        "Basque. Never switch to English unless the document is in English."
     ),
-    "es": "Answer in Spanish, regardless of the language of the document.",
-    "eu": "Answer in Basque (euskera), regardless of the language of the document.",
-    "en": "Answer in English, regardless of the language of the document.",
+    "es": (
+        "Write the answer in Spanish, regardless of the language of the "
+        "document and of the language of these instructions."
+    ),
+    "eu": (
+        "Write the answer in Basque (euskera), regardless of the language of "
+        "the document and of the language of these instructions."
+    ),
+    "en": (
+        "Write the answer in English, regardless of the language of the "
+        "document and of the language of these instructions."
+    ),
 }
 
 #: Recordatorio para que el modelo no repita sus instrucciones en la respuesta
@@ -196,12 +367,123 @@ LANGUAGE_WARNING = (
 )
 
 
+#: Fracción del documento que puede ocupar el resumen ejecutivo, y suelo de
+#: palabras para que un documento corto no quede mutilado.
+EXECUTIVE_RATIO = 0.25
+EXECUTIVE_MIN_WORDS = 80
+
+
+def max_words_for(text: str, ratio: float = EXECUTIVE_RATIO) -> int:
+    """Tope de palabras del resumen ejecutivo para un documento dado.
+
+    Se cuenta por palabras del documento (no caracteres) porque es lo que el
+    modelo puede controlar al escribir. Medido: sin tope explícito, el
+    «ejecutivo» devolvía el 83 % del documento aunque el prompt pidiera un
+    quinto.
+    """
+    palabras = len(text.split())
+    return max(EXECUTIVE_MIN_WORDS, int(palabras * ratio))
+
+
+#: Margen sobre el tope antes de pedir el segundo pase: los modelos no miden
+#: palabras, así que se comprime cuando se pasa de verdad, no por una línea.
+EXECUTIVE_WORD_MARGIN = 1.2
+
+
+def excede_palabras(text: str, max_words: int) -> bool:
+    """¿El texto se pasa del tope (con margen) y toca comprimirlo otra vez?"""
+    return len(text.split()) > max_words * EXECUTIVE_WORD_MARGIN
+
+
+#: Segundo pase de compresión del resumen ejecutivo, **apagado por defecto**.
+#: Medido con un convenio denso en datos: encenderlo subía el resumen del 54 %
+#: al 65 % del documento (el modelo vuelve a conservarlo todo) y doblaba el
+#: tiempo. En un documento que es una lista de datos, un resumen corto solo se
+#: consigue **omitiendo** datos; no hay prompt que lo evite. Se deja aquí por si
+#: algún día interesa comprimir a costa de perder detalle.
+EXECUTIVE_COMPRESS = False
+
+
+def style_for(detail: str | None, max_words: int | None = None) -> str:
+    """Reglas de estilo del resumen según el detalle elegido.
+
+    El **ejecutivo** (por defecto) resume de verdad —un quinto del documento—;
+    el detallado conserva todos los ítems y cifras y, medido, ocupaba el 89 %
+    del documento.
+    """
+    if (detail or DEFAULT_DETAIL) in (STYLE_EXECUTIVE, STYLE_TWO_PARTS):
+        # En «dos partes», este estilo es el de la parte breve (la primera).
+        return EXECUTIVE_STYLE.format(max_words=max_words or EXECUTIVE_MIN_WORDS)
+    return SUMMARY_STYLE
+
+
 def prompt_for(
-    mode: str | None, language: str | None = None, closing: bool = False
+    mode: str | None,
+    language: str | None = None,
+    closing: bool = False,
+    detail: str | None = None,
+    max_words: int | None = None,
 ) -> str:
     """Prompt de imagen del modo, con la instrucción de idioma si aplica."""
     base = PROMPTS.get(mode or "", PROMPTS["ocr"])
-    return _with_language(mode, base, language, closing)
+    return _with_language(mode, base, language, closing, detail, max_words)
+
+
+#: Palabras funcionales para reconocer el idioma del documento sin dependencias
+#: externas. Se comparan por **prefijo** (no solo por igualdad) porque el
+#: euskera declina por sufijos: «lan», «lanaldia», «laneko» son la misma raíz.
+_LANGUAGE_MARKERS: dict[str, tuple[str, ...]] = {
+    "eu": (
+        "eta", "edo", "dira", "izan", "behar", "egun", "lan", "ordu", "aste",
+        "hilabete", "urte", "baimen", "opor", "ordutegi", "kontratu", "txanda",
+        "gaueko", "gutxienez", "gehienez", "ordain", "egokit", "langile",
+        "emandako", "arautegia", "jardun", "denbora", "errepos", "jaiegun",
+    ),
+    "es": (
+        "del", "los", "las", "que", "con", "para", "una", "por", "trabajo",
+        "jornada", "dias", "días", "horas", "permiso", "vacaciones", "contrato",
+        "empresa", "minimo", "mínimo", "maximo", "máximo", "trabajadores",
+        "horario", "descanso", "anuales", "debe", "puede", "tiene",
+    ),
+    "en": (
+        "the", "and", "with", "that", "days", "hours", "work", "leave",
+        "annual", "employees", "must", "shall", "may",
+    ),
+}
+
+
+def detect_language(text: str) -> str | None:
+    """Idioma probable del texto (``eu``/``es``/``en``), o ``None`` si no está claro.
+
+    Hace falta para el alcance «auto»: pedir «responde en el mismo idioma» **no
+    basta** —medido con un documento en euskera, el resumen global salía en
+    castellano con los títulos en euskera—; diciéndole al modelo *cuál* es el
+    idioma del documento, sí. Es una heurística de palabras funcionales, no un
+    detector serio: si la diferencia no es clara devuelve ``None``, porque
+    equivocarse aquí es peor que no decir nada.
+    """
+    if not text or not text.strip():
+        return None
+    palabras = re.findall(r"[^\W\d_]+", text.lower())
+    if not palabras:
+        return None
+    puntuacion = {
+        idioma: sum(
+            1
+            for palabra in palabras
+            if any(
+                palabra == marcador
+                or (len(marcador) >= 4 and palabra.startswith(marcador))
+                for marcador in marcadores
+            )
+        )
+        for idioma, marcadores in _LANGUAGE_MARKERS.items()
+    }
+    ordenados = sorted(puntuacion.values(), reverse=True)
+    mejor = max(puntuacion, key=lambda idioma: puntuacion[idioma])
+    if ordenados[0] < 5 or ordenados[0] < 2 * max(ordenados[1], 1):
+        return None
+    return mejor
 
 
 def language_instruction(language: str | None) -> str:
@@ -216,6 +498,8 @@ def _with_language(
     base: str,
     language: str | None,
     closing: bool = False,
+    detail: str | None = None,
+    max_words: int | None = None,
 ) -> str:
     """Añade las reglas de estilo, el idioma de salida y la regla de no comentar.
 
@@ -227,11 +511,15 @@ def _with_language(
     """
     if not needs_text_analysis(mode):
         return base
-    parts = [base]
+    # El idioma va **antes** de las reglas de estilo a propósito: con todas las
+    # instrucciones en inglés, el modelo tendía a responder en inglés aunque el
+    # documento fuese en castellano (medido: el mismo documento salía unas veces
+    # en castellano y otras en inglés, con los títulos en un idioma y el cuerpo
+    # en otro).
+    parts = [base, language_instruction(language)]
     if (mode or "") == SUMMARY_MODE:
-        parts.append(SUMMARY_STYLE)
+        parts.append(style_for(detail, max_words))
         parts.append(CLOSING_STYLE if closing else NO_CLOSING_STYLE)
-    parts.append(language_instruction(language))
     parts.append(_NO_META)
     return " ".join(parts)
 
@@ -258,7 +546,11 @@ def language_warning(model: str | None, mode: str | None) -> str | None:
 
 
 def text_prompt_for(
-    mode: str | None, language: str | None = None, closing: bool = False
+    mode: str | None,
+    language: str | None = None,
+    closing: bool = False,
+    detail: str | None = None,
+    max_words: int | None = None,
 ) -> str | None:
     """Prompt para analizar texto ya extraído, o ``None`` si el modo no lo necesita.
 
@@ -268,7 +560,7 @@ def text_prompt_for(
     base = TEXT_PROMPTS.get(mode or "")
     if base is None:
         return None
-    return _with_language(mode, base, language, closing)
+    return _with_language(mode, base, language, closing, detail, max_words)
 
 
 def needs_text_analysis(mode: str | None) -> bool:
@@ -290,13 +582,84 @@ def wants_global(mode: str | None, requested: bool) -> bool:
     return bool(requested) and supports_global(mode)
 
 
+def normalize_scope(raw: str | None) -> str:
+    """Alcance guardado → uno de :data:`SCOPE_AUTO`/:data:`SCOPE_GLOBAL`/:data:`SCOPE_PAGES`.
+
+    Acepta los valores heredados de cuando el alcance era una casilla: ``"1"``
+    (global) y ``"0"`` (por página, que ahora es el automático). Cualquier otra
+    cosa cae en el automático.
+    """
+    if raw in (SCOPE_GLOBAL, "1"):
+        return SCOPE_GLOBAL
+    if raw == SCOPE_PAGES:
+        return SCOPE_PAGES
+    return SCOPE_AUTO
+
+
+def normalize_detail(raw: str | None) -> str:
+    """Detalle guardado → uno de los tres estilos.
+
+    Por defecto :data:`STYLE_TWO_PARTS` (ejecutivo + apartados), que es la forma
+    de dar un resumen corto sin perder datos.
+    """
+    if raw in (STYLE_DETAILED, STYLE_EXECUTIVE):
+        return raw
+    return STYLE_TWO_PARTS
+
+
+def auto_global(page_count: int, min_pages: int = AUTO_GLOBAL_MIN_PAGES) -> bool:
+    """¿El alcance automático debe resumir el documento completo?
+
+    A partir de :data:`AUTO_GLOBAL_MIN_PAGES` páginas compensa: el resumen por
+    página multiplica las llamadas al modelo (y con él, el razonamiento) por el
+    número de páginas.
+    """
+    return page_count >= min_pages
+
+
 def global_prompt_for(
-    mode: str | None, language: str | None = None, closing: bool = False
+    mode: str | None,
+    language: str | None = None,
+    closing: bool = False,
+    detail: str | None = None,
+    max_words: int | None = None,
 ) -> str | None:
     """Prompt del resumen global, o ``None`` si el modo no lo admite."""
     if not supports_global(mode):
         return None
-    return _with_language(mode, GLOBAL_PROMPT, language, closing)
+    return _with_language(mode, GLOBAL_PROMPT, language, closing, detail, max_words)
+
+
+def chunk_prompt_for(
+    mode: str | None,
+    language: str | None = None,
+    closing: bool = False,
+    detail: str | None = None,
+    max_words: int | None = None,
+) -> str | None:
+    """Prompt del resumen de **un bloque** de un documento largo.
+
+    ``None`` si el modo no resume: el resumen por bloques solo existe para el
+    alcance global (documento completo).
+    """
+    if not supports_global(mode):
+        return None
+    return _with_language(mode, CHUNK_PROMPT, language, closing, detail, max_words)
+
+
+def compress_prompt_for(
+    mode: str | None,
+    language: str | None = None,
+    closing: bool = False,
+    detail: str | None = None,
+    max_words: int | None = None,
+) -> str | None:
+    """Prompt del segundo pase del resumen ejecutivo (comprimir sin perder datos)."""
+    if not supports_global(mode):
+        return None
+    return _with_language(
+        mode, COMPRESS_PROMPT, language, closing, detail, max_words
+    )
 
 
 def merge_pages(pages: list[str], max_chars: int = MAX_GLOBAL_CHARS) -> tuple[str, bool]:

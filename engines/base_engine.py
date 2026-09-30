@@ -9,6 +9,7 @@ tipos lo refleja.
 """
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -112,3 +113,97 @@ class TranscriptionEngine(Engine):
     @abstractmethod
     def transcribe(self, audio_path: str | Path, **kwargs) -> Path:
         """Transcribe ``audio_path`` y devuelve la ruta del SRT generado."""
+
+
+@dataclass(frozen=True)
+class Perception:
+    """Resultado **estructurado** de un motor de percepción de imagen.
+
+    A diferencia de :class:`VisionEngine` (que devuelve la respuesta en lenguaje
+    natural de un modelo multimodal), aquí los datos vienen ya separados para
+    que el resto del sistema pueda agregarlos sin volver a parsear texto:
+    objetos detectados (YOLO), etiquetas (CLIP) y texto leído (OCR).
+
+    Es inmutable; para combinar resultados de varios motores se usa
+    :meth:`merge`.
+    """
+
+    #: Objetos: ``[{"label": str, "score": float, "box": (x1, y1, x2, y2)}]``.
+    objects: tuple[dict, ...] = field(default_factory=tuple)
+    #: Etiquetas de imagen: ``[{"label": str, "score": float}]``.
+    labels: tuple[dict, ...] = field(default_factory=tuple)
+    #: Texto leído en la imagen (OCR).
+    text: str = ""
+    #: Descripción breve, si el motor la produce.
+    caption: str = ""
+
+    @property
+    def is_empty(self) -> bool:
+        return not (self.objects or self.labels or self.text.strip() or self.caption.strip())
+
+    def merge(self, other: "Perception") -> "Perception":
+        """Combina dos percepciones (p. ej. detección + OCR)."""
+        textos = [t for t in (self.text.strip(), other.text.strip()) if t]
+        caption = self.caption.strip() or other.caption.strip()
+        return Perception(
+            objects=self.objects + other.objects,
+            labels=self.labels + other.labels,
+            text="\n".join(textos),
+            caption=caption,
+        )
+
+    def summary(self) -> str:
+        """Resumen en texto plano, pensado para agregar y pasar al LLM."""
+        lineas: list[str] = []
+        objetos = _format_labels(self.objects)
+        if objetos:
+            lineas.append(f"Objetos: {objetos}")
+        etiquetas = _format_labels(self.labels)
+        if etiquetas:
+            lineas.append(f"Etiquetas: {etiquetas}")
+        if self.text.strip():
+            lineas.append(f"Texto: {self.text.strip()}")
+        if self.caption.strip():
+            lineas.append(f"Descripción: {self.caption.strip()}")
+        return "\n".join(lineas)
+
+    def to_dict(self) -> dict:
+        """Serializable (para logs, JSON o pasar entre hilos/UI)."""
+        return {
+            "objects": [dict(o) for o in self.objects],
+            "labels": [dict(l) for l in self.labels],
+            "text": self.text,
+            "caption": self.caption,
+        }
+
+
+def _format_labels(items: tuple[dict, ...]) -> str:
+    """``«person (x3), car»``: cuenta por etiqueta y ordena por frecuencia."""
+    conteo: dict[str, int] = {}
+    for item in items:
+        etiqueta = str(item.get("label", "")).strip()
+        if etiqueta:
+            conteo[etiqueta] = conteo.get(etiqueta, 0) + 1
+    if not conteo:
+        return ""
+    ordenadas = sorted(conteo.items(), key=lambda par: (-par[1], par[0]))
+    return ", ".join(
+        etiqueta if n == 1 else f"{etiqueta} (x{n})" for etiqueta, n in ordenadas
+    )
+
+
+class PerceptionEngine(Engine):
+    """Motor de percepción de imagen que devuelve datos estructurados.
+
+    Lo implementan los motores ligeros y deterministas (YOLO, CLIP, OCR) cuyos
+    resultados se pueden agregar sin lenguaje natural. Los modelos multimodales
+    siguen siendo :class:`VisionEngine`.
+    """
+
+    @abstractmethod
+    def perceive(self, image_path: str | Path, prompt: str = "") -> Perception:
+        """Analiza ``image_path`` y devuelve lo que sepa extraer.
+
+        ``prompt`` es opcional y solo lo usan los motores que lo admiten (CLIP lo
+        interpreta como lista de etiquetas candidatas separadas por comas).
+        """

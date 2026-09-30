@@ -27,6 +27,20 @@ _WORKFLOW = {
     "90": {"class_type": "WanImageToVideo", "inputs": {"width": 1, "height": 1}},
 }
 
+# Plantilla real de Wan 2.2-Lightning: muestrea con ``KSamplerAdvanced`` (dos
+# etapas, high/low noise) y ``noise_seed``. Antes de aceptar ese class_type, la
+# validación fallaba con "no tiene ningún KSampler".
+_WORKFLOW_ADVANCED = {
+    "6": {"class_type": "CLIPTextEncode", "inputs": {"text": ""}},
+    "7": {"class_type": "CLIPTextEncode", "inputs": {"text": ""}},
+    "57": {"class_type": "KSamplerAdvanced", "inputs": {"noise_seed": 42}},
+    "58": {"class_type": "KSamplerAdvanced", "inputs": {"noise_seed": 42}},
+    "59": {
+        "class_type": "EmptyHunyuanLatentVideo",
+        "inputs": {"width": 1, "height": 1, "length": 1},
+    },
+}
+
 
 class _FakeSocket:
     """Doble del módulo ``websocket``: create_connection devuelve esta instancia."""
@@ -124,6 +138,12 @@ class ValidateWorkflowTest(_WanVideoTest):
             self.engine._validate_workflow(workflow, self.wf_path)
         self.assertIn("KSampler", str(ctx.exception))
 
+    def test_acepta_ksampler_advanced(self) -> None:
+        # Regresión: los workflows de Wan 2.2 usan KSamplerAdvanced, no KSampler.
+        self.engine._validate_workflow(
+            json.loads(json.dumps(_WORKFLOW_ADVANCED)), self.wf_path
+        )
+
 
 class PatchWorkflowTest(_WanVideoTest):
     def test_parchea_prompt_dimensiones_seed_y_fps(self) -> None:
@@ -146,6 +166,37 @@ class PatchWorkflowTest(_WanVideoTest):
         self.assertEqual(workflow["90"]["inputs"]["length"], 33)
         self.assertEqual(workflow["57"]["inputs"]["noise_seed"], 99)
         self.assertEqual(workflow["57"]["inputs"]["fps"], 12)
+
+    def test_parchea_seed_en_ksampler_advanced(self) -> None:
+        workflow = json.loads(json.dumps(_WORKFLOW_ADVANCED))
+        self.engine._patch_workflow(
+            workflow,
+            prompt="p",
+            negative_prompt="",
+            width=1,
+            height=1,
+            length=1,
+            fps=1,
+            seed=7,
+        )
+        self.assertEqual(workflow["57"]["inputs"]["noise_seed"], 7)
+        self.assertEqual(workflow["58"]["inputs"]["noise_seed"], 7)
+
+    def test_parchea_seed_en_ksampler_clasico(self) -> None:
+        # ``KSampler`` guarda la semilla en ``seed`` (no en ``noise_seed``).
+        workflow = json.loads(json.dumps(_WORKFLOW_ADVANCED))
+        workflow["57"] = {"class_type": "KSampler", "inputs": {"seed": 0}}
+        self.engine._patch_workflow(
+            workflow,
+            prompt="p",
+            negative_prompt="",
+            width=1,
+            height=1,
+            length=1,
+            fps=1,
+            seed=7,
+        )
+        self.assertEqual(workflow["57"]["inputs"]["seed"], 7)
 
     def test_parchea_imagen_solo_si_se_indica(self) -> None:
         workflow = json.loads(json.dumps(_WORKFLOW))

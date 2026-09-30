@@ -140,7 +140,18 @@ class GlobalWorkerTest(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def _run(self, pages, mode="resumen", global_summary=True, closing=False):
+    def _run(
+        self,
+        pages,
+        mode="resumen",
+        global_summary=True,
+        closing=False,
+        scope=None,
+        detail=dp.STYLE_EXECUTIVE,
+    ):
+        # Detalle ejecutivo salvo que el test pida otra cosa: así estas pruebas
+        # miden «una sola llamada». El estilo por defecto (dos partes) tiene sus
+        # propios tests más abajo.
         engine = _FakeEngine()
         doc = _FakeDoc(pages)
         worker = dw.DocumentWorker(
@@ -150,6 +161,8 @@ class GlobalWorkerTest(unittest.TestCase):
             "modelo-x",
             global_summary=global_summary,
             closing=closing,
+            scope=scope,
+            detail=detail,
         )
         with mock.patch.object(dw, "pymupdf", _FakePymupdf(doc)):
             result = worker.work()
@@ -196,16 +209,70 @@ class GlobalWorkerTest(unittest.TestCase):
         self.assertEqual(engine.image_calls[0][1], dp.prompt_for("ocr"))
         self.assertIn("TEXTO-OCR", engine.text_calls[0][0])
 
-    def test_avisa_cuando_el_documento_no_cabe_entero(self) -> None:
+    def test_el_documento_largo_no_se_recorta_y_se_resume_por_bloques(self) -> None:
+        # Antes se recortaba por el final: se perdían páginas enteras y, medido,
+        # el modelo llegaba a inventarse los valores que faltaban (extendía la
+        # serie que veía). Ahora se resume por bloques y se juntan.
         largo = "palabra " * (dp.MAX_GLOBAL_CHARS // 7 + 100)
         result, engine, _ = self._run([_FakePage(largo)])
-        self.assertIn(dp.TRUNCATED_NOTICE, result)
-        self.assertEqual(len(engine.text_calls[0][0]), dp.MAX_GLOBAL_CHARS)
+        self.assertNotIn(dp.TRUNCATED_NOTICE, result)
+        self.assertIn(dp.BLOCKS_NOTICE, result)
+        self.assertGreaterEqual(len(engine.text_calls), 2, "bloques + resumen final")
+        # Los prompts llevan el tope de palabras del resumen ejecutivo, así que
+        # se comprueba su naturaleza, no la igualdad exacta.
+        self.assertIn("part of a longer document", engine.text_calls[0][1])
+        self.assertIn("complete document", engine.text_calls[-1][1])
+
+    def test_un_documento_que_cabe_se_resume_en_una_sola_llamada(self) -> None:
+        result, engine, _ = self._run([_FakePage(_TEXTO)])
+        self.assertEqual(len(engine.text_calls), 1)
+        self.assertNotIn(dp.BLOCKS_NOTICE, result)
+
+    def test_el_estilo_por_defecto_entrega_las_dos_secciones(self) -> None:
+        # Ejecutivo breve arriba + detalle por apartado debajo: así el primero
+        # puede ser corto sin que se pierda nada.
+        result, engine, _ = self._run(
+            [_FakePage(_TEXTO)], detail=dp.STYLE_TWO_PARTS
+        )
+        self.assertIn(dp.EXECUTIVE_HEADING, result)
+        self.assertIn(dp.DETAIL_HEADING, result)
+        self.assertLess(
+            result.index(dp.EXECUTIVE_HEADING), result.index(dp.DETAIL_HEADING)
+        )
+        self.assertEqual(len(engine.text_calls), 2, "ejecutivo + detalle")
+        self.assertIn("executive summary", engine.text_calls[0][1])
+        self.assertIn("One section, one block", engine.text_calls[1][1])
 
     def test_sin_la_opcion_sigue_siendo_pagina_a_pagina(self) -> None:
         result, engine, _ = self._run([_FakePage(_TEXTO)], global_summary=False)
         self.assertIn("--- Página 1 (texto) ---", result)
         self.assertEqual(engine.text_calls[0][1], dp.text_prompt_for("resumen"))
+
+    def test_un_documento_largo_se_resume_global_automaticamente(self) -> None:
+        # Sin pedir nada: a partir de AUTO_GLOBAL_MIN_PAGES páginas el alcance
+        # «automático» hace una sola llamada. Una por página multiplicaría por
+        # el número de páginas el coste (medido: ~50 s por página con
+        # qwen3-vl:8b, casi todo razonamiento).
+        paginas = [_FakePage(f"{_TEXTO} pagina {i}") for i in range(8)]
+        result, engine, _ = self._run(paginas, global_summary=False)
+        self.assertEqual(len(engine.text_calls), 1, "una sola llamada")
+        self.assertEqual(engine.text_calls[0][1], dp.global_prompt_for("resumen"))
+        self.assertNotIn("--- Página", result)
+        self.assertEqual(len(engine.image_calls), 0)
+
+    def test_un_documento_corto_sigue_por_pagina_con_el_automatico(self) -> None:
+        paginas = [_FakePage(f"{_TEXTO} pagina {i}") for i in range(2)]
+        result, engine, _ = self._run(paginas, global_summary=False)
+        self.assertEqual(len(engine.text_calls), 2, "una llamada por página")
+        self.assertIn("--- Página 1 (texto) ---", result)
+
+    def test_el_alcance_por_pagina_a_mano_se_respeta_en_documentos_largos(self) -> None:
+        paginas = [_FakePage(f"{_TEXTO} pagina {i}") for i in range(8)]
+        result, engine, _ = self._run(
+            paginas, global_summary=False, scope=dp.SCOPE_PAGES
+        )
+        self.assertEqual(len(engine.text_calls), 8, "ocho páginas, ocho llamadas")
+        self.assertIn("--- Página 8 (texto) ---", result)
 
     def test_en_tablas_la_opcion_no_cambia_el_comportamiento(self) -> None:
         result, engine, _ = self._run(
@@ -255,41 +322,59 @@ class GlobalWidgetTest(unittest.TestCase):
     def _modo(self, mode_id: str) -> None:
         self.widget._mode.setCurrentIndex(self.widget._mode.findData(mode_id))
 
-    def test_la_casilla_solo_se_activa_en_el_modo_resumen(self) -> None:
+    def _alcance(self, scope_id: str) -> None:
+        combo = self.widget._scope_combo
+        combo.setCurrentIndex(combo.findData(scope_id))
+
+    def test_el_alcance_solo_se_activa_en_el_modo_resumen(self) -> None:
         for mode_id, esperado in (("ocr", False), ("tablas", False), ("resumen", True)):
             with self.subTest(modo=mode_id):
                 self._modo(mode_id)
-                self.assertEqual(self.widget._global_check.isEnabled(), esperado)
+                self.assertEqual(self.widget._scope_combo.isEnabled(), esperado)
 
-    def test_el_estado_de_la_casilla_se_guarda(self) -> None:
-        self.widget._global_check.setChecked(True)
-        self.assertEqual(self.cm.load_last_models()[prefs.DOCUMENT_GLOBAL], "1")
+    def test_el_alcance_por_defecto_es_el_automatico(self) -> None:
+        self.assertEqual(self.widget._scope_combo.currentData(), dp.SCOPE_AUTO)
 
-    def test_restaura_la_casilla_guardada(self) -> None:
-        self.cm.save_last_model(prefs.DOCUMENT_GLOBAL, "1")
+    def test_el_alcance_elegido_se_guarda(self) -> None:
+        self._alcance(dp.SCOPE_GLOBAL)
+        self.assertEqual(
+            self.cm.load_last_models()[prefs.DOCUMENT_GLOBAL], dp.SCOPE_GLOBAL
+        )
+
+    def test_restaura_el_alcance_guardado(self) -> None:
+        self.cm.save_last_model(prefs.DOCUMENT_GLOBAL, dp.SCOPE_PAGES)
         widget = dw.DocumentWidget(None, self.cm)
         try:
-            self.assertTrue(widget._global_check.isChecked())
+            self.assertEqual(widget._scope_combo.currentData(), dp.SCOPE_PAGES)
         finally:
             widget.close()
 
-    def test_la_casilla_se_bloquea_durante_el_trabajo(self) -> None:
+    def test_restaura_el_alcance_heredado_de_la_casilla(self) -> None:
+        # La preferencia era "1" (global) / "0" (por página): se sigue leyendo.
+        self.cm.save_last_model(prefs.DOCUMENT_GLOBAL, "1")
+        widget = dw.DocumentWidget(None, self.cm)
+        try:
+            self.assertEqual(widget._scope_combo.currentData(), dp.SCOPE_GLOBAL)
+        finally:
+            widget.close()
+
+    def test_el_alcance_se_bloquea_durante_el_trabajo(self) -> None:
         self._modo("resumen")
         self.widget._set_busy(True)
-        self.assertFalse(self.widget._global_check.isEnabled())
+        self.assertFalse(self.widget._scope_combo.isEnabled())
 
         self.widget._set_busy(False)
-        self.assertTrue(self.widget._global_check.isEnabled())
+        self.assertTrue(self.widget._scope_combo.isEnabled())
 
     def test_la_opcion_elegida_llega_al_worker(self) -> None:
         self._modo("resumen")
-        self.widget._global_check.setChecked(True)
+        self._alcance(dp.SCOPE_GLOBAL)
         self.widget._file_path = Path("documento.pdf")
         with mock.patch.object(dw, "DocumentWorker") as worker_cls:
             with mock.patch.object(self.widget, "_set_busy"):
                 self.widget._engine = mock.Mock(is_available=lambda: True)
                 self.widget._process()
-        self.assertTrue(worker_cls.call_args.kwargs["global_summary"])
+        self.assertEqual(worker_cls.call_args.kwargs["scope"], dp.SCOPE_GLOBAL)
 
     def test_la_casilla_de_cierre_solo_se_activa_en_el_modo_resumen(self) -> None:
         for mode_id, esperado in (("ocr", False), ("tablas", False), ("resumen", True)):

@@ -22,8 +22,15 @@ MODE_LABELS: dict[str, str] = {
 
 
 def sequence_length(duration_s: int | float, fps: int) -> int:
-    """Frames totales del clip (``duración * fps`` + 1 por el último frame)."""
-    return round(duration_s * fps) + 1
+    """Frames totales del clip, redondeados a la forma ``4n+1`` de Wan 2.2.
+
+    ``duración * fps + 1``, ajustado al ``4n+1`` más cercano: los nodos de
+    latent de Wan 2.2 (``EmptyHunyuanLatentVideo`` y ``WanImageToVideo``)
+    rechazan longitudes que no sean ``4n+1`` (p. ej. 91 frames con 30 fps y 3 s,
+    que ComfyUI devolvía como error de validación del workflow).
+    """
+    frames = round(duration_s * fps) + 1
+    return max(1, ((frames - 1) + 2) // 4 * 4 + 1)
 
 
 def build_generate_params(

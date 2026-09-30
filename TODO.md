@@ -10,8 +10,10 @@ páginas a la vez** (`ui/document_widget.MAX_PARALLEL_PAGES = 2`), con
 reiniciado, y el contexto doblado en los dos motores (visión **32768** = 16 384
 por página; chat **16384** = los 8 192 de siempre, repartidos entre dos slots).
 Medido con páginas sintéticas: **0,84x** sin slots forzados, **1,32x** con dos
-slots y **1,68x** en peticiones crudas por HTTP. Suite: **337 tests en verde**,
-árbol limpio (últimos commits: `de74fe3`, `05a249b`, `710636a`).
+slots y **1,68x** en peticiones crudas por HTTP. Suite: **422 tests en verde**,
+árbol limpio (lo último que entró es el pipeline por fases del §6: el alcance
+automático del §6.1, que arregla el resumen de 20 minutos, y el arreglo de
+calidad del §6.2, que quita el recorte, la extrapolación y el cambio de idioma).
 
 **Lo único que hay que hacer mañana:** procesar **un PDF real de varias páginas**
 en Documentos (con `qwen3-vl:8b`) y cronometrarlo **dos veces**: una con
@@ -400,6 +402,313 @@ página). Conviene medirlo con el documento real.
 6 tests cubren lotes de dos en vuelo, lotes de uno, orden de las páginas,
 resultado correcto por página y cancelación entre lotes.
 
+## 6. Pipeline de documentos por fases (2026-09-28)
+
+Documentos deja de ser un `if` por modo y pasa a ser el pipeline del diagrama:
+
+```
+PDF
+ ↓
+[FASE 0: Detección] ─ ¿el usuario pide OCR? ─┬─ sí → FASE 1 OCR (VL)
+                                             └─ no → texto embebido
+ ↓
+¿el usuario pide tablas? ─┬─ sí → FASE 1 Tablas (VL)
+                          └─ no → saltar
+ ↓
+[FASE 2: Normalización] ─ ¿el usuario pide resumen?
+                            ├─ global (documento completo)
+                            └─ por apartados (por página)
+ ↓
+[FASE 4: Validación ligera]
+ ↓
+[FASE 5: Entrega]
+```
+
+**`services/document_pipeline.py` (nuevo, sin Qt) es el plan**; `DocumentWorker`
+es la ejecución. El módulo decide y el worker pregunta:
+
+- `PipelinePlan` (frozen) reúne las decisiones: `route(has_text)` resuelve la
+  FASE 0 (`texto` u `OCR`), `phases()` lista las fases que se van a ejecutar,
+  `tables_extra()` dice si las tablas van como bloque aparte y los prompts se
+  piden aquí (`image_prompt`, `text_prompt`, `global_prompt`, `ocr_prompt`),
+  delegando en `document_params` para no duplicar reglas.
+- `normalize_pages` (FASE 2) une las páginas y devuelve si hubo recorte;
+  `validate` (FASE 4) produce los avisos —documento recortado, entrega vacía—
+  sin bloquear nada; `deliver` (FASE 5) es el único sitio que monta el texto.
+
+**Lo que gana la pestaña Documentos:**
+
+- **Casilla «Forzar OCR (FASE 1)»**: transcribe con el modelo de visión aunque
+  el PDF traiga capa de texto (útil cuando ese texto es malo). Apagada
+  (por defecto) todo sigue igual: si la página tiene texto se usa tal cual y
+  solo van por OCR las que no lo tienen.
+- **Casilla «Extraer tablas además (FASE 1)»**: añade un bloque
+  `--- Tablas (Página N) ---` con el resultado principal (transcripción o
+  resumen), reutilizando el texto ya extraído en vez de volver a rasterizar.
+  En el modo Extraer tablas se desactiva: allí ya son el cuerpo.
+- Las dos casillas se persisten (`document_force_ocr`, `document_tables`) y se
+  bloquean mientras hay trabajo, como el resto de controles.
+- Los modos siguen siendo los de siempre y **el formato del resultado no
+  cambia** (`--- Página N (texto|OCR) ---` por página; en global, un único
+  resumen): lo que cambia es que ahora cada fase tiene su método y su plan.
+
+**Validación ligera (FASE 4), con aviso pero sin bloquear:** si el documento se
+recortó por el presupuesto de caracteres se añade `TRUNCATED_NOTICE`; si la
+entrega se queda sin nada de texto, `EMPTY_RESULT_NOTICE` (el modelo no
+respondió) o `NO_CONTENT_NOTICE` (las páginas no dieron contenido).
+
+**Verificado:** 38 tests nuevos en `tests/test_document_pipeline.py` (plan,
+rutas, prompts, normalización, validación, entrega y la ejecución por el
+worker: OCR forzado, tablas junto al resumen y junto a la transcripción, y los
+avisos).
+
+### 6.1 Un resumen de 19 páginas tardaba 20 minutos: eran 19 llamadas al modelo
+
+Reportado con un documento real: **19 páginas de texto corto, 20 minutos**.
+
+**Medido** (`tools/bench_resumen.py`, página de ~900 caracteres, `qwen3-vl:8b`,
+`OLLAMA_NUM_PARALLEL=2`, así que el contexto útil por petición es la mitad del
+`num_ctx`):
+
+| caso | s/página | 19 páginas |
+| --- | --- | --- |
+| visión 8b, ctx 16384 (8192/slot) | 64,4 | 20,4 min |
+| visión 8b, ctx 32768 (16384/slot) — la config actual | 49,9 | 15,8 min |
+| visión 8b, ctx 65536 (32768/slot) | 143,3 | 45,4 min |
+| texto 9b / texto 35b, ctx 16384 | 96,5 / 67,4 | 30,6 / 21,3 min |
+| **visión 8b, ctx 32768, resumen GLOBAL** | — | **0,8 min (47,7 s)** |
+
+No era un atasco: era **una llamada por página** con un modelo que razona. Por
+página el modelo genera **5 888 tokens** para devolver ~650 caracteres (23 248
+caracteres de `thinking`): el razonamiento se lleva ~90 % del tiempo. 19 × ~50 s
+= 15-20 min. Tres detalles que confirman el diagnóstico:
+
+- subir el contexto a 65536 **empeora** (143 s/página): el modelo llena con
+  razonamiento la ventana que le des;
+- un modelo de **texto** (9b) es *peor* aquí (96,5 s): el razonamiento no viene
+  de la visión;
+- el paralelismo por lotes no rescata el caso: con dos slots la GPU se reparte y
+  dos páginas a la vez cuestan ~2× cada una.
+
+**Arreglo (elegido con los números delante): resumen global automático.** El
+alcance deja de ser una casilla y pasa a **selector de tres opciones**:
+
+- **Automático** (por defecto): hasta 5 páginas, resumen página a página; a
+  partir de **6** (`document_params.AUTO_GLOBAL_MIN_PAGES`), **una sola llamada**
+  con el documento completo.
+- **Global**: lo fuerza siempre.
+- **Por página**: mantiene el resumen por página a mano (con su coste).
+
+La preferencia `document_global` era booleana («1» global / «0» por página) y
+`normalize_scope` sigue leyendo esos valores, así que no se pierde nada al
+actualizar. El alcance se resuelve en `PipelinePlan.with_page_count()` al abrir
+el PDF (FASE 2) y queda en el log («Documentos: 19 páginas, resumen global → …»).
+
+**Verificado de punta a punta** (`tools/verify_alcance_documentos.py`: PDF real
+de 19 páginas, motor real y `DocumentWorker`): **1 llamada** al modelo, **30,6 s**
+en total, alcance resuelto `global` y el resumen con los cinco apartados.
+
+### 6.2 El resumen rápido tenía errores: recorte, prompt y idioma
+
+Reportado justo después de activar el alcance automático: «ahora es más rápido
+pero tiene errores el resumen: errores de contenido, frases mezcladas,
+omisiones y algunas interpretaciones incorrectas». Reproducido con
+`tools/verify_calidad_resumen.py` (PDF de 19 páginas con 76 apartados y cifras
+verificables) y **tres causas medidas**, ninguna intuida:
+
+1. **Recorte silencioso.** `MAX_GLOBAL_CHARS = 12 000` con un documento de
+   14 285: entraba el 84 % y las páginas 14-19 se quedaban fuera → **40 cifras
+   omitidas**.
+2. **El modelo extrapolaba lo que no veía.** Las 3 «cifras inventadas» del
+   primer informe (`221329`, `11795`, `017`) eran de la **página 17**, que no se
+   le había enviado: el modelo **dedujo la serie aritmética** que veía en las
+   páginas 1-13 y se inventó los valores que faltaban. Nunca inventó un dato
+   suelto: completó un patrón. Es la peor forma del fallo, porque el resultado
+   parece coherente.
+3. **El prompt pedía «5-10 frases».** Para 76 apartados eso obliga a mezclar
+   apartados en una misma frase y a resumir con rangos construidos a ojo.
+4. **Idioma: el modelo traducía.** Con `document_language: "auto"` el resumen
+   salía en el idioma de las **instrucciones**, no en el del documento: un
+   documento real en euskera daba el cuerpo en castellano con los títulos en
+   euskera (y, en las pruebas, el mismo documento en castellano salía a veces en
+   inglés). Pedir «responde en el mismo idioma» no bastaba: apareció en la
+   medición nº 3, no en las dos anteriores, y con el documento del usuario —que
+   no está en las pruebas— salió igual.
+
+**Cambios:**
+
+- `MAX_GLOBAL_CHARS` pasa a ser el presupuesto **por llamada** (16 000) y un
+  documento que no cabe **ya no se recorta**: se resume por bloques
+  (`document_pipeline.summary_blocks`, corta por párrafos y por frases
+  completas) y después se resume el conjunto. Con 19 páginas son 3-4 llamadas
+  en vez de 19, y **ninguna página se pierde** (`BLOCKS_NOTICE` lo indica).
+- **Prompts reescritos**: fuera el «5-10 sentences»; un bloque por apartado con
+  su dato clave, 1-2 frases, y —al ver ya el texto completo— permitido agrupar
+  apartados que repiten estructura y dar el rango **cuyos dos extremos están en
+  el texto**. La prohibición de extrapolar sigue: «never quote a figure that is
+  not literally in the text… never complete the values of items the document
+  does not state».
+- **Idioma resuelto por detección** (no por confianza en el modelo):
+  `document_params.detect_language` identifica el idioma del documento por
+  palabras funcionales —comparadas por **prefijo**, que es como funciona el
+  euskera (`lan`, `lanaldia`, `laneko`)— y el worker fija ese idioma en el plan
+  (`PipelinePlan.with_language`) cuando el alcance es «auto»: el prompt lo pide
+  **por su nombre** (`Write the answer in Basque (euskera)…`) y no con un
+  «responde en el mismo idioma» que el modelo ignoraba. Si la detección no está
+  clara, se queda en «auto». Además la instrucción va antes de las reglas de
+  estilo y un idioma elegido a mano **nunca** se pisa.
+- **FASE 4 con verificación de cifras** (`document_pipeline.check_fidelity`):
+  avisa de las cifras del resultado que no están en el documento (el error
+  real). De las **omitidas** no avisa a propósito —un resumen es selectivo y
+  avisar siempre acaba ignorándose—, pero el dato se sigue midiendo con el
+  verificador.
+
+**Medido (mismo documento, `qwen3-vl:8b`, 1 llamada):**
+
+| | por página | global con recorte | global ahora |
+| --- | --- | --- | --- |
+| tiempo | ~16-20 min | 51,8 s | **67,6 s** |
+| cifras inventadas | 0 | 3 (extrapoladas) | **0** |
+| cobertura | 19/19 páginas | 13/19 páginas | **19/19** |
+| idioma | castellano | castellano/inglés | **castellano** |
+| longitud | — | 1 306 chars mezclando temas | **696 chars, 4 bloques** |
+
+Mismo banco con el documento **en euskera** (`--eu`, 13 401 caracteres, 102,8 s):
+``documento=eu resumen=eu``, 0 cifras inventadas, 609 caracteres.
+
+Las 51 cifras «omitidas» del último informe son los valores intermedios de las
+series, que la agrupación resume con sus extremos reales: no son pérdidas.
+
+**Pendiente:** un modelo de visión **sin razonamiento** (`qwen2.5vl:7b`) bajaría
+los ~67 s a segundos. Y el informe de calidad (`tools/verify_calidad_resumen.py`)
+queda como banco para comparar cada cambio de prompt.
+
+### 6.3 Corrección de un resumen real: cuatro fallos, cuatro reglas
+
+El resumen de un **convenio laboral real** (en euskera) salió «bastante bien
+pero con errores importantes», corregido a mano apartado a apartado. Los fallos
+no eran aleatorios: eran cuatro patrones, todos del mismo tipo —el modelo
+**movía** información de sitio—.
+
+| fallo | patrón |
+| --- | --- |
+| «24 **días** de trabajo» cuando el documento dice **24 horas** | cifra con la unidad cambiada |
+| «no supera 24 horas en dos semanas» (no está en el documento) | cifra traída de otro apartado |
+| el trabajo nocturno dentro de *Ordutegia*; el descanso semanal dentro del descanso entre jornadas | información movida de apartado |
+| «excepto en trabajos nocturnos» cuando el documento dice que los nocturnos **no** pueden hacer horas extra | **sentido invertido** |
+| de 9 permisos retribuidos quedaron 2 | listas comprimidas |
+
+La causa de los dos últimos era **nuestra**: al pedir «un bloque de 1-2 frases
+por apartado» y permitir agrupar apartados, el modelo comprimía y mezclaba.
+Cuatro reglas nuevas en `SUMMARY_STYLE` (y listas enteras también en
+`GLOBAL_PROMPT`/`CHUNK_PROMPT`):
+
+1. `do not turn hours into days`, `do not reuse a figure taken from a different
+   section` → cada cifra con su concepto y su unidad;
+2. `One section, one block` + `Never move a statement` + `never merge two
+   different sections` → nada cambia de apartado;
+3. `keep all of them` / `a list is not summarised by dropping items` → las
+   listas se conservan enteras;
+4. `state exactly who is forbidden and who is exempt` / `never invert the sense
+   of the rule` → las prohibiciones, con sus excepciones y en su sentido.
+
+`tests/test_document_pipeline.py::ReglasDeEstiloTest` (5 tests) fija las cuatro
+reglas y que los prompts globales protejan las listas.
+
+**Medido con `--convenio`** (convenio sintético de una página con los cuatro
+patrones, `qwen3-vl:8b`): 9 apartados, cada uno con su bloque, **1 712
+caracteres**, `documento=eu resumen=eu`, **0 cifras inventadas y 0 omitidas**.
+Los cuatro fallos ya no aparecen: dice «24 ordu», mantiene «debekatuta daude
+gaueko langileentzat, indar majarrak izan ezik» (prohibidos con su excepción, en
+el sentido correcto) y lista los seis permisos completos.
+
+**El compromiso, con números.** Fidelidad y brevedad tiran en direcciones
+opuestas y ahora gana la fidelidad:
+
+| documento | resumen con el prompt compacto (el que fallaba) | ahora |
+| --- | --- | --- |
+| convenio, 1 801 caracteres | 607 (omitiendo la mitad) | **1 712 (95 %)** |
+| 19 actas repetidas, 14 190 caracteres | 696 (4,9 %, agrupando) | 13 393 (94 %, enumerando) |
+
+Es decir: en documentos con muchas repeticiones el resumen deja de ser breve
+porque conserva todos los ítems. Si se prefiere breve, la palanca es una sola
+frase del prompt (`keep all of them…`, en `SUMMARY_STYLE`): quitarla vuelve al
+resumen corto con el riesgo de mezclar apartados y perder ítems.
+`tools/verify_calidad_resumen.py` mide las dos cosas: `--convenio` para el caso
+con listas y sin él para el de series repetidas.
+
+### 6.4 Resumen ejecutivo: el 25 % no siempre es posible
+
+Elegido el resumen **ejecutivo** (20-30 % del documento, aceptando perder
+detalle secundario), se implementó como estilo por defecto (`STYLE_EXECUTIVE`)
+con el detallado a mano, y se midió iterando el prompt:
+
+| versión | qué se le pide | resultado (convenio de 1 801 caracteres) |
+| --- | --- | --- |
+| «un quinto del documento» | longitud relativa | **83 %** — el modelo no la mide |
+| + tope explícito `at most N palabras` (`max_words_for`, 25 %) | longitud calculada del documento | **54 %** (981 caracteres, 1 llamada, 0 inventadas, 0 omitidas) |
+| + segundo pase de compresión (`EXECUTIVE_COMPRESS`) | comprimir el resumen a N palabras | **65 %** y el doble de tiempo → **apagado por defecto** |
+
+**El hallazgo, que es lo importante:** el tope de palabras sí funciona (83 % →
+54 %), pero el segundo pase **empeora** porque el modelo vuelve a «conservarlo
+todo». Y la razón de fondo es que el convenio es una **lista de ~40 datos en
+1 801 caracteres**: un resumen de 450 no puede contener 40 datos. En un
+documento denso, bajar del ~50 % exige **omitir datos**, y eso no lo arregla
+ningún prompt: es una decisión de producto (qué se omite), no de ingeniería.
+
+Lo que sí está garantizado y medido en el ejecutivo: idioma del documento,
+0 cifras inventadas, 0 cifras omitidas y las listas completas, con **una sola
+llamada** (~110 s por documento).
+
+Pendiente de decidir con el usuario (dos vías reales al 20-30 %):
+
+1. **Dos secciones** en la misma entrega: resumen ejecutivo breve + detalle por
+   apartado debajo (dos llamadas más, es la única forma de tener las dos cosas).
+2. **Omitir de verdad**: recortar el resumen por su cuenta (p. ej. dejar la
+   primera frase de cada bloque), aceptando perder datos secundarios.
+
+### 6.5 Entrega en dos partes: implementada, medida y **el modelo no la sostiene**
+
+Elegida la vía «resumen ejecutivo breve arriba + detalle por apartado debajo»
+(es la única forma de tener las dos cosas), se implementó como estilo por
+defecto (`STYLE_TWO_PARTS`): dos llamadas sobre el mismo texto, con los
+encabezados `== Resumen ejecutivo ==` y `== Detalle por apartados ==`.
+
+**Medido** (`--convenio`, `qwen3-vl:8b`, 1 801 caracteres de documento):
+
+| parte | caracteres | respecto al documento |
+| --- | --- | --- |
+| resumen ejecutivo | 1 371 | **76 %** (no es un resumen) |
+| detalle por apartados | 1 806 | 100 % |
+| entrega total | 3 177 | 176 % |
+
+Y 3 llamadas / 546 s. Dos conclusiones medidas:
+
+1. **El tope de palabras no se respeta de forma fiable.** El mismo
+   `at most 65 words` dio 981 caracteres (54 %) en una ejecución y 1 371 (76 %)
+   en otra: con un prompt largo y reglas de fidelidad, el modelo prioriza «no
+   perder datos» sobre el límite. El ejecutivo oscila entre el 54 % y el 76 %.
+2. **La parte «breve» acaba repitiendo el detalle**, así que la entrega ocupa
+   casi el doble que el documento sin añadir información.
+
+**Conclusión honesta:** en un documento cuyo contenido es una lista de ~40 datos
+(el caso del convenio), **un resumen fiel del 20-30 % no es alcanzable con este
+modelo**. No es un problema de prompt: 40 datos no caben en 450 caracteres. Lo
+único que queda garantizado, y está medido, es el **detalle por apartado fiel**
+(0 cifras inventadas, 0 omitidas, listas completas, idioma del documento) y la
+opción de dos partes con su ejecutivo *cuando el modelo colabora*.
+
+Palancas pendientes, por orden de eficacia esperada:
+
+1. **Modelo de visión sin razonamiento** (`qwen2.5vl:7b`), que ya está descartado
+   para otra cosa: aquí ayudaría a que el resumen ejecutivo sea estable.
+2. **Recorte mecánico del ejecutivo** (quedarse con la primera frase de cada
+   bloque) en vez de pedírselo al modelo: predecible, pero pierde datos.
+3. **Volver al detalle por apartado como único estilo** si no se quiere leer dos
+   veces lo mismo.
+
+Suite completa: **422 tests en verde** (1 skip).
+
 ## 4. TODO(fase 6) resuelto: factories con dependencias (2026-09-27)
 
 `core/task_manager.py` asumía `cls(engine_manager)` para todas las tareas: al
@@ -418,3 +727,78 @@ la construcción uniforme. Migrado a factories que reciben un contenedor:
 - `tests/test_task_manager.py` (6 tests): orden/ids de las tareas, contrato
   `Task`, `get_task`, `ApiManager` inyectado vs. creado, factory con
   dependencias extra y `TaskDeps` inmutable.
+
+## 7. Sesión (2026-09-30): planificador de GPU, orquestador, percepción y comprensión
+
+Se evaluó una propuesta de arquitectura externa (pipeline de entrada, T5 para
+limpiar OCR, `*.plan` de TensorRT para todo, montaje de vídeo, capa de GPU) y se
+implementó **solo la parte que era mejora real**. Suite: **573 tests en verde**.
+
+**Lo que se descartó y por qué** (queda escrito para no repetir el análisis):
+
+- **T5 para limpiar texto OCR: descartado.** `t5-small/base` está preentrenado
+  esencialmente en inglés; para castellano/euskera degrada. Y el cuello real de
+  Documentos no es el ruido del texto, sino el `thinking` del modelo de visión y
+  el contexto (§6).
+- **Capa de entrada por tipo de contenido: ya existía** (las pestañas).
+- **Detección PDF texto/escaneado: ya existía** (`services/document_pipeline.py`).
+- **Montaje de vídeo: ya existía** (`core/video_assembler.py` + Ensamblador).
+- **`*.plan` governando Ollama y ComfyUI: imposible.** Son runtimes externos
+  (llama.cpp/CUDA y PyTorch/CUDA). Los motores compilados solo aplican a
+  inferencias propias (YOLO/CLIP/OCR), no a los motores HTTP.
+- **«Fotograma cada N ms»: inviable.** Se muestrea cada N **segundos**, en el
+  centro de cada intervalo.
+
+**Fase 1 — `core/gpu_scheduler.py`** (`tests/test_gpu_scheduler.py`, 46 tests):
+
+- Tres prioridades (`perception`/`interactive`/`batch`), concurrencia máxima,
+  reserva de VRAM (`vram_headroom_mb`) y aplazamiento de lotes cuando la GPU está
+  ocupada. VRAM medida con `nvidia-smi` (`--query-gpu=...,--format=csv`).
+- **Falla abierto**: sin `nvidia-smi` (o desactivado) nunca bloquea. El sondeo va
+  fuera del lock y los tests inyectan un `GpuProbe` falso (no necesitan GPU).
+- `settings.json` → `gpu_scheduler` (nuevo esquema opcional). Menú
+  *Motores → Estado de la GPU…*, con el sondeo en el pool (no en el hilo de UI).
+
+**Fase 2 — router de intención y orquestador** (`tests/test_intent_router.py`):
+
+- `services/intent_router.py`: reglas léxicas es/eu/en, sin LLM. Umbral 2.5 para
+  exigir señal compuesta («pdf» no enruta; «resume este pdf» sí).
+- `services/task_orchestrator.py`: resuelve la intención contra las tareas
+  registradas. `TaskDeps` gana `orchestrator` (con valor por defecto, para no
+  romper a quien lo construya a mano); `TaskManager` lo crea y el chat recibe una
+  factory propia (`_chat_factory`).
+- El chat **emite** `routed` y `MainWindow` ofrece abrir la pestaña. El chat no
+  abre pestañas ni conoce widgets.
+
+**Fase 3 — percepción estructurada** (`tests/test_perception_engine.py`):
+
+- `engines/base_engine.py`: nueva familia `PerceptionEngine` + `Perception`
+  (inmutable, `merge()`/`summary()`/`to_dict()`).
+- `engines/perception.py`: `yolo` (detección), `clip` (etiquetado zero-shot) y
+  `paddle_ocr` (OCR local), con import protegido y runner/modelo inyectables.
+  Registrados en `ENGINE_FACTORY`, `DEFAULT_ENGINES`, `engines.example.json` y
+  las plantillas de la UI de motores. **Deshabilitados por defecto**.
+- `parse_ocr_output` tolera las dos API de PaddleOCR (2.x anidado por página y
+  3.x con `rec_texts`); el test lo cubre con dobles.
+- Avisos honestos: PaddleOCR no tiene modelo de euskera (se usa `latin`) y CLIP
+  no describe: puntúa un vocabulario cerrado.
+
+**Fase 4 — comprensión de vídeo** (`tests/test_video_understanding.py`):
+
+- `services/video_understanding.py` (puro): `sample_timestamps` (centro de cada
+  intervalo, tope de fotogramas, `_spread` uniforme si se pasa), `srt_to_text`,
+  `aggregate_prompt` y `build_report`.
+- `core/frame_extractor.py`: fotogramas PNG y audio WAV 16 kHz mono con el ffmpeg
+  de `imageio-ffmpeg`, con `timeout` y comprobación de salida.
+- `ui/understanding_widget.py` + `tasks/understanding.py`: pestaña **Comprensión**
+  (7ª). El worker ejecuta el pipeline por fases, respeta el planificador de GPU
+  (`PERCEPTION_WAIT_S`) y **avisa** cuando falta un motor en vez de inventar.
+
+**Pendiente de esta línea de trabajo:**
+
+1. Medir con un vídeo real: coste por fotograma con YOLO en GPU y cuántos
+   fotogramas hacen falta para que el resumen mejore (ahora 24 por defecto).
+2. Export a TensorRT (`.engine`/`.plan`) de YOLO y, si compensa, runner de ONNX
+   para PaddleOCR: hoy se acepta la ruta del motor pero **no se compila nada**.
+3. Ejecución automática de la intención (hoy `MainWindow` pregunta): el punto de
+   extensión es `services/task_orchestrator.py`.

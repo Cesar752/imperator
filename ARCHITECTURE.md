@@ -8,9 +8,10 @@ extenderlo.
 ## 1. Visión general
 
 Imperator unifica en una única app de escritorio los motores de IA locales
-(Ollama, ComfyUI, Piper, Kokoro, faster-whisper, MusicGen) y las tareas de alto
-nivel que el usuario ve como pestañas: Chat, Documentos, Imagen, Vídeo, Audio y
-Ensamblador.
+(Ollama, ComfyUI, Piper, Kokoro, faster-whisper, MusicGen y, opcionalmente,
+YOLO/CLIP/PaddleOCR para percepción estructurada) y las tareas de alto nivel que
+el usuario ve como pestañas: Chat, Documentos, Imagen, Vídeo, **Comprensión**,
+Audio y Ensamblador.
 
 ### Hardware objetivo
 
@@ -53,7 +54,9 @@ C:\Imperator\
 │   ├── config_manager.py   # Lectura/escritura de config/*.json + validación
 │   ├── engine_manager.py   # Registro y ciclo de vida de motores (ENGINE_FACTORY)
 │   ├── api_manager.py      # Registro de APIs externas + claves desde .env
-│   ├── task_manager.py     # Registro de tareas (TASK_FACTORY)
+│   ├── task_manager.py     # Registro de tareas (TASK_FACTORY) + orquestador
+│   ├── gpu_scheduler.py    # Cola con prioridad + sondeo de VRAM (nvidia-smi)
+│   ├── frame_extractor.py  # Fotogramas y audio de un vídeo (ffmpeg)
 │   ├── paths.py            # Rutas compartidas (PROJECT_ROOT, ASSETS)
 │   └── video_assembler.py  # Ensamblado de vídeo con ffmpeg (no es un Engine)
 ├── engines/                # Un motor por fichero
@@ -66,13 +69,15 @@ C:\Imperator\
 │   ├── piper_tts.py        # TTS rápido (ONNX)
 │   ├── kokoro_tts.py       # TTS de calidad (CPU)
 │   ├── whisper_engine.py   # Transcripción a SRT
-│   └── musicgen.py         # Música a partir de texto (opcional: audiocraft)
+│   ├── musicgen.py         # Música a partir de texto (opcional: audiocraft)
+│   └── perception.py       # YOLO (detección), CLIP (etiquetas) y OCR (opcional)
 ├── tasks/                  # Una tarea por fichero
 │   ├── base_task.py        # Contrato Task
 │   ├── chat.py             # Chat
 │   ├── document.py         # Documentos
 │   ├── image.py            # Imagen
 │   ├── video.py            # Vídeo
+│   ├── understanding.py    # Comprensión de vídeo (fotogramas + audio + resumen)
 │   ├── audio.py            # Audio (Piper + Kokoro)
 │   └── assembler.py        # Ensamblador
 ├── ui/                     # Un widget por tarea
@@ -85,6 +90,7 @@ C:\Imperator\
 │   ├── document_widget.py
 │   ├── image_widget.py
 │   ├── video_widget.py
+│   ├── understanding_widget.py
 │   ├── audio_widget.py
 │   └── assembler_widget.py
 ├── services/               # Lógica pura sin Qt, extraída de los widgets
@@ -92,10 +98,14 @@ C:\Imperator\
 │   ├── audio_params.py     # Motores TTS, rango de velocidad y voces
 │   ├── chat_params.py      # Ventana de historial que se envía al motor
 │   ├── document_params.py  # Formatos, prompts y helpers de documentos
+│   ├── document_pipeline.py# Plan por fases del procesado de documentos
 │   ├── image_params.py     # Presets y parámetros de imagen
 │   ├── preferences.py      # Preferencias tipadas (PrefsStore + dataclasses)
+│   ├── intent_router.py    # Router de intención del chat (a qué tarea apunta)
+│   ├── task_orchestrator.py# Resuelve la intención contra las tareas registradas
 │   ├── system_stats.py     # Sondeo de /system_stats de ComfyUI
-│   └── video_params.py     # Presets y parámetros de vídeo
+│   ├── video_params.py     # Presets y parámetros de vídeo
+│   └── video_understanding.py # Muestreo de fotogramas, prompts e informe
 ├── config/                 # Config real (gitignored) + plantillas (versionadas)
 │   ├── engines.json        # Motores (real)
 │   ├── apis.json           # APIs externas (aún sin usar)
@@ -131,7 +141,13 @@ class VideoEngine(Engine):  # generate_video(prompt, **kwargs) -> Path
 class AudioEngine(Engine):  # synthesize(text, voice=None, **kwargs) -> Path
 class MusicEngine(Engine):  # generate_music(prompt, **kwargs) -> Path
 class TranscriptionEngine(Engine):  # transcribe(audio_path, **kwargs) -> Path
+class PerceptionEngine(Engine):     # perceive(image_path, prompt="") -> Perception
 ```
+
+`PerceptionEngine` devuelve un `Perception` **estructurado** (objetos, etiquetas y
+texto leído) en vez de lenguaje natural: es lo que aportan YOLO, CLIP y el OCR
+local sobre el VLM de Ollama. `Perception` es inmutable y tiene `merge()`
+(combinar resultados de varios motores) y `summary()` (texto plano para agregar).
 
 `EngineError` es la excepción de dominio (conexión, timeout, respuesta
 inválida).
@@ -151,6 +167,9 @@ ENGINE_FACTORY = {
     "kokoro_tts": KokoroTTSEngine,
     "whisper": WhisperEngine,
     "musicgen": MusicGenEngine,
+    "yolo": YoloEngine,
+    "clip": ClipEngine,
+    "paddle_ocr": PaddleOcrEngine,
 }
 ```
 
@@ -170,6 +189,9 @@ ENGINE_FACTORY = {
 | `kokoro_tts` | TTS de calidad | PyTorch CPU (ef_dora, em_alex, em_santa) |
 | `whisper` | Transcripción a SRT | faster-whisper (CTranslate2) |
 | `musicgen` | Música a partir de texto | audiocraft / Meta MusicGen (small/medium/large; opcional) |
+| `yolo` | Detección de objetos | ultralytics (`yolov8*.pt` o un motor `.engine`/`.plan`) |
+| `clip` | Etiquetado zero-shot | transformers + torch (vocabulario cerrado) |
+| `paddle_ocr` | OCR local | PaddleOCR (DBNet+CRNN), idioma `latin` para es/eu |
 
 ## 4. Arquitectura de tareas
 
@@ -197,10 +219,11 @@ class TaskDeps:
     api_manager: ApiManager
 
 TASK_FACTORY: dict[str, TaskFactory] = {
-    "chat": _engine_only(ChatTask),
+    "chat": _chat_factory,            # recibe además el orquestador
     "document": _engine_only(DocumentTask),
     "image": _engine_only(ImageTask),
     "video": _engine_only(VideoTask),
+    "understanding": _engine_only(UnderstandingTask),
     "audio": _engine_only(AudioTask),
     "assembler": _engine_only(AssemblerTask),
 }
@@ -282,15 +305,17 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
 
 ## 8. Estado actual
 
-- 6 pestañas: Chat, Documentos, Imagen, Vídeo, Audio, Ensamblador.
+- 7 pestañas: Chat, Documentos, Imagen, Vídeo, Comprensión, Audio, Ensamblador.
 - 20 tags (de v0.1-skeleton a v0.14-kokoro).
 - Sin refactor de configuración: se mantiene la arquitectura legacy
   (`config/*.json`) y se descartó el intento de config unificada
   (`~/.imperator/config.json`).
 - `bfl` incluido en `DEFAULT_ENGINES` (antes solo existía en el factory).
-- Suite de tests (stdlib `unittest`, 337 tests) + CI en GitHub Actions. Incluye
+- Suite de tests (stdlib `unittest`, 573 tests) + CI en GitHub Actions. Incluye
   un smoke test de la `MainWindow` opt-in (`IMPERATOR_GUI_SMOKE=1`), que el CI
-  activa.
+  activa. Las suites nuevas (`test_gpu_scheduler`, `test_intent_router`,
+  `test_perception_engine`, `test_video_understanding`) usan dobles: no
+  necesitan GPU, ni ffmpeg, ni las dependencias pesadas de percepción.
 - El CI instala `requirements-test.txt` (PyQt6, requests, python-dotenv, numpy),
   no todo `requirements.txt`: los imports de los motores pesados están
   protegidos con `try/except ImportError`.
@@ -342,6 +367,92 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   3 páginas. Como Ollama **reparte el contexto entre slots**, cada motor pide el
   doble: visión 32768 (16384 por página) y chat 16384 (los 8192 por petición de
   antes).
+- Documentos sigue el **pipeline por fases** de `services/document_pipeline.py`
+  (FASE 0 detección → FASE 1 OCR/tablas → FASE 2 normalización y resumen →
+  FASE 4 validación ligera → FASE 5 entrega): el módulo puro decide el plan
+  (`PipelinePlan`, `route`, `phases`, `tables_extra`, y los prompts) y
+  `ui.document_widget.DocumentWorker` lo ejecuta con un método por fase, de modo
+  que el código se lee igual que el diagrama. Dos casillas nuevas, ambas
+  persistidas: **«Forzar OCR»** (transcribir con el modelo aunque el PDF ya traiga
+  capa de texto) y **«Extraer tablas además»** (bloque `--- Tablas (Página N) ---`
+  junto al resultado principal —transcripción o resumen—, reutilizando el texto ya
+  extraído en vez de volver a rasterizar). La FASE 4 no bloquea nada: solo añade
+  avisos (documento recortado, entrega vacía) y la FASE 5 es el único sitio que
+  monta el texto final. El alcance del resumen es un selector
+  (**Automático / Global / Por página**): el automático resume el documento
+  completo en una sola llamada a partir de
+  `document_params.AUTO_GLOBAL_MIN_PAGES` (6) páginas, porque medido con
+  `qwen3-vl:8b` una llamada por página cuesta ~50 s (19 páginas ≈ 16 min) y el
+  documento entero ~30-48 s; el motivo del coste por página es el razonamiento
+  del modelo (~5 900 tokens generados para ~650 caracteres de respuesta).
+- El resumen global **no recorta** el documento: si no cabe en una consulta se
+  resume por bloques (`document_pipeline.summary_blocks`, que corta por párrafos
+  y por frases completas) y después se resume el conjunto, así que ninguna
+  página se queda fuera. Recortar por el final era peor que perder texto:
+  medido, el modelo **extrapolaba** lo que no veía (deducía la serie aritmética
+  del documento y se inventaba los valores de las páginas ausentes). Por eso la
+  FASE 4 comprueba las cifras del resultado contra el documento
+  (`document_pipeline.check_fidelity`) y avisa de las **inventadas** (un error
+  real); de las omitidas no avisa, porque un resumen es selectivo por
+  definición. El **idioma** no se le deja al modelo:
+  `document_params.detect_language` lo detecta en el documento (palabras
+  funcionales comparadas por prefijo, útil para el euskera) y el worker lo fija
+  en el plan con `PipelinePlan.with_language`, de modo que el prompt lo pide por
+  su nombre; con «responde en el mismo idioma» el modelo traducía (documento en
+  euskera → resumen en castellano con los títulos en euskera). Un idioma
+  elegido a mano nunca se pisa.
 - `musicgen` es el motor de música: `audiocraft` es opcional, así que sin él la
   app arranca igual y el motor se marca como no disponible.
 - `ApiManager` (`core/api_manager.py`) da un consumidor real a `apis.json`.
+- `core/gpu_scheduler.py` decide **si** un trabajo pesado puede empezar, con
+  tres prioridades (`perception` > `interactive` > `batch`) y VRAM medida de
+  verdad con `nvidia-smi`. Sustituye el «a ojo» por datos, es thread-safe y
+  **falla abierto**: sin `nvidia-smi` nunca bloquea (un planificador que rompiera
+  la app por no poder medir sería peor que no tenerlo). Se configura en
+  `settings.json` → `gpu_scheduler`. La ventana lo consulta en
+  *Motores → Estado de la GPU…* (el sondeo va al pool, no al hilo de la UI).
+- `services/intent_router.py` es el router de intención del chat: reglas léxicas
+  deterministas (es/eu/en, sin LLM) que deciden a qué tarea apunta un mensaje.
+  Exige **señal compuesta** (umbral 2.5): «pdf» a secas no enruta, «resume este
+  pdf» sí, así no secuestra conversaciones normales.
+  `services/task_orchestrator.py` resuelve esa intención contra las tareas
+  registradas; `TaskManager` lo inyecta en el chat por `TaskDeps`, y el chat se
+  limita a **emitir** (`routed`) mientras `MainWindow` ofrece abrir la pestaña.
+- `engines/perception.py` añade percepción estructurada: `yolo` (detección),
+  `clip` (etiquetado zero-shot) y `paddle_ocr` (OCR local). Los tres devuelven
+  `Perception` (objetos/etiquetas/texto), no lenguaje natural, y sus dependencias
+  pesadas van con import protegido: sin ellas la app arranca igual y el motor
+  aparece como no disponible (mismo criterio que `musicgen`). Vienen
+  **deshabilitados** por defecto en `engines.json`.
+  Aviso de idioma: no hay modelo de euskera propio en PaddleOCR (se usa `latin`)
+  ni CLIP describe en abierto (puntúa un vocabulario cerrado).
+- `tasks/understanding.py` + `ui/understanding_widget.py` añaden la pestaña
+  **Comprensión**: muestrea fotogramas del vídeo (uno cada N segundos **en el
+  centro** de cada intervalo, con tope de fotogramas — «cada N ms» es inviable),
+  los pasa por los motores de percepción, extrae el audio y lo transcribe con
+  Whisper, resume el conjunto con Ollama y monta el informe. El plan y el
+  formato viven en `services/video_understanding.py` (puro) y el ejecutor es
+  `UnderstandingWorker`, igual que Documentos. Si falta un motor, el informe lo
+  **avisa** en vez de rellenar el hueco inventando.
+
+## 9. Coordinación de GPU y orquestación
+
+Dos piezas resuelven, respectivamente, «quién usa la GPU» y «qué tarea responde
+a este mensaje»:
+
+- **Prioridades de GPU.** `perception` (OCR de una página, un fotograma),
+  `interactive` (lo que el usuario acaba de pedir: chat, resumen) y `batch`
+  (imagen, vídeo, comprensión completa). Un trabajo de lote **cede** si la GPU
+  está ocupada (`defer_batch_above_util`, `defer_batch_below_free_mb`) o si no
+  queda VRAM para su estimación más una reserva (`vram_headroom_mb`).
+- **Motores `.plan` (TensorRT): posible, pero solo en los motores nuevos.** Los
+  `*.plan`/`.engine` no gobiernan Ollama ni ComfyUI: son runtimes externos
+  (llama.cpp/CUDA y PyTorch/CUDA). Un motor compilado solo se puede usar donde
+  hay una inferencia propia que lo cargue; en esta arquitectura eso es `yolo`
+  (Ultralytics acepta la ruta del motor) y, opcionalmente, `clip`/`paddle_ocr`.
+  Ollama y ComfyUI siguen por HTTP, y el planificador se limita a decidir *si*
+  se les lanza trabajo.
+- **Orquestación del chat.** El chat no abre pestañas ni conoce widgets: emite
+  una intención (`routed`) y `MainWindow` decide (hoy pregunta al usuario). El
+  punto de extensión para una ejecución automática futura es
+  `services/task_orchestrator.py`, no el widget de chat.

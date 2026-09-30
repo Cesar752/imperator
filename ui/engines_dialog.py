@@ -54,6 +54,9 @@ _TYPE_TEMPLATES: dict[str, dict] = {
     "kokoro_tts": {"default_voice": "ef_dora"},
     "whisper": {"model": "small", "device": "cpu", "compute_type": "int8"},
     "musicgen": {"model": "small", "duration": 8},
+    "yolo": {"model": "yolov8n.pt", "confidence": 0.25},
+    "clip": {"model": "openai/clip-vit-base-patch32", "top_k": 4},
+    "paddle_ocr": {"lang": "latin", "use_gpu": False},
 }
 
 # URL (ruta) por defecto al añadir un motor de cada tipo.
@@ -67,6 +70,9 @@ _TYPE_URLS: dict[str, str] = {
     "kokoro_tts": "local",
     "whisper": "local",
     "musicgen": "local",
+    "yolo": "local",
+    "clip": "local",
+    "paddle_ocr": "local",
 }
 
 

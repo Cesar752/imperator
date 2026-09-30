@@ -20,8 +20,24 @@ from core.config_manager import ConfigManager  # noqa: E402
 from tasks.base_task import Task  # noqa: E402
 
 # Orden de registro esperado (una pestaña por tarea).
-IDS_ESPERADOS = ["chat", "document", "image", "video", "audio", "assembler"]
-NOMBRES_ESPERADOS = ["Chat", "Documentos", "Imagen", "Vídeo", "Audio", "Ensamblador"]
+IDS_ESPERADOS = [
+    "chat",
+    "document",
+    "image",
+    "video",
+    "understanding",
+    "audio",
+    "assembler",
+]
+NOMBRES_ESPERADOS = [
+    "Chat",
+    "Documentos",
+    "Imagen",
+    "Vídeo",
+    "Comprensión",
+    "Audio",
+    "Ensamblador",
+]
 
 
 class _StubEngineManager:

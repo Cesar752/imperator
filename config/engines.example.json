@@ -97,5 +97,35 @@
       "model": "small",
       "duration": 8
     }
+  },
+  {
+    "id": "yolo",
+    "nombre": "YOLO (detección)",
+    "ruta": "local",
+    "enabled": false,
+    "parametros": {
+      "model": "yolov8n.pt",
+      "confidence": 0.25
+    }
+  },
+  {
+    "id": "clip",
+    "nombre": "CLIP (etiquetado)",
+    "ruta": "local",
+    "enabled": false,
+    "parametros": {
+      "model": "openai/clip-vit-base-patch32",
+      "top_k": 4
+    }
+  },
+  {
+    "id": "paddle_ocr",
+    "nombre": "OCR local (PaddleOCR)",
+    "ruta": "local",
+    "enabled": false,
+    "parametros": {
+      "lang": "latin",
+      "use_gpu": false
+    }
   }
 ]

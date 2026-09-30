@@ -6,12 +6,14 @@ from dataclasses import dataclass
 
 from core.api_manager import ApiManager
 from core.engine_manager import EngineManager
+from services.task_orchestrator import TaskOrchestrator
 from tasks.base_task import Task
 from tasks.assembler import AssemblerTask
 from tasks.chat import ChatTask
 from tasks.document import DocumentTask
 from tasks.audio import AudioTask
 from tasks.image import ImageTask
+from tasks.understanding import UnderstandingTask
 from tasks.video import VideoTask
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,10 @@ class TaskDeps:
 
     engine_manager: EngineManager
     api_manager: ApiManager
+    #: Orquestador que permite al chat desviar un mensaje a otra tarea. Es
+    #: opcional (valor por defecto ``None``) para no romper a quien construya
+    #: ``TaskDeps`` a mano en tests o en usos mínimos.
+    orchestrator: TaskOrchestrator | None = None
 
 
 # Una factory recibe las dependencias ya resueltas y devuelve la tarea.
@@ -48,15 +54,21 @@ def _engine_only(task_cls: type[Task]) -> TaskFactory:
     return factory
 
 
+def _chat_factory(deps: TaskDeps) -> Task:
+    """El chat además recibe el orquestador (para desviar mensajes a otras tareas)."""
+    return ChatTask(deps.engine_manager, deps.orchestrator)
+
+
 # Mapa id de tarea -> factory. Registro explícito: añadir aquí cada nueva
 # tarea (image, video, audio, docs) sin tocar el núcleo. Cada factory decide
 # qué dependencias de TaskDeps inyectar: ``_engine_only`` para las que solo
 # necesitan el motor; una factory propia para las que pidan algo más.
 TASK_FACTORY: dict[str, TaskFactory] = {
-    "chat": _engine_only(ChatTask),
+    "chat": _chat_factory,
     "document": _engine_only(DocumentTask),
     "image": _engine_only(ImageTask),
     "video": _engine_only(VideoTask),
+    "understanding": _engine_only(UnderstandingTask),
     "audio": _engine_only(AudioTask),
     "assembler": _engine_only(AssemblerTask),
 }
@@ -85,11 +97,16 @@ class TaskManager:
             if api_manager is not None
             else ApiManager(engine_manager.config_manager)
         )
+        self._tasks: dict[str, Task] = {}
+        # El orquestador consulta las tareas registradas de forma diferida (una
+        # lambda sobre ``self._tasks``), así que se puede crear antes del
+        # registro sin ciclo TaskManager -> orchestrator -> TaskManager.
+        self._orchestrator = TaskOrchestrator(available=lambda: tuple(self._tasks))
         self._deps = TaskDeps(
             engine_manager=self._engine_manager,
             api_manager=self._api_manager,
+            orchestrator=self._orchestrator,
         )
-        self._tasks: dict[str, Task] = {}
         self._register_all()
 
     # ---- Registro ------------------------------------------------
@@ -104,6 +121,11 @@ class TaskManager:
     def api_manager(self) -> ApiManager:
         """ApiManager compartido con las tareas que necesiten consultarlo."""
         return self._api_manager
+
+    @property
+    def orchestrator(self) -> TaskOrchestrator:
+        """Orquestador de intenciones (lo usan el chat y la ventana principal)."""
+        return self._orchestrator
 
     def list_tasks(self) -> list[Task]:
         """Tareas registradas, en orden de registro."""

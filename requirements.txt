@@ -19,4 +19,13 @@ numpy>=1.26.0,<3
 # Con audiocraft instalado, el motor "musicgen" aparece disponible en Motores;
 # sin él la app arranca igual y el motor simplemente se marca como no disponible.
 
+# Motores de percepción estructurada (opcionales; ver engines/perception.py).
+# Se activan en Motores (config/engines.json) cuando estén instalados. Para el
+# OCR local se recomienda el runner de ONNX/TensorRT de PaddleOCR si hay GPU.
+# ultralytics>=8.3.0      # yolo: detección de objetos (acepta .pt y .engine/.plan)
+# transformers>=4.40,<5  # clip: etiquetado zero-shot (arrastra torch)
+# torch>=2.2             # requerido por transformers para CLIP
+# paddleocr>=2.7         # paddle_ocr: OCR local (DBNet+CRNN)
+# paddlepaddle-gpu>=2.6  # backend GPU/CPU de PaddleOCR
+
 # Pillow>=10.0  # solo para regenerar assets/icono.ico con tools/make_icon.py (no runtime)

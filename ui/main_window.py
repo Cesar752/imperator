@@ -16,10 +16,12 @@ from PyQt6.QtWidgets import (
 
 from core.api_manager import ApiManager
 from core.engine_manager import EngineManager
+from core.gpu_scheduler import GpuScheduler
 from core.paths import ASSETS
 from core.task_manager import TaskManager
 from ui.engines_dialog import EnginesDialog
 from ui.theme import apply_theme
+from ui.workers import run_pool_task
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,12 @@ class MainWindow(QMainWindow):
         # leer config/apis.json (y una tarea que lo necesite lo recibirá vía
         # TaskDeps).
         self._task_manager = TaskManager(self._engine_manager, self._api_manager)
+        # Planificador de GPU: decide si un trabajo pesado puede empezar ahora
+        # (prioridades + VRAM libre medida con nvidia-smi). Sustituye a ojo por
+        # datos; las tareas lo consultan vía ``MainWindow.gpu_scheduler``.
+        self._gpu_scheduler = GpuScheduler.from_settings(
+            self._engine_manager.config_manager.load_settings()
+        )
         # Índice de pestaña -> motor cuyo modelo se descarga al abandonarla. Se
         # deriva del registro de tareas (Task.engine_id) para no duplicar aquí
         # el orden de las pestañas (única fuente de verdad: TASK_FACTORY).
@@ -92,10 +100,63 @@ class MainWindow(QMainWindow):
 
     def _apply_window_icon(self) -> None:
         icon_path = ASSETS / "icono.ico"
-        if icon_path.exists():
-            self.setWindowIcon(QIcon(str(icon_path)))
-        else:
+        if not icon_path.exists():
             logger.warning("Falta el icono: %s", icon_path)
+            return
+        icon = QIcon(str(icon_path))
+        # Si el .ico no trae imágenes usables, la barra de tareas de Windows lo
+        # muestra en blanco (ver tools/make_icon.py).
+        if icon.isNull() or not icon.availableSizes():
+            logger.warning("El icono no tiene imágenes utilizables: %s", icon_path)
+        self.setWindowIcon(icon)
+        # Forzar el icono en el HWND nativo ANTES de mostrar la ventana (Qt 6 a
+        # veces no propaga setWindowIcon y la barra de tareas usa el del exe).
+        self._force_native_icon(str(icon_path))
+
+    def _force_native_icon(self, icon_path: str) -> None:
+        """Fija el icono en el HWND nativo vía WM_SETICON (Win32), antes de mostrar."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.windll.user32
+            user32.LoadImageW.argtypes = [
+                wintypes.HINSTANCE,
+                wintypes.LPCWSTR,
+                wintypes.UINT,
+                ctypes.c_int,
+                ctypes.c_int,
+                wintypes.UINT,
+            ]
+            user32.LoadImageW.restype = wintypes.HANDLE
+            user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+            user32.GetSystemMetrics.restype = ctypes.c_int
+            user32.SendMessageW.argtypes = [
+                wintypes.HWND,
+                wintypes.UINT,
+                wintypes.WPARAM,
+                wintypes.LPARAM,
+            ]
+            user32.SendMessageW.restype = wintypes.LPARAM
+
+            IMAGE_ICON = 1
+            LR_LOADFROMFILE = 0x00000010
+            SM_CXICON = 11
+            SM_CXSMALLICON = 49
+            ICON_SMALL = 0
+            ICON_BIG = 1
+            WM_SETICON = 0x0080
+
+            hwnd = int(self.winId())
+            for flag, metric in ((ICON_BIG, SM_CXICON), (ICON_SMALL, SM_CXSMALLICON)):
+                size = user32.GetSystemMetrics(metric)
+                hicon = user32.LoadImageW(
+                    None, icon_path, IMAGE_ICON, size, size, LR_LOADFROMFILE
+                )
+                if hicon:
+                    user32.SendMessageW(hwnd, WM_SETICON, flag, hicon)
+        except Exception as exc:  # noqa: BLE001 - el icono no debe romper el arranque
+            logger.warning("No se pudo fijar el icono nativo: %s", exc)
 
     def _build_menu(self) -> None:
         menubar = self.menuBar()
@@ -123,6 +184,9 @@ class MainWindow(QMainWindow):
         free_action = engines_menu.addAction("Liberar VRAM ahora")
         free_action.triggered.connect(self._free_all_vram)
 
+        gpu_action = engines_menu.addAction("Estado de la GPU…")
+        gpu_action.triggered.connect(self._show_gpu_status)
+
         view_menu = menubar.addMenu("&Ver")
         self._dark_theme_toggle = view_menu.addAction("Modo oscuro")
         self._dark_theme_toggle.setCheckable(True)
@@ -147,8 +211,17 @@ class MainWindow(QMainWindow):
     def _build_central_widget(self) -> None:
         tabs = QTabWidget()
         tabs.currentChanged.connect(self._on_tab_changed)
+        # Se recuerda el widget y el índice de cada tarea por su id: el chat
+        # necesita saber a qué pestaña desviar un mensaje sin duplicar el orden
+        # del registro (TASK_FACTORY sigue siendo la única fuente de verdad).
+        self._task_widgets: dict[str, QWidget] = {}
+        self._task_tabs: dict[str, int] = {}
         for task in self._task_manager.list_tasks():
-            tabs.addTab(task.build_widget(parent=tabs), task.nombre)
+            widget = task.build_widget(parent=tabs)
+            self._task_widgets[task.id] = widget
+            self._task_tabs[task.id] = tabs.addTab(widget, task.nombre)
+        self._tabs = tabs
+        self._connect_chat_router()
 
         header = self._build_header()
         if header is None:
@@ -220,6 +293,36 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Ollama: desconectado")
         else:
             self.statusBar().showMessage("Ollama: conectado")
+
+    # ---- Router de intención (chat -> otras tareas) ---------------
+
+    def _connect_chat_router(self) -> None:
+        """Conecta la señal ``routed`` del chat con esta ventana.
+
+        El chat solo sabe que un mensaje apunta a otra tarea; abrir la pestaña es
+        responsabilidad de la ventana. Se usa ``getattr`` para no acoplar el
+        widget de chat a este mecanismo (si no expone la señal, no pasa nada).
+        """
+        chat = self._task_widgets.get("chat")
+        signal = getattr(chat, "routed", None)
+        if signal is not None:
+            signal.connect(self._on_chat_routed)
+
+    def _on_chat_routed(self, dispatch) -> None:
+        """Ofrece abrir la pestaña a la que apunta un mensaje del chat."""
+        index = self._task_tabs.get(getattr(dispatch, "task_id", ""))
+        if index is None or index == self._tabs.currentIndex():
+            return
+        answer = QMessageBox.question(
+            self,
+            "Abrir otra tarea",
+            f"{dispatch.suggestion()}\n\n"
+            f"¿Abrir la pestaña «{self._tabs.tabText(index)}»?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._tabs.setCurrentIndex(index)
 
     # ---- Liberación de VRAM --------------------------------------
 
@@ -317,6 +420,26 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             "VRAM liberada" if freed else "No se pudo liberar VRAM"
         )
+
+    # ---- Estado de la GPU ----------------------------------------
+
+    @property
+    def gpu_scheduler(self) -> GpuScheduler:
+        """Planificador de GPU compartido (lo consultan las tareas pesadas)."""
+        return self._gpu_scheduler
+
+    def _show_gpu_status(self) -> None:
+        """Muestra el estado de la GPU y los trabajos en curso.
+
+        El sondeo (``nvidia-smi``) se lanza en el pool y el diálogo se abre desde
+        ``_on_gpu_status``, que es un método de este ``QObject``: Qt entrega la
+        señal en el hilo de la UI. Así no se bloquea la ventana esperando al
+        subproceso.
+        """
+        run_pool_task(self._gpu_scheduler.describe, on_result=self._on_gpu_status)
+
+    def _on_gpu_status(self, texto: str) -> None:
+        QMessageBox.information(self, "Estado de la GPU", texto)
 
     def _show_about(self) -> None:
         QMessageBox.about(

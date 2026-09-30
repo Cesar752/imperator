@@ -2,7 +2,7 @@
 
 import logging
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -46,12 +46,30 @@ class ChatWorker(ThreadWorker):
 
 
 class ChatWidget(TaskWidget):
-    """Área de conversación, indicador de actividad, input y botón Enviar."""
+    """Área de conversación, indicador de actividad, input y botón Enviar.
 
-    def __init__(self, engine: ChatEngine, config_manager=None, parent=None) -> None:
+    Señales:
+    - ``routed(object)``: el orquestador ha detectado que el mensaje apunta a
+      otra tarea (documentos, imagen, vídeo…). El widget no abre pestañas: eso es
+      cosa de la ventana principal, que conecta esta señal.
+    """
+
+    #: Emite el ``Dispatch`` de ``services.task_orchestrator`` cuando el mensaje
+    #: corresponde a otra tarea. Se declara aquí (y no en la base) porque el chat
+    #: es el único que enruta.
+    routed = pyqtSignal(object)
+
+    def __init__(
+        self,
+        engine: ChatEngine,
+        config_manager=None,
+        parent=None,
+        orchestrator=None,
+    ) -> None:
         super().__init__(parent)
         self._engine: ChatEngine | None = engine
         self._config_manager = config_manager
+        self._orchestrator = orchestrator
         self._prefs = prefs.PrefsStore(config_manager)
         # Historial completo (lo que ve el usuario). Al motor solo se le envía
         # una ventana reciente: ver services.chat_params.MAX_HISTORY_MESSAGES.
@@ -219,6 +237,25 @@ class ChatWidget(TaskWidget):
         self._worker.failed.connect(self._on_error)
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
+        # El orquestador decide si el mensaje apunta a otra tarea. Se emite con
+        # la petición ya lanzada: el diálogo que abra la ventana principal usa un
+        # bucle de eventos propio y la respuesta sigue llegando mientras tanto.
+        self._maybe_route(text)
+
+    def _maybe_route(self, text: str) -> None:
+        """Emite ``routed`` si el orquestador ve en ``text`` otra tarea."""
+        if self._orchestrator is None:
+            return
+        dispatch = self._orchestrator.dispatch(text)
+        if dispatch is None:
+            return
+        logger.debug(
+            "Chat: mensaje desviado a '%s' (%s, confianza %.2f)",
+            dispatch.task_id,
+            dispatch.action or "abrir",
+            dispatch.confidence,
+        )
+        self.routed.emit(dispatch)
 
     def _on_reply(self, reply: str) -> None:
         reply = (reply or "").strip()

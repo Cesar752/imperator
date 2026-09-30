@@ -261,8 +261,16 @@ class DocumentWorkerParallelTest(_QtTestCase):
     def _run(self, pages, parallel):
         engine = _EchoConcurrentEngine()
         doc = _FakeDoc(pages)
+        # Alcance por página a propósito: este test mide el procesado por lotes,
+        # y con el alcance «automático» un documento de 6 páginas se resumiría
+        # de una vez (otro camino, con otro número de llamadas).
         worker = dw.DocumentWorker(
-            engine, self.pdf, "resumen", "modelo-x", parallel=parallel
+            engine,
+            self.pdf,
+            "resumen",
+            "modelo-x",
+            parallel=parallel,
+            scope=dp.SCOPE_PAGES,
         )
         with mock.patch.object(dw, "pymupdf", _FakePymupdf(doc)):
             result = worker.work()
@@ -303,7 +311,7 @@ class DocumentWorkerParallelTest(_QtTestCase):
         engine = _EchoConcurrentEngine()
         doc = _FakeDoc(self._paginas(6))
         worker = _CancelaEnElTercerChequeo(
-            engine, self.pdf, "resumen", "m", parallel=2
+            engine, self.pdf, "resumen", "m", parallel=2, scope=dp.SCOPE_PAGES
         )
         with mock.patch.object(dw, "pymupdf", _FakePymupdf(doc)):
             with self.assertRaises(EngineError) as ctx:
