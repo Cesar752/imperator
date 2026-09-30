@@ -476,8 +476,10 @@ class VideoWidget(TaskWidget):
         self._mode.blockSignals(False)
         # Sincronizar la visibilidad de la sección de imagen con el modo restaurado.
         self._update_image_section()
-        # Restaurar la última imagen usada.
-        if saved.last_image:
+        # Restaurar la última imagen usada. Se comprueba que siga existiendo: la
+        # retención de output/ (services/output_cleanup) puede haberla borrado y
+        # restaurarla a ciegas dejaba en la lista una foto inexistente.
+        if saved.last_image and Path(saved.last_image).is_file():
             self._add_photos([saved.last_image])
 
     def _on_mode_changed(self) -> None:
