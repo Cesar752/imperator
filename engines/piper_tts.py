@@ -2,6 +2,7 @@
 
 import logging
 import re
+import threading
 import wave
 from datetime import datetime
 from pathlib import Path
@@ -38,8 +39,12 @@ class PiperTTSEngine(AudioEngine):
             Path(output_dir) if output_dir is not None else PROJECT_ROOT / "output"
         )
         # Cache de voces ya cargadas (clave: nombre de voz) para no recargar
-        # el .onnx en cada síntesis.
+        # el .onnx en cada síntesis. El motor es una instancia única que comparten
+        # los workers (QThread), así que el cache va bajo lock: sin él, dos
+        # síntesis concurrentes podían cargar el mismo ONNX a la vez (auditoría
+        # del 30/09/2026).
         self._loaded: dict[str, PiperVoice] = {}
+        self._lock = threading.Lock()
 
     @staticmethod
     def _resolve(path) -> Path:
@@ -92,6 +97,14 @@ class PiperTTSEngine(AudioEngine):
         if voice_name is None:
             raise EngineError("No hay voces disponibles en voices/.")
 
+        # El nombre llega de la UI (o de ``settings.json``) y se usa para construir
+        # una ruta: se exige que sea una voz **listada** en voices/ para que un
+        # valor editado a mano (p. ej. "../algo") no saque la lectura del directorio.
+        if voice_name not in self.list_voices():
+            raise EngineError(
+                f"Piper TTS: la voz no existe en {self._voices_dir}: {voice_name!r}"
+            )
+
         model_path = self._voices_dir / f"{voice_name}.onnx"
         if not model_path.exists():
             raise EngineError(f"Piper TTS: la voz no existe: {model_path}")
@@ -119,18 +132,20 @@ class PiperTTSEngine(AudioEngine):
         return self._output_dir / filename
 
     def _get_voice(self, voice_name: str, model_path: Path) -> PiperVoice:
-        cached = self._loaded.get(voice_name)
-        if cached is not None:
-            return cached
-        logger.info("Piper TTS: cargando voz '%s'...", voice_name)
-        try:
-            piper_voice = PiperVoice.load(model_path)
-        except Exception as exc:  # noqa: BLE001
-            raise EngineError(
-                f"Piper TTS: no se pudo cargar la voz '{voice_name}': {exc}"
-            ) from exc
-        self._loaded[voice_name] = piper_voice
-        return piper_voice
+        """Devuelve la voz del cache o la carga (bajo lock)."""
+        with self._lock:
+            cached = self._loaded.get(voice_name)
+            if cached is not None:
+                return cached
+            logger.info("Piper TTS: cargando voz '%s'...", voice_name)
+            try:
+                piper_voice = PiperVoice.load(model_path)
+            except Exception as exc:  # noqa: BLE001
+                raise EngineError(
+                    f"Piper TTS: no se pudo cargar la voz '{voice_name}': {exc}"
+                ) from exc
+            self._loaded[voice_name] = piper_voice
+            return piper_voice
 
     @staticmethod
     def _write_wav(piper_voice, text: str, syn_config, output_path: Path) -> None:

@@ -6,6 +6,7 @@ cuesta ~2 s por petición (medido en la auditoría: 2 040 ms frente a 15 ms).
 """
 
 import logging
+import threading
 
 import requests
 
@@ -52,7 +53,12 @@ class OllamaEngine(ChatEngine):
         self._default_model = default_model
         self._num_ctx = int(num_ctx)
         self._num_predict = int(num_predict)
+        #: Último modelo usado (lo lee ``unload_model``). El motor es una instancia
+        #: única compartida entre workers y el hilo de UI, así que el campo va bajo
+        #: lock: *Liberar VRAM ahora* puede leerlo mientras un chat lo escribe
+        #: (auditoría del 30/09/2026).
         self._last_used_model: str | None = None
+        self._lock = threading.Lock()
         self._short_timeout = 2.0   # para /api/tags
         self._chat_timeout = 120.0  # para /api/chat
 
@@ -103,7 +109,8 @@ class OllamaEngine(ChatEngine):
 
     def chat(self, messages: list[dict], model: str | None = None) -> str:
         model = model or self._default_model
-        self._last_used_model = model
+        with self._lock:
+            self._last_used_model = model
         logger.debug("Ollama chat: %d mensajes con '%s'", len(messages), model)
         payload = {
             "model": model,
@@ -181,7 +188,8 @@ class OllamaEngine(ChatEngine):
         acto seguido (era lo que aparecía en el log al cambiar de pestaña:
         "descargado de VRAM" de un modelo que nunca se había usado).
         """
-        model = self._last_used_model or self._default_model
+        with self._lock:
+            model = self._last_used_model or self._default_model
         if not model:
             return True
         if not is_loaded(self._base_url, model, self._short_timeout):
