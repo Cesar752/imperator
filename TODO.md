@@ -47,9 +47,18 @@ el `output/` actual (180 ficheros, 11 días, 110,9 MB), y sólo mira extensiones
 la app (`.png .jpg .jpeg .webp .mp4 .wav .mp3 .srt`): lo que no sea un producto de
 Imperator se respeta. Configurable en `settings.json` → `output_limpieza`.
 
+**Arranque arreglado (30/09/2026):** los imports de `kokoro` (9,53 s, arrastra
+torch+transformers) y `perception` (8,72 s, torch+transformers) son **perezosos**,
+y `is_available()` se resuelve con `find_spec`. Medido: `import ui.main_window`
+pasó de **9,85 s a 0,46 s**, el total hasta la ventana de **~11,9 s a ~0,54 s** y
+la RAM en reposo de 618 MB a 193 MB (torch/transformers ya no se cargan al
+arrancar). Guardado con `tests/test_startup_imports.py`, que importa la app en un
+subproceso limpio y falla si vuelve a cargar torch. La primera síntesis con Kokoro
+de cada sesión paga su import (~10 s), que antes pagaban todas las sesiones.
+
 **Deudas que quedan anotadas:** `pyright`/`ruff` y `constraints.txt` en el CI, y
-el arranque de ~12 s (9,8 s son imports de motores pesados: candidato a carga
-diferida por pestaña).
+medir el resumen global con un documento real de muchas páginas (sólo se probó el
+modo por página con 2 páginas).
 
 **Cómo medir sin engañarse:** el `thinking` del modelo hace que el tiempo varíe
 muchísimo entre ejecuciones — las **mismas** 3 páginas en serie tardaron 106 s en

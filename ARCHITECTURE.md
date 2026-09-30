@@ -448,6 +448,18 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   sueltos de ComfyUI/BFL se traducen a `EngineError`; las descargas de resultados
   tienen tope (`base_engine.MAX_DOWNLOAD_BYTES`, 512 MiB) y `ConfigManager`
   serializa las escrituras (lock + temporal único + `update_settings`).
+- **El arranque ya no paga los motores que no se usan.** `kokoro` (9,53 s: arrastra
+  `transformers` + `torch`) y `perception` (8,72 s: `torch` + `transformers`) se
+  importan **al usar el motor**, y su `is_available()` se resuelve con
+  `importlib.util.find_spec` (~0 ms). Medido: `import ui.main_window` pasó de
+  **9,85 s a 0,46 s**, el total hasta tener la ventana de **~11,9 s a ~0,54 s** y
+  la RAM en reposo de 618 MB a 193 MB (torch/transformers ya no se cargan).
+  El precio es explícito: la **primera** síntesis con Kokoro de cada sesión paga
+  su import (~10 s), que antes pagaba todo el mundo al arrancar.
+- **Retención de salidas.** `services/output_cleanup.py` limita `output/` (500
+  ficheros, 90 días, 8 GB y 24 h de gracia; configurable en `settings.json` →
+  `output_limpieza`) y se aplica al arrancar en el pool. Sólo mira extensiones que
+  escribe la app, así que lo que no sea un producto de Imperator se respeta.
 - `services/intent_router.py` es el router de intención del chat: reglas léxicas
   deterministas (es/eu/en, sin LLM) que deciden a qué tarea apunta un mensaje.
   Exige **señal compuesta** (umbral 2.5): «pdf» a secas no enruta, «resume este

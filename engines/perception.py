@@ -6,9 +6,12 @@ sobre el VLM de Ollama: datos que se pueden agregar sin volver a interpretarlos.
 
 Convenciones (las mismas que ``musicgen``):
 
-- **Dependencia pesada opcional.** ``ultralytics``, ``transformers``+``torch`` y
-  ``paddleocr`` van con el import protegido: sin ellos la app arranca igual y el
-  motor se marca como no disponible (``is_available()`` devuelve ``False``).
+- **Dependencia pesada, opcional y perezosa.** ``ultralytics``,
+  ``transformers``+``torch`` y ``paddleocr`` se importan **solo al usar el
+  motor**, después de comprobar con ``importlib.util.find_spec`` que están
+  instalados: sin ellos la app arranca igual y el motor se marca como no
+  disponible (``is_available()`` devuelve ``False``). Importarlos al cargar el
+  módulo costaba **8,72 s** de arranque (auditoría del 30/09/2026).
 - **Modelo cacheado.** Se carga en la primera llamada y se reutiliza.
 - **Runner inyectable.** El cálculo se puede sustituir por un doble en tests sin
   instalar las dependencias pesadas (mismo patrón que ``GpuProbe``).
@@ -26,30 +29,51 @@ cerrado y configurable, no como descripción libre.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 from pathlib import Path
-
-try:  # noqa: SIM105 - cadena de imports pesada (torch/opencv)
-    from ultralytics import YOLO
-except Exception:  # noqa: BLE001 - sin ultralytics el motor no está disponible
-    YOLO = None
-
-try:
-    import torch
-    from transformers import CLIPModel, CLIPProcessor
-except Exception:  # noqa: BLE001 - transformers/torch pueden fallar al cargar
-    torch = None
-    CLIPModel = None
-    CLIPProcessor = None
-
-try:
-    from paddleocr import PaddleOCR
-except Exception:  # noqa: BLE001 - paddleocr es opcional y pesado
-    PaddleOCR = None
 
 from engines.base_engine import EngineError, Perception, PerceptionEngine
 
 logger = logging.getLogger(__name__)
+
+
+def _instalado(*modulos: str) -> bool:
+    """¿Están instalados esos módulos? Sin importarlos (``find_spec`` es ~0 ms).
+
+    Antes se importaban al cargar el módulo y ``torch`` + ``transformers``
+    costaban **8,72 s** de arranque (medidos), para motores que además vienen
+    deshabilitados por defecto.
+    """
+    for modulo in modulos:
+        try:
+            if importlib.util.find_spec(modulo) is None:
+                return False
+        except (ImportError, ValueError):
+            return False
+    return True
+
+
+def _cargar_yolo():
+    """Importa ``ultralytics`` la primera vez que se usa YOLO."""
+    from ultralytics import YOLO  # noqa: PLC0415 - import perezoso a propósito
+
+    return YOLO
+
+
+def _cargar_clip():
+    """Importa ``torch`` + ``transformers`` la primera vez que se usa CLIP."""
+    import torch  # noqa: PLC0415 - import perezoso a propósito
+    from transformers import CLIPModel, CLIPProcessor  # noqa: PLC0415
+
+    return torch, CLIPModel, CLIPProcessor
+
+
+def _cargar_paddle():
+    """Importa ``paddleocr`` la primera vez que se usa el OCR local."""
+    from paddleocr import PaddleOCR  # noqa: PLC0415 - import perezoso a propósito
+
+    return PaddleOCR
 
 #: Tamaños publicados de YOLO (Ultralytics). Se acepta también una ruta a un
 #: motor ya exportado (``.engine``/``.plan``).
@@ -110,7 +134,7 @@ class YoloEngine(PerceptionEngine):
         return "YOLO (detección)"
 
     def is_available(self) -> bool:
-        return YOLO is not None or self._model is not None
+        return self._model is not None or _instalado("ultralytics")
 
     def list_models(self) -> list[str]:
         return list(YOLO_MODELS)
@@ -133,12 +157,12 @@ class YoloEngine(PerceptionEngine):
     def _get_model(self):
         if self._model is not None:
             return self._model
-        if YOLO is None:
+        if not _instalado("ultralytics"):
             raise EngineError(
                 "ultralytics no está instalado. Instálalo con: pip install ultralytics"
             )
         try:
-            self._model = YOLO(self._model_path)
+            self._model = _cargar_yolo()(self._model_path)
         except Exception as exc:  # noqa: BLE001 - descarga/carga del peso
             raise EngineError(
                 f"YOLO: no se pudo cargar '{self._model_path}': {exc}"
@@ -186,7 +210,7 @@ class ClipEngine(PerceptionEngine):
         return "CLIP (etiquetado)"
 
     def is_available(self) -> bool:
-        return self._runner is not None or (torch is not None and CLIPModel is not None)
+        return self._runner is not None or _instalado("torch", "transformers")
 
     def list_models(self) -> list[str]:
         return ["openai/clip-vit-base-patch32", "openai/clip-vit-large-patch14"]
@@ -231,6 +255,7 @@ class ClipEngine(PerceptionEngine):
 
     def _run_clip(self, path: Path, labels: tuple[str, ...]) -> list[float]:
         model, processor = self._get_model()
+        torch, _CLIPModel, _CLIPProcessor = _cargar_clip()
         try:
             inputs = processor(
                 text=list(labels), images=str(path), return_tensors="pt", padding=True
@@ -247,12 +272,13 @@ class ClipEngine(PerceptionEngine):
     def _get_model(self):
         if self._model is not None and self._processor is not None:
             return self._model, self._processor
-        if torch is None or CLIPModel is None or CLIPProcessor is None:
+        if not _instalado("torch", "transformers"):
             raise EngineError(
                 "transformers/torch no están instalados. Instálalos con: "
                 "pip install transformers torch pillow"
             )
         try:
+            _torch, CLIPModel, CLIPProcessor = _cargar_clip()
             self._model = CLIPModel.from_pretrained(self._model_name)
             self._processor = CLIPProcessor.from_pretrained(self._model_name)
         except Exception as exc:  # noqa: BLE001 - descarga/carga del modelo
@@ -284,7 +310,7 @@ class PaddleOcrEngine(PerceptionEngine):
         return "OCR local (PaddleOCR)"
 
     def is_available(self) -> bool:
-        return PaddleOCR is not None or self._ocr is not None
+        return self._ocr is not None or _instalado("paddleocr")
 
     def list_models(self) -> list[str]:
         return list(OCR_LANGS)
@@ -309,12 +335,12 @@ class PaddleOcrEngine(PerceptionEngine):
     def _get_ocr(self):
         if self._ocr is not None:
             return self._ocr
-        if PaddleOCR is None:
+        if not _instalado("paddleocr"):
             raise EngineError(
                 "paddleocr no está instalado. Instálalo con: pip install paddleocr"
             )
         try:
-            self._ocr = PaddleOCR(lang=self._lang, use_angle_cls=True)
+            self._ocr = _cargar_paddle()(lang=self._lang, use_angle_cls=True)
         except Exception as exc:  # noqa: BLE001 - variantes de la API
             raise EngineError(f"OCR local: no se pudo inicializar: {exc}") from exc
         return self._ocr

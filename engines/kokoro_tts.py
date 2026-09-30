@@ -1,20 +1,35 @@
-"""Motor local Kokoro TTS (texto a voz con voces en español, en CPU)."""
+"""Motor local Kokoro TTS (texto a voz con voces en español, en CPU).
 
+``kokoro`` se importa **bajo demanda**, no al cargar el módulo: arrastra
+``torch`` + ``transformers`` y medía **9,53 s** de los 9,85 s que tardaba en
+importarse ``ui.main_window`` (auditoría del 30/09/2026). Para saber si el motor
+está disponible basta con ``importlib.util.find_spec`` (~0 ms).
+"""
+
+import importlib.util
 import logging
 import wave
 from datetime import datetime
 from pathlib import Path
 
-try:
-    import kokoro  # noqa: F401
-    from kokoro import KPipeline
-except Exception:  # noqa: BLE001 - cadena de imports (torch/misaki/espeak)
-    kokoro = None  # noqa: F811
-    KPipeline = None
-
 import numpy as np
 
 from engines.base_engine import AudioEngine, EngineError
+
+
+def _instalado(modulo: str) -> bool:
+    """¿Está instalado ``modulo``? Sin importarlo."""
+    try:
+        return importlib.util.find_spec(modulo) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _cargar_pipeline():
+    """Importa ``KPipeline`` la primera vez que se sintetiza (lo cachea Python)."""
+    from kokoro import KPipeline  # noqa: PLC0415 - import perezoso a propósito
+
+    return KPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +62,7 @@ class KokoroTTSEngine(AudioEngine):
         return "Kokoro TTS"
 
     def is_available(self) -> bool:
-        return KPipeline is not None
+        return _instalado("kokoro") and _instalado("torch")
 
     def list_models(self) -> list[str]:
         return self.list_voices()
@@ -63,7 +78,7 @@ class KokoroTTSEngine(AudioEngine):
         output_path: Path | None = None,
     ) -> Path:
         """Sintetiza ``text`` con la voz ``voice`` y devuelve el WAV generado."""
-        if KPipeline is None:
+        if not self.is_available():
             raise EngineError(
                 "kokoro no está instalado. Instálalo con: pip install kokoro soundfile"
             )
@@ -109,7 +124,8 @@ class KokoroTTSEngine(AudioEngine):
             return self._pipeline
         logger.info("Kokoro TTS: cargando modelo '%s'...", _REPO_ID)
         try:
-            self._pipeline = KPipeline(lang_code="e", repo_id=_REPO_ID)
+            # Aquí es donde se paga (una sola vez) el import de kokoro/torch.
+            self._pipeline = _cargar_pipeline()(lang_code="e", repo_id=_REPO_ID)
         except Exception as exc:  # noqa: BLE001
             raise EngineError(f"Kokoro TTS: no se pudo cargar el modelo: {exc}") from exc
         return self._pipeline

@@ -54,3 +54,7 @@ python -m unittest discover -s tests -v
   vienen deshabilitados: sin sus dependencias (`ultralytics`, `transformers` +
   `torch`, `paddleocr`) la app arranca igual y el motor aparece como no
   disponible. Se activan en *Motores → Gestionar motores…*.
+- Las librerías pesadas de los motores (torch/transformers/kokoro) se importan
+  **al usar el motor**, no al arrancar: la ventana queda lista en ~0,5 s en vez de
+  ~12 s. La primera vez que uses Kokoro en una sesión esa carga (~10 s) se paga
+  ahí, no en el arranque de todo el mundo.
