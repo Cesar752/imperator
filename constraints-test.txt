@@ -11,6 +11,11 @@
 #
 # Y se usan con:  pip install -r requirements-test.txt -c constraints-test.txt
 
+# Herramienta de lint del CI: la instala el paso "Lint (ruff)" con
+# `pip install ruff -c constraints-test.txt`, así que la versión vive aquí y no
+# duplicada en el workflow.
+ruff==0.16.9
+
 PyQt6==6.11.0
 PyQt6-Qt6==6.11.2
 PyQt6_sip==13.12.0

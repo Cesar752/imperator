@@ -25,6 +25,12 @@ config/*.json
 # Salidas generadas (imágenes, etc.)
 output/
 
+# Accesos directos de Windows: son binarios con rutas absolutas de la máquina
+# (pythonw.exe del venv, C:\Imperator\...), no son portables y cambian con cada
+# regeneración. El README explica cómo recrear Imperator.lnk con
+# tools/create_shortcut.py; lo versionado es Imperator.bat (texto, portable).
+*.lnk
+
 # Medios generados sueltos en la raiz (los de output/ ya estan ignorados)
 /*.mp4
 /*.png

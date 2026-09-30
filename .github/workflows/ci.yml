@@ -30,9 +30,10 @@ jobs:
       - name: Lint (ruff)
         # Reglas en ruff.toml: sintaxis, nombres/imports sin usar y except ciego.
         # Al principio del job para que un error de este tipo se vea antes que
-        # una suite de 620 tests.
+        # una suite de 631 tests. La versión de ruff no se fija aquí: vive en
+        # constraints-test.txt, para que el pin sea único.
         run: |
-          pip install ruff==0.16.9
+          pip install ruff -c constraints-test.txt
           python -m ruff check .
 
       - name: Compilar todo el árbol
