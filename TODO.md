@@ -105,13 +105,16 @@ configuraciones y mirar los segundos **por página**, no un total suelto.
 
 ## 1. Verificar ducking con MP3 reales (≈5 min)
 
-**Estado:** pendiente — falta material de prueba.
+**Estado:** pendiente — el material ya está puesto, falta la escucha de comprobación.
+(auditoría del 30/09/2026: `music/` ya no está vacío, tiene 3 MP3)
 
 - El ducking ya está implementado en `core/video_assembler.py` (`_audio_filter_complex`),
   usando `sidechaincompress=threshold=0.05:ratio=8:attack=10:release=250`:
   la voz (`[vsc]`) comprime la música para bajarla mientras hay locución.
 - La música de fondo se elige en `ui/assembler_widget.py` (carpeta `music/`, `MUSIC_DIR`).
-- **Bloqueo actual:** `music/` está vacío (0 archivos). Falta meter MP3 reales.
+- **Bloqueo anterior (resuelto):** `music/` estaba vacío (0 archivos). Hoy tiene
+  `Deep Forest - Freedom Cry.mp3`, `Qué soy yo para ti.mp3` y `Say it right.mp3`,
+  así que el pendiente es solo escuchar el resultado y decidir.
 
 **Al tener música en `music/`:**
 
@@ -859,3 +862,58 @@ implementó **solo la parte que era mejora real**. Suite: **573 tests en verde**
    para PaddleOCR: hoy se acepta la ruta del motor pero **no se compila nada**.
 3. Ejecución automática de la intención (hoy `MainWindow` pregunta): el punto de
    extensión es `services/task_orchestrator.py`.
+
+## 8. Sesión (2026-09-30, segunda): auditoría externa y cierre de hallazgos
+
+Auditoría independiente de todo el árbol (código, configuración, tests, git y
+seguridad); el informe completo está en `AUDITORIA-2026-09-30.md`. Se cerraron
+**todos los hallazgos de severidad media y baja**; el único alto (la clave real
+de BFL en `.env` en claro) queda en manos del autor, con la recomendación de
+rotarla si hubo cualquier duda de exposición y de verificar que la carpeta no
+está sincronizada en la nube.
+
+**Lo que se verificó (no solo se afirmó):** `ruff check .` limpio, `compileall`
+OK, árbol de git limpio, `.env` fuera del historial (`git log --all -- .env`
+vacío), **ningún** `shell=True`/`os.system`/`eval`/`exec`/`pickle`, **ninguna**
+llamada `requests` sin `timeout` y todas las descargas acotadas por
+`MAX_DOWNLOAD_BYTES`.
+
+**Correcciones aplicadas:**
+
+- **Lockfile de runtime.** `constraints.txt` (el `pip freeze` del venv de
+  referencia, 204 paquetes) y el README explica el
+  `pip install -r requirements.txt -c constraints.txt`. El agujero real: los
+  tests estaban congelados, pero `torch`/`onnxruntime`/`ctranslate2` (que
+  arrastran Kokoro, Piper y Whisper) no lo estaban.
+- **62 tests nuevos** (631 → 693) en los módulos que más efectos secundarios
+  tienen y menos red tenían: `piper_tts`, `kokoro_tts`, `whisper_engine`,
+  `frame_extractor`, el formulario de motores y las cinco pestañas sin test
+  propio (Vídeo, Imagen, Audio, Ensamblador, Comprensión). Todos con dobles: ni
+  motores, ni GPU, ni red, ni ffmpeg.
+- **Estado compartido entre hilos.** `PiperTTSEngine._loaded` y
+  `OllamaEngine._last_used_model` van bajo `threading.Lock`: son las dos únicas
+  piezas que escribían desde un worker y se leían desde otro hilo (la liberación
+  manual de VRAM lee el segundo).
+- **Saneado de entrada.** El nombre de voz de Piper se valida contra
+  `list_voices()` antes de construir la ruta: un valor editado a mano en
+  `settings.json` ya no puede sacar la lectura de `voices/`.
+- **Documentación sincronizada.** `ARCHITECTURE.md` §8 decía
+  `MAX_PARALLEL_PAGES = 2` y contextos 32768/16384 (y se contradecía más abajo);
+  ahora refleja el estado real (1 y 8192/16384) y el nº de tests. `TODO` §1 ya no
+  da `music/` por vacío (hay 3 MP3: el pendiente es escuchar el ducking) y
+  `config/engines.json` recupera `musicgen`, que solo estaba en los defaults y en
+  la plantilla.
+- **Higiene.** `*.lnk` fuera de git (es un binario con rutas de la máquina y el
+  README ya explica cómo regenerarlo), `__pycache__/` de la raíz borrado
+  (`_min_test`/`_min_test2` sin `.py`) y el pin de `ruff` en un solo sitio
+  (`constraints-test.txt`), no duplicado en el workflow.
+- **Herramientas de desarrollo.** `requirements-dev.txt` con `ruff` y `pyright`
+  (documentado en el README; `pyright` sigue fuera del CI por el Node y el ruido
+  de PyQt6, pero ahora se instala con un comando).
+- **Log a fichero activado.** `settings.json` → `rutas.logs = "logs"`: los fallos
+  intermitentes de motores dejan traza en `logs/plataformaia.log` (rotado a
+  diario) en vez de desaparecer con la consola.
+
+**Pendiente por decisión del autor:** rotar/verificar la credencial `BFL_API_KEY`
+de `.env` (hallazgo 3.1 del informe) y, opcionalmente, moverla a Credential
+Manager; `ConfigManager.resolve_api_key` es el punto único donde cambiarlo.

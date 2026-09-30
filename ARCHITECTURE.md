@@ -318,7 +318,7 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   (`config/*.json`) y se descartó el intento de config unificada
   (`~/.imperator/config.json`).
 - `bfl` incluido en `DEFAULT_ENGINES` (antes solo existía en el factory).
-- Suite de tests (stdlib `unittest`, 620 tests) + CI en GitHub Actions (con
+- Suite de tests (stdlib `unittest`, 631 tests) + CI en GitHub Actions (con
   `ruff` y versiones congeladas en `constraints-test.txt`). Incluye
   un smoke test de la `MainWindow` opt-in (`IMPERATOR_GUI_SMOKE=1`), que el CI
   activa. Las suites nuevas (`test_gpu_scheduler`, `test_intent_router`,
@@ -367,14 +367,17 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   `think: false` no lo desactiva en qwen3-vl y `num_predict` los deja sin
   respuesta, así que la respuesta cortada por contexto y la respuesta vacía por
   razonamiento se avisan explícitamente.
-- El procesado de documentos va por lotes (`ui.document_widget.MAX_PARALLEL_PAGES
-  = 2`): solapar páginas solo compensa si Ollama trae varios slots
-  (`OLLAMA_NUM_PARALLEL=2` y reiniciar el servidor), porque con uno las
-  peticiones se encolan y el paralelismo solo añade sobrecarga (medido **0,84x**).
-  Con dos slots: **1,68x** en peticiones crudas y **1,32x** en el camino real con
-  3 páginas. Como Ollama **reparte el contexto entre slots**, cada motor pide el
-  doble: visión 32768 (16384 por página) y chat 16384 (los 8192 por petición de
-  antes).
+- El procesado de documentos va **en serie** (`ui.document_widget.MAX_PARALLEL_PAGES
+  = 1`): el paralelismo se probó y se descartó **por medición**. Con dos slots de
+  Ollama (`OLLAMA_NUM_PARALLEL=2`) el camino real daba **1,02x** y **0,62x** según
+  la corrida, y con uno las peticiones se encolan (**0,84x**): nunca compensaba.
+  Como el modo por lotes exigía doblar el contexto (Ollama lo reparte entre
+  slots: visión 32 768 y chat 16 384), se volvió a los valores de un solo slot:
+  **visión 16 384 y chat 8 192** (`config/engines.json`). El progreso de
+  Documentos se emite **una vez por página** (`DocumentWorker._with_progress`), no
+  una por lote, que era el otro defecto del modo por lotes. Para volver a
+  probarlo hay que subir `MAX_PARALLEL_PAGES`, volver a doblar `num_ctx` y
+  cronometrar **el mismo** documento en las dos configuraciones.
 - Documentos sigue el **pipeline por fases** de `services/document_pipeline.py`
   (FASE 0 detección → FASE 1 OCR/tablas → FASE 2 normalización y resumen →
   FASE 4 validación ligera → FASE 5 entrega): el módulo puro decide el plan
@@ -503,6 +506,13 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   formato viven en `services/video_understanding.py` (puro) y el ejecutor es
   `UnderstandingWorker`, igual que Documentos. Si falta un motor, el informe lo
   **avisa** en vez de rellenar el hueco inventando.
+- **Auditoría externa del 30/09/2026** (`AUDITORIA-2026-09-30.md`): revisión
+  independiente de código, configuración, tests y seguridad. Dejó la suite en
+  **631 tests** (2 skips) y cerró, además de lo anterior, los hallazgos de
+  sincronización entre esta documentación y el código (el `MAX_PARALLEL_PAGES`
+  de este mismo apartado, que decía 2), el estado mutable compartido entre
+  hilos de los motores (`piper_tts`, `ollama`), el saneado del nombre de voz de
+  Piper y la ausencia de lockfile de runtime (`constraints.txt`).
 
 ## 9. Coordinación de GPU y orquestación
 
