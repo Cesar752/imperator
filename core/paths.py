@@ -11,3 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Directorio de assets versionados (icono, logo, splash).
 ASSETS = PROJECT_ROOT / "assets"
+
+# Carpeta donde los motores dejan lo que generan (imágenes, vídeos, audios, SRT).
+# Tiene política de retención: ver services/output_cleanup.py.
+OUTPUT = PROJECT_ROOT / "output"

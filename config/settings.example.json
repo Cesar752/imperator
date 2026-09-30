@@ -15,5 +15,12 @@
     "vram_headroom_mb": 1024,
     "defer_batch_above_util": 70,
     "defer_batch_below_free_mb": 2048
+  },
+  "output_limpieza": {
+    "enabled": true,
+    "max_files": 500,
+    "max_age_days": 90,
+    "max_mb": 8192,
+    "keep_recent_hours": 24
   }
 }

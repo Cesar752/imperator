@@ -102,6 +102,7 @@ C:\Imperator\
 │   ├── image_params.py     # Presets y parámetros de imagen
 │   ├── preferences.py      # Preferencias tipadas (PrefsStore + dataclasses)
 │   ├── intent_router.py    # Router de intención del chat (a qué tarea apunta)
+│   ├── output_cleanup.py   # Retención de output/ (qué se borra y por qué)
 │   ├── task_orchestrator.py# Resuelve la intención contra las tareas registradas
 │   ├── system_stats.py     # Sondeo de /system_stats de ComfyUI
 │   ├── video_params.py     # Presets y parámetros de vídeo
@@ -116,6 +117,7 @@ C:\Imperator\
 ├── voices/                 # Voces ONNX de Piper (gitignored)
 ├── music/                  # Música de fondo para el ensamblador (gitignored)
 ├── output/                 # Imágenes, vídeos y audios generados (gitignored)
+│                           #   Con retención al arrancar: services/output_cleanup.py
 ├── tools/                  # Scripts auxiliares
 │   ├── generar_narracion_basajaun.py  # Narración con Piper
 │   └── make_icon.py        # Regenera el icono (requiere Pillow; ver uso)
@@ -250,8 +252,11 @@ de `config/`:
 
 - `engines.json` → lista de motores.
 - `apis.json` → APIs externas (aún sin usar).
-- `settings.json` → `log_level`, `last_models` (persistencia de UI) y
-  `unload_on_tab_change`.
+- `settings.json` → `log_level`, `last_models` (persistencia de UI),
+  `unload_on_tab_change`, `gpu_scheduler` (ver §9) y `output_limpieza`
+  (retención de `output/`: 500 ficheros, 90 días, 8 GB y 24 h de gracia por
+  defecto; `MainWindow._cleanup_output` lo aplica al arrancar, en el pool y sólo
+  sobre extensiones que escribe la app).
 
 Cada archivo se valida con un esquema propio (`ENGINE_SCHEMA`, `API_SCHEMA`,
 `SETTINGS_SCHEMA`). Los archivos reales (`*.json`) están **ignorados por git**;

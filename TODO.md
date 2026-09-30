@@ -40,9 +40,16 @@ planificador rechaza el trabajo («quedan 619 MB y se necesitan 1 024 MB») y tr
 liberar la VRAM del otro motor hay **14 763 MB** y arranca. Cubierto con
 `tests/test_gpu_gating.py` (sin GPU real) y con una prueba en caliente.
 
-**Deudas que quedan anotadas:** retención de `output/` (171 ficheros acumulados,
-sin tope), `pyright`/`ruff` y `constraints.txt` en el CI, y el arranque de ~12 s
-(9,8 s son imports de motores pesados: candidato a carga diferida por pestaña).
+**Retención de `output/` hecha (30/09/2026):** `services/output_cleanup.py` con
+500 ficheros / 90 días / 8 GB y 24 h de gracia, aplicado al arrancar
+(`MainWindow._cleanup_output`, en el pool). Con esos valores **no borra nada** en
+el `output/` actual (180 ficheros, 11 días, 110,9 MB), y sólo mira extensiones de
+la app (`.png .jpg .jpeg .webp .mp4 .wav .mp3 .srt`): lo que no sea un producto de
+Imperator se respeta. Configurable en `settings.json` → `output_limpieza`.
+
+**Deudas que quedan anotadas:** `pyright`/`ruff` y `constraints.txt` en el CI, y
+el arranque de ~12 s (9,8 s son imports de motores pesados: candidato a carga
+diferida por pestaña).
 
 **Cómo medir sin engañarse:** el `thinking` del modelo hace que el tiempo varíe
 muchísimo entre ejecuciones — las **mismas** 3 páginas en serie tardaron 106 s en

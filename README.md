@@ -46,7 +46,10 @@ python -m unittest discover -s tests -v
   `key` de `apis.json` está deprecado y se ignora.
 - `settings.json` acepta `log_level` y `rutas.logs` para el nivel de log y un
   log rotado a diario (`<logs>/plataformaia.log`), además de `gpu_scheduler`
-  (prioridades y reserva de VRAM; ver ARCHITECTURE.md §9).
+  (prioridades y reserva de VRAM; ver ARCHITECTURE.md §9) y `output_limpieza`
+  (retención de lo generado en `output/`: por defecto 500 ficheros, 90 días y
+  8 GB, con 24 h de gracia para lo recién generado; se aplica al arrancar y sólo
+  mira ficheros con extensión de la app).
 - Los motores de percepción (`yolo`, `clip`, `paddle_ocr`) son **opcionales** y
   vienen deshabilitados: sin sus dependencias (`ultralytics`, `transformers` +
   `torch`, `paddleocr`) la app arranca igual y el motor aparece como no

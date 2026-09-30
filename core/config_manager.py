@@ -74,6 +74,9 @@ SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
     # Ajustes del planificador de GPU (core/gpu_scheduler.py). El detalle de los
     # campos lo valida SchedulerConfig.from_settings, que es tolerante a fallos.
     "gpu_scheduler": {"type": dict, "required": False},
+    # Retención de lo que se genera en output/ (services/output_cleanup.py). El
+    # detalle lo valida plan_cleanup, que también es tolerante a fallos.
+    "output_limpieza": {"type": dict, "required": False},
 }
 
 # Valores por defecto (se escriben en disco cuando el archivo no existe).
@@ -214,6 +217,17 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "vram_headroom_mb": 1024,
         "defer_batch_above_util": 70,
         "defer_batch_below_free_mb": 2048,
+    },
+    # Red de seguridad contra el crecimiento sin límite de output/ (ver
+    # services/output_cleanup.py). Con estos valores no se borra nada en un
+    # output/ normal: 500 ficheros, 90 días y 8 GB, con 24 h de gracia para lo
+    # recién generado. Deben coincidir con los DEFAULT_* del servicio.
+    "output_limpieza": {
+        "enabled": True,
+        "max_files": 500,
+        "max_age_days": 90,
+        "max_mb": 8192,
+        "keep_recent_hours": 24,
     },
 }
 

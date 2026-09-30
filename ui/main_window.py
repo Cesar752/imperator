@@ -17,8 +17,15 @@ from PyQt6.QtWidgets import (
 from core.api_manager import ApiManager
 from core.engine_manager import EngineManager
 from core.gpu_scheduler import GpuScheduler
-from core.paths import ASSETS
+from core.paths import ASSETS, OUTPUT
 from core.task_manager import TaskManager
+from services.output_cleanup import (
+    DEFAULT_KEEP_RECENT_HOURS,
+    DEFAULT_MAX_AGE_DAYS,
+    DEFAULT_MAX_FILES,
+    DEFAULT_MAX_MB,
+    cleanup_output,
+)
 from ui.engines_dialog import EnginesDialog
 from ui.theme import apply_theme
 from ui.workers import run_pool_task
@@ -67,6 +74,7 @@ class MainWindow(QMainWindow):
         self._build_central_widget()
         self._build_status_bar()
         self._restore_geometry()
+        self._cleanup_output()
 
     def closeEvent(self, event) -> None:
         self._save_geometry()
@@ -455,6 +463,43 @@ class MainWindow(QMainWindow):
 
     def _on_gpu_status(self, texto: str) -> None:
         QMessageBox.information(self, "Estado de la GPU", texto)
+
+    # ---- Retención de las salidas --------------------------------
+
+    def _cleanup_output(self) -> None:
+        """Aplica la política de retención de ``output/`` sin bloquear la UI.
+
+        Cada imagen, vídeo, audio o SRT se queda ahí para siempre, así que este es
+        el único tope (auditoría: 180 ficheros, 110,9 MB, sin límite). Se hace al
+        arrancar, cuando no hay nada abierto en la interfaz: borrar en caliente
+        podría llevarse el fichero que el usuario está viendo. Con la
+        configuración por defecto (500 ficheros, 90 días, 8 GB, 24 h de gracia)
+        no se borra nada en un ``output/`` normal; el trabajo va al pool porque
+        recorre el directorio en disco.
+        """
+        ajustes = self._engine_manager.config_manager.load_settings().get(
+            "output_limpieza"
+        )
+        if isinstance(ajustes, dict) and ajustes.get("enabled") is False:
+            logger.info("Limpieza de salidas desactivada en settings.json.")
+            return
+        opciones = ajustes if isinstance(ajustes, dict) else {}
+        run_pool_task(
+            cleanup_output,
+            OUTPUT,
+            max_files=opciones.get("max_files", DEFAULT_MAX_FILES),
+            max_age_days=opciones.get("max_age_days", DEFAULT_MAX_AGE_DAYS),
+            max_mb=opciones.get("max_mb", DEFAULT_MAX_MB),
+            keep_recent_hours=opciones.get(
+                "keep_recent_hours", DEFAULT_KEEP_RECENT_HOURS
+            ),
+            on_result=self._on_cleanup_done,
+        )
+
+    def _on_cleanup_done(self, plan) -> None:
+        """Deja constancia de lo borrado (la UI ya no muestra esos ficheros)."""
+        if plan.count:
+            logger.info("Limpieza de salidas: %s", plan.describe())
 
     def _show_about(self) -> None:
         QMessageBox.about(
