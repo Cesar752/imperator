@@ -86,6 +86,35 @@ class TaskWidget(QWidget):
             self._worker = None
         self._restore_focus()
 
+    # ---- GPU -------------------------------------------------------
+
+    def _gpu_scheduler(self):
+        """Planificador de GPU de la ventana principal (``None`` si no lo expone).
+
+        Se busca en la ventana en vez de inyectarlo para no acoplar los widgets a
+        ``MainWindow``: quien no lo tenga (tests, usos mínimos) simplemente no
+        reserva GPU y todo sigue funcionando.
+        """
+        return getattr(self.window(), "gpu_scheduler", None)
+
+    def _gpu_engine_ids(self) -> tuple[str, ...]:
+        """Motores que esta tarea puede estar usando (no se les pide soltar VRAM).
+
+        Se deduce del motor propio del widget (``self._engine``, que los cuatro
+        widgets con motor declararan con ese nombre): si al pedir GPU se liberara
+        también el motor que vamos a usar, se tiraría la VRAM que queríamos
+        aprovechar (p. ej. recargar Flux entero, ~25 s).
+        """
+        propio = getattr(self, "_engine", None)
+        engine_id = getattr(propio, "id", None)
+        return (engine_id,) if engine_id else ()
+
+    def _gpu_liberar_otros(self) -> None:
+        """Pide a los demás motores que suelten su VRAM (y solo a ellos)."""
+        liberar = getattr(self.window(), "release_engines", None)
+        if liberar is not None:
+            liberar(except_ids=self._gpu_engine_ids())
+
     # ---- Foco ------------------------------------------------------
 
     def _focus_widget(self):

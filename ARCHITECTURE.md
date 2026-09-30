@@ -411,16 +411,27 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   la app por no poder medir sería peor que no tenerlo). Se configura en
   `settings.json` → `gpu_scheduler`. La ventana lo consulta en
   *Motores → Estado de la GPU…* (el sondeo va al pool, no al hilo de la UI).
-- **Quién lo usa hoy: sólo Comprensión** (`ui/understanding_widget.py` reserva con
-  `scheduler.job(...)` para cada motor de percepción). Chat, Documentos, Imagen y
-  Vídeo **no reservan**: la protección real frente al OOM sigue siendo el menú
-  *Liberar VRAM al cambiar de pestaña* y el `POST /free` de los motores. Medido
-  con la GPU real (RTX 5080, 16 303 MB): Flux Dev 1024×1024/20 pasos pica en
-  **15 438 MB**, el chat `qwen3.6:35b` a 16 384 ocupa **13 116 MB** y la visión
-  `qwen3-vl:8b` a 16 384 **10 210 MB**; con el chat cargado sólo quedan 645 MB
-  libres, así que cualquier trabajo de imagen fallaría por VRAM. Conectar el
-  planificador a esas cuatro tareas (o impedir el cambio de pestaña sin descargar)
-  queda como trabajo pendiente (§TODO.md).
+- **Quién lo usa: las cinco tareas pesadas.** Chat, Documentos, Imagen y Vídeo
+  reservan GPU con `ui.workers.gpu_slot` (y Comprensión, que además reserva por
+  cada fotograma de percepción con `scheduler.job(...)`). El contexto pide permiso
+  al planificador y, si no hay hueco, **pide a los demás motores que suelten su
+  VRAM y reintenta una vez** (el mismo remedio que *Liberar VRAM ahora*, pero
+  automático); si aun así no cabe, la tarea falla con el motivo en pantalla en
+  vez de morir por OOM a mitad de trabajo.
+  La reserva **no declara el consumo de cada modelo** (`vram_mb=0`) a propósito:
+  Ollama y ComfyUI reparten capas entre CPU y GPU, así que una estimación alta
+  bloquearía trabajos que hoy funcionan; lo que se evita es *empezar* con la GPU
+  casi llena o con otro lote en marcha, y para eso basta el margen
+  (`vram_headroom_mb`) y la regla de lote ocupado. Medido con la GPU real
+  (RTX 5080, 16 303 MB): Flux Dev 1024×1024/20 pasos pica en **15 438 MB**, el
+  chat `qwen3.6:35b` ocupa **~13 GB** (13 116 MB medidos, con `num_ctx` 16 384) y
+  la visión `qwen3-vl:8b` a 16 384 **10 210 MB**. Con el chat cargado la GPU se
+  queda con **619 MB libres** y el planificador ya rechaza cualquier trabajo
+  («quedan 619 MB y se necesitan 1 024 MB»): es exactamente el caso que antes
+  acababa en OOM y que ahora se resuelve pidiendo al otro motor que suelte su
+  VRAM (comprobado: tras liberarla, hay 14 763 MB y el trabajo arranca).
+  `max_concurrent` sigue siendo configurable: con `1` no se solapan dos lotes
+  (lo recomendable en esta GPU, donde dos modelos grandes no caben a la vez).
 - Correcciones de la auditoría del 30/09/2026 (todas con medición detrás):
   las URL de los motores locales usan `127.0.0.1` y no `localhost` (`localhost`
   añadía ~2 s por petición por el fallback de IPv6 de Windows: 2 040 ms frente a

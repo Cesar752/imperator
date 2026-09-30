@@ -41,7 +41,7 @@ from services import preferences as prefs
 from services import system_stats as stats
 from services import video_params as vp
 from ui.task_widget import TaskWidget
-from ui.workers import ThreadWorker, run_pool_task
+from ui.workers import ThreadWorker, gpu_slot, run_pool_task
 
 logger = logging.getLogger(__name__)
 
@@ -52,22 +52,33 @@ _AUDIO_PROBE_TIMEOUT = 30
 class VideoWorker(ThreadWorker):
     """Ejecuta ``engine.generate_video()`` fuera del hilo de la UI."""
 
-    def __init__(self, engine: Engine, params: dict, parent=None) -> None:
+    def __init__(
+        self,
+        engine: Engine,
+        params: dict,
+        parent=None,
+        scheduler=None,
+        liberar_otros=None,
+    ) -> None:
         super().__init__(parent)
         self._engine = engine
         self._params = params
+        self._scheduler = scheduler
+        self._liberar_otros = liberar_otros
 
     def work(self) -> str:
         params = dict(self._params)
         params["cancel_check"] = self.isInterruptionRequested
         images = params.pop("image_paths", None)
         prompts = params.pop("prompts", None)
-        if images and len(images) > 1:
-            # Varias imágenes: un clip por imagen y concatenación final.
-            return self._generate_sequence(images, prompts, params)
-        params["progress_callback"] = self._on_progress
-        # Duck-typing: el motor debe exponer generate_video() (VideoEngine).
-        return str(self._engine.generate_video(**params))
+        # Un clip (o una secuencia entera) = una reserva de GPU.
+        with gpu_slot(self._scheduler, "video", liberar_otros=self._liberar_otros):
+            if images and len(images) > 1:
+                # Varias imágenes: un clip por imagen y concatenación final.
+                return self._generate_sequence(images, prompts, params)
+            params["progress_callback"] = self._on_progress
+            # Duck-typing: el motor debe exponer generate_video() (VideoEngine).
+            return str(self._engine.generate_video(**params))
 
     def _generate_sequence(
         self, images: list[str], prompts: list[str] | None, params: dict
@@ -396,7 +407,13 @@ class VideoWidget(TaskWidget):
         self._progress.setValue(0)
         self._set_status("Generando... 0%")
 
-        self._worker = VideoWorker(self._engine, params, self)
+        self._worker = VideoWorker(
+            self._engine,
+            params,
+            self,
+            scheduler=self._gpu_scheduler(),
+            liberar_otros=self._gpu_liberar_otros,
+        )
         self._worker.progress.connect(self._on_progress)
         self._worker.result.connect(self._on_video_ready)
         self._worker.failed.connect(self._on_error)

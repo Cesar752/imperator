@@ -20,7 +20,7 @@ from services import chat_params as cp
 from services import preferences as prefs
 from ui import markdown as md
 from ui.task_widget import TaskWidget
-from ui.workers import ThreadWorker, run_pool_task
+from ui.workers import ThreadWorker, gpu_slot, run_pool_task
 
 logger = logging.getLogger(__name__)
 
@@ -35,14 +35,25 @@ _COLOR_AVISO = "#d8a657"
 class ChatWorker(ThreadWorker):
     """Ejecuta ``engine.chat()`` fuera del hilo de la UI."""
 
-    def __init__(self, engine: ChatEngine, messages: list[dict], model: str | None, parent=None) -> None:
+    def __init__(
+        self,
+        engine: ChatEngine,
+        messages: list[dict],
+        model: str | None,
+        parent=None,
+        scheduler=None,
+        liberar_otros=None,
+    ) -> None:
         super().__init__(parent)
         self._engine = engine
         self._messages = messages
         self._model = model
+        self._scheduler = scheduler
+        self._liberar_otros = liberar_otros
 
     def work(self) -> str:
-        return self._engine.chat(self._messages, model=self._model)
+        with gpu_slot(self._scheduler, "chat", liberar_otros=self._liberar_otros):
+            return self._engine.chat(self._messages, model=self._model)
 
 
 class ChatWidget(TaskWidget):
@@ -232,6 +243,8 @@ class ChatWidget(TaskWidget):
             cp.trim_history(self._messages),
             self._pending_model,
             self,
+            scheduler=self._gpu_scheduler(),
+            liberar_otros=self._gpu_liberar_otros,
         )
         self._worker.result.connect(self._on_reply)
         self._worker.failed.connect(self._on_error)

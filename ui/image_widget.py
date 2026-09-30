@@ -26,7 +26,7 @@ from engines.base_engine import Engine
 from services import image_params as ip
 from services import preferences as prefs
 from ui.task_widget import TaskWidget
-from ui.workers import ThreadWorker, run_pool_task
+from ui.workers import ThreadWorker, gpu_slot, run_pool_task
 
 logger = logging.getLogger(__name__)
 
@@ -34,16 +34,26 @@ logger = logging.getLogger(__name__)
 class ImageWorker(ThreadWorker):
     """Ejecuta ``engine.generate_image()`` fuera del hilo de la UI."""
 
-    def __init__(self, engine: Engine, params: dict, parent=None) -> None:
+    def __init__(
+        self,
+        engine: Engine,
+        params: dict,
+        parent=None,
+        scheduler=None,
+        liberar_otros=None,
+    ) -> None:
         super().__init__(parent)
         self._engine = engine
         self._params = params
+        self._scheduler = scheduler
+        self._liberar_otros = liberar_otros
 
     def work(self) -> str:
         params = dict(self._params)
         params["cancel_check"] = self.isInterruptionRequested
         # Duck-typing: el motor debe exponer generate_image() (ImageEngine).
-        return str(self._engine.generate_image(**params))
+        with gpu_slot(self._scheduler, "image", liberar_otros=self._liberar_otros):
+            return str(self._engine.generate_image(**params))
 
 
 class ImageWidget(TaskWidget):
@@ -313,7 +323,13 @@ class ImageWidget(TaskWidget):
         self._elapsed = 0
         self._set_status("Generando... 0s")
 
-        self._worker = ImageWorker(engine, params, self)
+        self._worker = ImageWorker(
+            engine,
+            params,
+            self,
+            scheduler=self._gpu_scheduler(),
+            liberar_otros=self._gpu_liberar_otros,
+        )
         self._worker.result.connect(self._on_image_ready)
         self._worker.failed.connect(self._on_error)
         self._worker.finished.connect(self._on_finished)

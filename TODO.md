@@ -30,13 +30,19 @@ también quedó corregido: ahora se emite una vez por página desde la propia ta
 limpio: snapshot del trabajo anterior (`a0e40fb`) + las correcciones de la
 auditoría.
 
-**Siguiente pendiente, por impacto medido:** conectar el `GpuScheduler` a Imagen,
-Vídeo, Documentos y Chat (hoy sólo lo usa Comprensión). Los números de la
-auditoría: Flux Dev pica en **15 438 MB**, el chat 35b ocupa **13 116 MB** y la
-visión 8b **10 210 MB** de los 16 303 MB de la GPU, así que ninguna de esas
-cuatro tareas puede convivir con otra si no reservan antes (o si no se descarga el
-modelo al cambiar de pestaña). Otras deudas anotadas: retención de `output/`
-(171 ficheros acumulados), `pyright`/`ruff` en el CI y `constraints.txt`.
+**Conectado el `GpuScheduler` (30/09/2026):** las cinco tareas pesadas reservan
+GPU con `ui.workers.gpu_slot` — Chat, Documentos, Imagen, Vídeo y Comprensión — y
+si no hay hueco piden a los demás motores que suelten su VRAM antes de rendirse
+(con el motivo por delante). Los números que lo justifican: Flux Dev pica en
+**15 438 MB**, el chat 35b ocupa **~13 GB** y la visión 8b **10 210 MB** de los
+16 303 MB de la GPU; con el chat cargado la GPU se queda con **619 MB libres**, el
+planificador rechaza el trabajo («quedan 619 MB y se necesitan 1 024 MB») y tras
+liberar la VRAM del otro motor hay **14 763 MB** y arranca. Cubierto con
+`tests/test_gpu_gating.py` (sin GPU real) y con una prueba en caliente.
+
+**Deudas que quedan anotadas:** retención de `output/` (171 ficheros acumulados,
+sin tope), `pyright`/`ruff` y `constraints.txt` en el CI, y el arranque de ~12 s
+(9,8 s son imports de motores pesados: candidato a carga diferida por pestaña).
 
 **Cómo medir sin engañarse:** el `thinking` del modelo hace que el tiempo varíe
 muchísimo entre ejecuciones — las **mismas** 3 páginas en serie tardaron 106 s en

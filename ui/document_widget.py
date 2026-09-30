@@ -36,7 +36,7 @@ from services import document_params as dp
 from services import document_pipeline as dpl
 from services import preferences as prefs
 from ui.task_widget import TaskWidget
-from ui.workers import ThreadWorker, run_pool_task
+from ui.workers import ThreadWorker, gpu_slot, run_pool_task
 
 logger = logging.getLogger(__name__)
 
@@ -111,11 +111,15 @@ class DocumentWorker(ThreadWorker):
         scope=None,
         detail=None,
         parent=None,
+        scheduler=None,
+        liberar_otros=None,
     ) -> None:
         super().__init__(parent)
         self._engine = engine
         self._file_path = Path(file_path)
         self._parallel = max(1, int(parallel))
+        self._scheduler = scheduler
+        self._liberar_otros = liberar_otros
         self._plan = dpl.from_ui(
             mode,
             force_ocr=force_ocr,
@@ -132,6 +136,11 @@ class DocumentWorker(ThreadWorker):
     # ---- FASE 0 → FASE 5 ------------------------------------------
 
     def work(self) -> str:
+        """Ejecuta el plan con una reserva de GPU (una por documento, no por página)."""
+        with gpu_slot(self._scheduler, "document", liberar_otros=self._liberar_otros):
+            return self._run_plan()
+
+    def _run_plan(self) -> str:
         """Ejecuta el plan: imagen suelta, páginas, o resumen del documento."""
         plan = self._plan
         if not dp.is_pdf(self._file_path.suffix):
@@ -912,6 +921,8 @@ class DocumentWidget(TaskWidget):
             force_ocr=self._force_ocr_check.isChecked(),
             extra_tables=self._tables_check.isChecked(),
             parent=self,
+            scheduler=self._gpu_scheduler(),
+            liberar_otros=self._gpu_liberar_otros,
         )
         self._worker.page_progress.connect(self._on_progress)
         self._worker.result.connect(self._on_result_ready)

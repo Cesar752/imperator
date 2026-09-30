@@ -407,10 +407,19 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001 - geometría corrupta no debe romper el arranque
             logger.warning("No se pudo restaurar la geometría de la ventana: %s", exc)
 
-    def _free_all_vram(self) -> None:
-        """Libera la VRAM de todos los motores que la usan (botón manual)."""
+    def release_engines(self, except_ids=()) -> bool:
+        """Pide a los motores que suelten su VRAM (salvo los de ``except_ids``).
+
+        Lo usan el botón *Liberar VRAM ahora* y las tareas pesadas justo antes de
+        empezar (``ui.workers.gpu_slot``): cuando la GPU está casi llena, lo que
+        sobra suele ser la VRAM que retiene otro motor. Devuelve ``True`` si
+        alguno liberó algo.
+        """
+        excluidos = set(except_ids)
         freed = False
         for engine_id in self._engine_manager.supported_types():
+            if engine_id in excluidos:
+                continue
             try:
                 engine = self._engine_manager.get_engine(engine_id)
                 if engine is not None and hasattr(engine, "unload_model"):
@@ -418,6 +427,11 @@ class MainWindow(QMainWindow):
                         freed = True
             except Exception as exc:  # noqa: BLE001 - no bloquear la liberación
                 logger.warning("No se pudo liberar VRAM de %s: %s", engine_id, exc)
+        return freed
+
+    def _free_all_vram(self) -> None:
+        """Libera la VRAM de todos los motores que la usan (botón manual)."""
+        freed = self.release_engines()
         self.statusBar().showMessage(
             "VRAM liberada" if freed else "No se pudo liberar VRAM"
         )
