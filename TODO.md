@@ -56,9 +56,19 @@ arrancar). Guardado con `tests/test_startup_imports.py`, que importa la app en u
 subproceso limpio y falla si vuelve a cargar torch. La primera síntesis con Kokoro
 de cada sesión paga su import (~10 s), que antes pagaban todas las sesiones.
 
-**Deudas que quedan anotadas:** `pyright`/`ruff` y `constraints.txt` en el CI, y
-medir el resumen global con un documento real de muchas páginas (sólo se probó el
-modo por página con 2 páginas).
+**CI reforzado (30/09/2026):** `ruff` 0.16.9 con las reglas de `ruff.toml`
+(sintaxis, nombres e imports sin usar y `except` ciego sin justificar; `ruff
+check .` pasa limpio y encontró 3 imports muertos al activarlo) y
+`constraints-test.txt` con las versiones congeladas de lo que instala el CI, para
+que una actualización de PyQt6/numpy no rompa la suite sin tocar el proyecto. Las
+reglas de estilo y de orden de imports se dejaron fuera a propósito: sumaban 148
+avisos y ninguno era un fallo real.
+`pyright` **no** se añadió al CI: necesita Node y en modo `basic` con PyQt6
+(`QWidget` sin stubs) da más ruido que señal; sigue disponible como herramienta
+local con `pyrightconfig.json`.
+
+**Deuda que queda anotada:** medir el resumen global con un documento real de
+muchas páginas (sólo se probó el modo por página con 2 páginas).
 
 **Cómo medir sin engañarse:** el `thinking` del modelo hace que el tiempo varíe
 muchísimo entre ejecuciones — las **mismas** 3 páginas en serie tardaron 106 s en

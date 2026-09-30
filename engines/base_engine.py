@@ -211,7 +211,7 @@ class Perception:
         """Serializable (para logs, JSON o pasar entre hilos/UI)."""
         return {
             "objects": [dict(o) for o in self.objects],
-            "labels": [dict(l) for l in self.labels],
+            "labels": [dict(etiqueta) for etiqueta in self.labels],
             "text": self.text,
             "caption": self.caption,
         }

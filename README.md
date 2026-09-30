@@ -25,14 +25,19 @@ python tools/create_shortcut.py  # Imperator.lnk (necesita comtypes)
 
 Alternativa rápida sin icono personalizado: doble clic en `Imperator.bat`.
 
-## Tests
+## Tests y lint
 
 Sin dependencias de runtime (stdlib `unittest`):
 
 ```powershell
 python -m compileall -q .
+python -m ruff check .                      # requiere: pip install ruff
 python -m unittest discover -s tests -v
 ```
+
+El CI (`.github/workflows/ci.yml`) ejecuta los tres pasos, instala
+`requirements-test.txt` con las versiones congeladas de `constraints-test.txt` y
+activa el smoke test de la GUI.
 
 ## Configuración y secretos
 

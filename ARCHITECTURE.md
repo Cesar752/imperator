@@ -296,9 +296,11 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   devuelve el foco al acabar la tarea y al entrar en la pestaña (deshabilitar el
   control lo pierde y Qt no lo recupera solo).
 - Un cambio = un commit.
-- Verificación automática: `python -m compileall -q .` +
-  `python -m unittest discover -s tests` (CI en `.github/workflows/ci.yml`).
-  Además, arranque de la app + prueba manual.
+- Verificación automática: `python -m ruff check .` (`ruff.toml`: solo reglas de
+  errores reales —sintaxis, nombres/imports sin usar, `except` ciego—, sin reglas
+  de estilo) + `python -m compileall -q .` + `python -m unittest discover -s tests`,
+  con las versiones de test congeladas en `constraints-test.txt` (CI en
+  `.github/workflows/ci.yml`). Además, arranque de la app + prueba manual.
 - Las peticiones de red no deben ejecutarse en el hilo de la UI (usar
   `QThread`/`QThreadPool`); el logging se configura desde `settings.json`
   (`log_level` y `rutas.logs`).
@@ -316,7 +318,8 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   (`config/*.json`) y se descartó el intento de config unificada
   (`~/.imperator/config.json`).
 - `bfl` incluido en `DEFAULT_ENGINES` (antes solo existía en el factory).
-- Suite de tests (stdlib `unittest`, 596 tests) + CI en GitHub Actions. Incluye
+- Suite de tests (stdlib `unittest`, 620 tests) + CI en GitHub Actions (con
+  `ruff` y versiones congeladas en `constraints-test.txt`). Incluye
   un smoke test de la `MainWindow` opt-in (`IMPERATOR_GUI_SMOKE=1`), que el CI
   activa. Las suites nuevas (`test_gpu_scheduler`, `test_intent_router`,
   `test_perception_engine`, `test_video_understanding`) usan dobles: no

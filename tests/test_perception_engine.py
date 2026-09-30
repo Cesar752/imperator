@@ -136,7 +136,9 @@ class ClipEngineTest(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             percepcion = engine.perceive(self._imagen(tmp))
-        self.assertEqual([l["label"] for l in percepcion.labels], ["perro", "gato"])
+        self.assertEqual(
+            [etiqueta["label"] for etiqueta in percepcion.labels], ["perro", "gato"]
+        )
         self.assertEqual(percepcion.labels[0]["score"], 0.8)
 
     def test_etiquetas_desde_el_prompt(self) -> None:
@@ -155,7 +157,7 @@ class ClipEngineTest(unittest.TestCase):
         engine = ClipEngine(labels=("a", "b"), runner=lambda _p, _l: [0.0, 1.0])
         with tempfile.TemporaryDirectory() as tmp:
             percepcion = engine.perceive(self._imagen(tmp))
-        self.assertEqual([l["label"] for l in percepcion.labels], ["b"])
+        self.assertEqual([etiqueta["label"] for etiqueta in percepcion.labels], ["b"])
 
     def test_imagen_inexistente(self) -> None:
         engine = ClipEngine(runner=lambda _p, _l: [1.0])

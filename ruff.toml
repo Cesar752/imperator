@@ -1,0 +1,23 @@
+# Configuración de ruff: lint estático que corre también en el CI
+# (`.github/workflows/ci.yml`). Uso local:  python -m ruff check .
+#
+# Se limita a reglas que detectan **errores reales** —sintaxis, nombres sin
+# definir o sin usar, `except` demasiado amplio sin justificar— y no a estilo ni
+# formato: el proyecto ya tiene su propio criterio de estilo y meter un formateador
+# reescribiría los 20 000 líneas del tirón. Las reglas de orden de imports y de
+# simplificaciones (I, SIM, UP...) se dejan fuera a propósito: la auditoría del
+# 30/09/2026 encontró 148 avisos de ese tipo y ninguno era un fallo real.
+target-version = "py312"
+line-length = 100
+
+[lint]
+# E4/E7/E9: errores de pycodestyle (imports mal colocados, comparaciones raras...).
+# F: pyflakes (nombre sin definir, import sin usar, variable sin usar).
+# BLE: except ciego; el proyecto anota los deliberados con
+#      `# noqa: BLE001 - motivo`, así que aquí la anotación es obligatoria.
+select = ["E4", "E7", "E9", "F", "BLE"]
+
+[format]
+# No se usa `ruff format`, pero se declara para que las herramientas coincidan.
+quote-style = "double"
+indent-style = "space"

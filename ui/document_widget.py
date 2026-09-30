@@ -375,13 +375,22 @@ class DocumentWorker(ThreadWorker):
                     page = doc.load_page(index)
                     text = (page.get_text() or "").strip()
                     if dp.has_native_text(text) and not plan.force_ocr:
-                        tarea: Callable[[], str] = lambda pagina=text: pagina
+                        tareas.append(
+                            self._with_progress(
+                                lambda pagina=text: pagina, index + 1, total
+                            )
+                        )
                     else:
                         png = self._rasterize_page(page)
-                        tarea = lambda imagen=png: self._analyze_rendered_page(
-                            imagen, ocr_prompt
+                        tareas.append(
+                            self._with_progress(
+                                lambda imagen=png: self._analyze_rendered_page(
+                                    imagen, ocr_prompt
+                                ),
+                                index + 1,
+                                total,
+                            )
                         )
-                    tareas.append(self._with_progress(tarea, index + 1, total))
                 paginas.extend(self._run_parallel(tareas))
 
             self._ensure_not_cancelled()

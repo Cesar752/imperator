@@ -44,7 +44,7 @@ class PlanCleanupTest(unittest.TestCase):
 
     def test_borra_por_edad(self) -> None:
         viejo = _crear(self.dir, "viejo.png", horas=24 * 100)
-        nuevo = _crear(self.dir, "nuevo.png", horas=24 * 2)
+        _crear(self.dir, "nuevo.png", horas=24 * 2)
         plan = oc.plan_cleanup(self.dir.iterdir(), max_age_days=90)
         self.assertEqual(plan.to_delete, (viejo,))
         self.assertEqual(plan.kept, 1)

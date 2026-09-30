@@ -34,7 +34,7 @@ try:
 except ImportError:  # pragma: no cover - dependencia declarada en requirements.txt
     imageio_ffmpeg = None
 
-from engines.base_engine import Engine, EngineError
+from engines.base_engine import EngineError
 from services import audio_params as ap
 from services import preferences as prefs
 from ui.task_widget import TaskWidget

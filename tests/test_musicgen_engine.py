@@ -6,7 +6,6 @@ del WAV por dobles. Se comprueba la lógica del motor —validación, tamaño y
 duración, caché, destino del fichero y errores—, no la generación real.
 """
 
-import os
 import sys
 import tempfile
 import unittest

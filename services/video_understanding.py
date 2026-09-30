@@ -20,7 +20,7 @@ Decisiones de diseño:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 #: Separación por defecto entre fotogramas analizados (segundos).
 DEFAULT_EVERY_S = 5.0

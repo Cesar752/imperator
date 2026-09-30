@@ -1,0 +1,22 @@
+# Versiones exactas que el CI instala para compilar y pasar los tests.
+#
+# `requirements-test.txt` declara rangos (para no bloquear actualizaciones), pero
+# sin un fichero de restricciones cada CI resolvía versiones distintas y una
+# actualización de PyQt6/numpy podía romper la suite sin tocar una línea del
+# proyecto. Aquí van congeladas las que se probaron en local.
+#
+# Cómo se regenera (Windows):
+#   venv\Scripts\python.exe -m pip install -U -r requirements-test.txt
+#   venv\Scripts\python.exe -m pip freeze | findstr /R "^PyQt6 ^certifi ^charset ^idna ^numpy ^python-dotenv ^urllib3" > constraints-test.txt
+#
+# Y se usan con:  pip install -r requirements-test.txt -c constraints-test.txt
+
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.2
+PyQt6_sip==13.12.0
+certifi==2026.7.22
+charset-normalizer==3.5.1
+idna==3.20
+numpy==2.5.3
+python-dotenv==1.2.3
+urllib3==2.8.0

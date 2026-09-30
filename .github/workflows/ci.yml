@@ -22,7 +22,18 @@ jobs:
           python-version: "3.12"
 
       - name: Instalar dependencias de test
-        run: pip install -r requirements-test.txt
+        # Con las versiones congeladas de constraints-test.txt: sin ellas cada
+        # ejecución resolvía versiones distintas y una actualización podía romper
+        # la suite sin tocar el proyecto.
+        run: pip install -r requirements-test.txt -c constraints-test.txt
+
+      - name: Lint (ruff)
+        # Reglas en ruff.toml: sintaxis, nombres/imports sin usar y except ciego.
+        # Al principio del job para que un error de este tipo se vea antes que
+        # una suite de 620 tests.
+        run: |
+          pip install ruff==0.16.9
+          python -m ruff check .
 
       - name: Compilar todo el árbol
         run: python -m compileall -q .
