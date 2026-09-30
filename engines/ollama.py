@@ -1,4 +1,9 @@
-"""Motor local Ollama (HTTP API en http://localhost:11434)."""
+"""Motor local Ollama (HTTP API en http://127.0.0.1:11434).
+
+Se usa ``127.0.0.1`` y no ``localhost``: en Windows ``localhost`` intenta primero
+``::1`` (Ollama no escucha ahí), la conexión se rechaza y el fallback a IPv4
+cuesta ~2 s por petición (medido en la auditoría: 2 040 ms frente a 15 ms).
+"""
 
 import logging
 
@@ -8,6 +13,15 @@ from engines.base_engine import ChatEngine, EngineError
 from engines.ollama_api import DEFAULT_NUM_CTX, fetch_tags, http_error_message, is_loaded
 
 logger = logging.getLogger(__name__)
+
+#: URL y modelo por defecto del motor. Tienen que coincidir con
+#: ``core.engine_manager._OLLAMA_DEFAULT_BASE_URL`` / ``_OLLAMA_DEFAULT_MODEL``
+#: (y con ``core.config_manager.DEFAULT_ENGINES`` y la plantilla de la UI):
+#: tests/test_ollama_defaults.py lo comprueba para que no vuelvan a divergir.
+#: Divergían: aquí ponía ``qwen3.5:9b`` mientras el resto del proyecto usaba
+#: ``qwen3.6:35b``, así que construir el motor sin modelo daba un 404 de Ollama.
+_DEFAULT_BASE_URL = "http://127.0.0.1:11434"
+_DEFAULT_MODEL = "qwen3.6:35b"
 
 
 class OllamaEngine(ChatEngine):
@@ -29,8 +43,8 @@ class OllamaEngine(ChatEngine):
 
     def __init__(
         self,
-        base_url: str = "http://localhost:11434",
-        default_model: str = "qwen3.5:9b",
+        base_url: str = _DEFAULT_BASE_URL,
+        default_model: str = _DEFAULT_MODEL,
         num_ctx: int = _NUM_CTX,
         num_predict: int = _NUM_PREDICT,
     ) -> None:

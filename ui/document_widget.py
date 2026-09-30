@@ -47,22 +47,23 @@ try:
 except ImportError:  # pragma: no cover - dependencia declarada en requirements.txt
     pymupdf = None
 
-#: Páginas que se analizan a la vez. Ollama reparte el contexto entre las
-#: peticiones que atiende a la vez, así que esto va de la mano de
-#: ``ollama_api.DEFAULT_VISION_NUM_CTX`` (32768 = 16384 por página).
+#: Páginas que se analizan a la vez. **1 = en serie**, y es una decisión medida:
+#: el paralelismo sólo compensa si Ollama trae varios slots
+#: (``OLLAMA_NUM_PARALLEL=2``) y además obliga a doblar ``num_ctx``, porque Ollama
+#: reparte el contexto entre las peticiones simultáneas.
 #:
-#: Medido con ``qwen3-vl:8b``, en tres escenarios:
+#: Medido con ``qwen3-vl:8b``, el ``DocumentWorker`` real y un PDF de 2 páginas
+#: (modo resumen por página), dos corridas independientes:
 #:
-#: - peticiones crudas por HTTP, con dos slots disponibles: 140 s en serie frente
-#:   a 83 s en paralelo (**1,68x**);
-#: - ``DocumentWorker`` completo, con Ollama sin slots forzados (abrió uno):
-#:   106 s en serie frente a 126 s en paralelo (**0,84x**: encoladas + sobrecarga);
-#: - con ``OLLAMA_NUM_PARALLEL=2`` en el servidor: ver §5.8 del `todo.md`.
+#: - en serie (``1``): 60,1 s y 43,8 s;
+#: - en paralelo (``2``): 59,2 s y **70,1 s** → **1,02x** y **0,62x**: ninguna vez
+#:   mejor. Con lotes, además, el progreso saltaba (un aviso por lote, no por
+#:   página); eso queda corregido en :meth:`DocumentWorker._with_progress`.
 #:
-#: De ahí la receta: forzar dos slots en el servidor (variable de entorno y
-#: reiniciar Ollama) y pedir el doble de contexto, porque con un solo slot activo
-#: el paralelismo solo añade sobrecarga.
-MAX_PARALLEL_PAGES = 2
+#: Con una página por petición ya no hay reparto de contexto, así que
+#: ``ollama_api.DEFAULT_VISION_NUM_CTX`` vuelve a 16384 (el doble sólo servía
+#: para dar 16384 a cada uno de los dos slots).
+MAX_PARALLEL_PAGES = 1
 
 
 def _chunks(total: int, size: int) -> Iterator[range]:
@@ -201,10 +202,10 @@ class DocumentWorker(ThreadWorker):
         texto es la *entrada* del análisis, así que también pasa por el modelo
         con su prompt de texto. Si no, los tres modos devolvían el mismo texto.
 
-        Las páginas se analizan de ``parallel`` en ``parallel`` (Ollama atiende
-        varias peticiones a la vez y la GPU se solapa), pero **leer** cada página
-        y montar el resultado se hace en este hilo: PyMuPDF no es thread-safe y el
-        orden de las páginas debe ser el del PDF.
+        Las páginas se analizan de ``parallel`` en ``parallel`` (hoy ``1``: ver
+        ``MAX_PARALLEL_PAGES``), pero **leer** cada página y montar el resultado se
+        hace en este hilo: PyMuPDF no es thread-safe y el orden de las páginas
+        debe ser el del PDF.
         """
         image_prompt = plan.image_prompt()
         text_prompt = plan.text_prompt()
@@ -222,7 +223,7 @@ class DocumentWorker(ThreadWorker):
                         doc, index, plan, image_prompt, text_prompt
                     )
                     etiquetas.append(etiqueta)
-                    tareas.append(tarea)
+                    tareas.append(self._with_progress(tarea, index + 1, total))
                 for index, etiqueta, resultado in zip(
                     indices, etiquetas, self._run_parallel(tareas)
                 ):
@@ -230,7 +231,6 @@ class DocumentWorker(ThreadWorker):
                     secciones.append(
                         dpl.render_page(index + 1, etiqueta, resultado.body)
                     )
-                self.page_progress.emit(indices.stop, total)
             # FASE 2 (resumen por apartados): cada sección ya es el resumen de su
             # página. FASE 4 y FASE 5: validación ligera (con las cifras de cada
             # página frente a su texto) y entrega única.
@@ -309,6 +309,25 @@ class DocumentWorker(ThreadWorker):
             secciones.append(dpl.render_tables(numero, tabla))
         return secciones
 
+    def _with_progress(
+        self, tarea: Callable[[], _T], numero: int, total: int
+    ) -> Callable[[], _T]:
+        """Envuelve una tarea de página para avisar del progreso al terminarla.
+
+        Se emite una vez por página y desde la propia tarea. Antes se emitía una
+        sola vez por *lote* (``indices.stop``): con varias páginas a la vez el
+        widget sólo veía el final del lote y la barra saltaba de 0 a N sin mostrar
+        avance (medido en la auditoría con ``parallel=2``: un único aviso «2/2»
+        para las dos páginas).
+        """
+
+        def ejecutar() -> _T:
+            resultado = tarea()
+            self.page_progress.emit(numero, total)
+            return resultado
+
+        return ejecutar
+
     def _run_parallel(self, tareas: list[Callable[[], _T]]) -> list[_T]:
         """Ejecuta las tareas del lote a la vez y devuelve los resultados en orden.
 
@@ -347,16 +366,14 @@ class DocumentWorker(ThreadWorker):
                     page = doc.load_page(index)
                     text = (page.get_text() or "").strip()
                     if dp.has_native_text(text) and not plan.force_ocr:
-                        tareas.append(lambda pagina=text: pagina)
+                        tarea: Callable[[], str] = lambda pagina=text: pagina
                     else:
                         png = self._rasterize_page(page)
-                        tareas.append(
-                            lambda imagen=png: self._analyze_rendered_page(
-                                imagen, ocr_prompt
-                            )
+                        tarea = lambda imagen=png: self._analyze_rendered_page(
+                            imagen, ocr_prompt
                         )
+                    tareas.append(self._with_progress(tarea, index + 1, total))
                 paginas.extend(self._run_parallel(tareas))
-                self.page_progress.emit(indices.stop, total)
 
             self._ensure_not_cancelled()
             normalizado = dpl.normalize_pages(paginas)

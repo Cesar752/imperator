@@ -284,7 +284,8 @@ CLOSING_STYLE = (
 
 # Presupuesto de caracteres **por llamada** del resumen global. El contexto de
 # Ollama está acotado (16384 tokens por petición con la configuración actual:
-# `num_ctx` 32768 repartido entre dos slots), así que un documento que no quepa
+# `num_ctx` 16384 para una página por petición; ver
+# `ollama_api.DEFAULT_VISION_NUM_CTX`), así que un documento que no quepa
 # no se recorta: se resume **por bloques** y luego se resume el conjunto
 # (ver `services/document_pipeline.summary_blocks`). 16000 caracteres son ~4600
 # tokens en castellano y hasta ~8000 en euskera, que es el idioma que peor se

@@ -32,7 +32,9 @@ sys.path.insert(0, str(ROOT))
 
 from services import document_params as dp  # noqa: E402
 
-URL = "http://localhost:11434/api/chat"
+# 127.0.0.1 (no "localhost") para no medir el fallback de IPv6 de Windows:
+# cuesta ~2 s por petición y falsearía todos los tiempos del banco.
+URL = "http://127.0.0.1:11434/api/chat"
 
 #: Una página de texto «corta» como las del caso real: ~1200 caracteres.
 PAGINA = (

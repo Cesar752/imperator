@@ -1,4 +1,9 @@
-"""Motor local Ollama Vision (HTTP API en http://localhost:11434)."""
+"""Motor local Ollama Vision (HTTP API en http://127.0.0.1:11434).
+
+``127.0.0.1`` en vez de ``localhost``: el fallback de IPv6 de ``localhost``
+cuesta ~2 s por petición (medido: 2 040 ms frente a 15 ms), y aquí se paga una
+vez por página.
+"""
 
 import base64
 import logging
@@ -15,6 +20,12 @@ from engines.ollama_api import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: URL y modelo por defecto del motor. Deben coincidir con
+#: ``core.engine_manager._OLLAMA_VISION_DEFAULT_BASE_URL`` /
+#: ``_OLLAMA_VISION_DEFAULT_MODEL`` (test-guarda: tests/test_ollama_defaults.py).
+_DEFAULT_BASE_URL = "http://127.0.0.1:11434"
+_DEFAULT_MODEL = "qwen3-vl:8b"
 
 # Marcadores (subcadenas, en minúsculas) para detectar modelos con capacidad de
 # visión entre los expuestos por /api/tags.
@@ -67,8 +78,8 @@ class OllamaVisionEngine(VisionEngine):
 
     def __init__(
         self,
-        base_url: str = "http://localhost:11434",
-        default_model: str = "qwen3-vl:8b",
+        base_url: str = _DEFAULT_BASE_URL,
+        default_model: str = _DEFAULT_MODEL,
         num_ctx: int = _NUM_CTX,
         timeout: float | None = None,
     ) -> None:

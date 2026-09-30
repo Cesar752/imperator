@@ -60,9 +60,11 @@ _TYPE_TEMPLATES: dict[str, dict] = {
 }
 
 # URL (ruta) por defecto al añadir un motor de cada tipo.
+# 127.0.0.1 (no "localhost") para no pagar el fallback de IPv6: ver
+# core/config_manager.DEFAULT_ENGINES.
 _TYPE_URLS: dict[str, str] = {
-    "ollama": "http://localhost:11434",
-    "ollama_vision": "http://localhost:11434",
+    "ollama": "http://127.0.0.1:11434",
+    "ollama_vision": "http://127.0.0.1:11434",
     "comfyui": "http://127.0.0.1:8188",
     "bfl": "https://api.bfl.ai",
     "wanvideo": "http://127.0.0.1:8188",

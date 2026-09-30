@@ -306,12 +306,12 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
 ## 8. Estado actual
 
 - 7 pestañas: Chat, Documentos, Imagen, Vídeo, Comprensión, Audio, Ensamblador.
-- 20 tags (de v0.1-skeleton a v0.14-kokoro).
+- 21 tags (de v0.1-skeleton a v0.14-kokoro).
 - Sin refactor de configuración: se mantiene la arquitectura legacy
   (`config/*.json`) y se descartó el intento de config unificada
   (`~/.imperator/config.json`).
 - `bfl` incluido en `DEFAULT_ENGINES` (antes solo existía en el factory).
-- Suite de tests (stdlib `unittest`, 573 tests) + CI en GitHub Actions. Incluye
+- Suite de tests (stdlib `unittest`, 596 tests) + CI en GitHub Actions. Incluye
   un smoke test de la `MainWindow` opt-in (`IMPERATOR_GUI_SMOKE=1`), que el CI
   activa. Las suites nuevas (`test_gpu_scheduler`, `test_intent_router`,
   `test_perception_engine`, `test_video_understanding`) usan dobles: no
@@ -411,6 +411,27 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   la app por no poder medir sería peor que no tenerlo). Se configura en
   `settings.json` → `gpu_scheduler`. La ventana lo consulta en
   *Motores → Estado de la GPU…* (el sondeo va al pool, no al hilo de la UI).
+- **Quién lo usa hoy: sólo Comprensión** (`ui/understanding_widget.py` reserva con
+  `scheduler.job(...)` para cada motor de percepción). Chat, Documentos, Imagen y
+  Vídeo **no reservan**: la protección real frente al OOM sigue siendo el menú
+  *Liberar VRAM al cambiar de pestaña* y el `POST /free` de los motores. Medido
+  con la GPU real (RTX 5080, 16 303 MB): Flux Dev 1024×1024/20 pasos pica en
+  **15 438 MB**, el chat `qwen3.6:35b` a 16 384 ocupa **13 116 MB** y la visión
+  `qwen3-vl:8b` a 16 384 **10 210 MB**; con el chat cargado sólo quedan 645 MB
+  libres, así que cualquier trabajo de imagen fallaría por VRAM. Conectar el
+  planificador a esas cuatro tareas (o impedir el cambio de pestaña sin descargar)
+  queda como trabajo pendiente (§TODO.md).
+- Correcciones de la auditoría del 30/09/2026 (todas con medición detrás):
+  las URL de los motores locales usan `127.0.0.1` y no `localhost` (`localhost`
+  añadía ~2 s por petición por el fallback de IPv6 de Windows: 2 040 ms frente a
+  15 ms); `MAX_PARALLEL_PAGES` vuelve a `1` y la visión a 16 384 tokens (medido
+  con el worker real: 1,02x y 0,62x, el paralelo no compensaba); el progreso de
+  Documentos se emite **por página** (con lotes sólo llegaba el aviso del final
+  del lote); el modelo por defecto de `OllamaEngine` dejó de estar desincronizado
+  (`qwen3.5:9b` → `qwen3.6:35b`, con test-guarda); los `raise_for_status()`
+  sueltos de ComfyUI/BFL se traducen a `EngineError`; las descargas de resultados
+  tienen tope (`base_engine.MAX_DOWNLOAD_BYTES`, 512 MiB) y `ConfigManager`
+  serializa las escrituras (lock + temporal único + `update_settings`).
 - `services/intent_router.py` es el router de intención del chat: reglas léxicas
   deterministas (es/eu/en, sin LLM) que deciden a qué tarea apunta un mensaje.
   Exige **señal compuesta** (umbral 2.5): «pdf» a secas no enruta, «resume este

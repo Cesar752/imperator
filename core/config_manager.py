@@ -12,6 +12,8 @@ viven en ``config/*.example.json``.
 import json
 import logging
 import os
+import tempfile
+import threading
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -75,18 +77,25 @@ SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
 }
 
 # Valores por defecto (se escriben en disco cuando el archivo no existe).
+#
+# OJO con la URL de Ollama: se usa ``127.0.0.1`` y **no** ``localhost``. En
+# Windows ``localhost`` resuelve a ``::1`` y a ``127.0.0.1``; Ollama sólo escucha
+# en IPv4, así que la conexión a ``::1`` se rechaza (WinError 10061) y el
+# fallback a IPv4 cuesta ~2 s **por petición** (medido con la auditoría: 2 040 ms
+# con ``localhost`` frente a 15 ms con ``127.0.0.1``). Con ``localhost``, cada
+# página de un documento y cada mensaje del chat pagaban ese peaje.
 DEFAULT_ENGINES: list[dict[str, Any]] = [
     {
         "id": "ollama",
         "nombre": "Ollama",
-        "ruta": "http://localhost:11434",
+        "ruta": "http://127.0.0.1:11434",
         "enabled": True,
         "parametros": {"model": "qwen3.6:35b"},
     },
     {
         "id": "ollama_vision",
         "nombre": "Ollama Vision",
-        "ruta": "http://localhost:11434",
+        "ruta": "http://127.0.0.1:11434",
         "enabled": True,
         "parametros": {"model": "qwen3-vl:8b"},
     },
@@ -295,6 +304,9 @@ class ConfigManager:
         self._config_dir = Path(config_dir) if config_dir is not None else CONFIG_DIR
         self._config_dir.mkdir(parents=True, exist_ok=True)
         self._dotenv_loaded = False
+        # Serializa las escrituras: hay varios widgets (y workers) guardando
+        # preferencias en settings.json a la vez.
+        self._lock = threading.RLock()
 
     # ---- Motores -------------------------------------------------
 
@@ -324,6 +336,22 @@ class ConfigManager:
     def save_settings(self, settings: dict[str, Any]) -> None:
         self._save_json("settings.json", settings, SETTINGS_SCHEMA, is_list=False)
 
+    def update_settings(self, changes: dict[str, Any]) -> dict[str, Any]:
+        """Aplica ``changes`` sobre settings.json y devuelve el resultado.
+
+        Read-modify-write **bajo lock**: antes cada llamante hacía
+        ``load_settings()`` + modificar + ``save_settings()`` por su cuenta, así
+        que dos cambios simultáneos (p. ej. la geometría al cerrar mientras un
+        worker guarda una preferencia) podían perder uno de los dos.
+        """
+        with self._lock:
+            settings = self.load_settings()
+            settings.update(changes)
+            self._save_json(
+                "settings.json", settings, SETTINGS_SCHEMA, is_list=False
+            )
+            return settings
+
     # ---- Último modelo seleccionado por tarea --------------------
 
     def load_last_models(self) -> dict[str, str]:
@@ -332,10 +360,17 @@ class ConfigManager:
         return dict(settings.get("last_models", {}))
 
     def save_last_model(self, task_id: str, model: str) -> None:
-        """Guarda el último modelo seleccionado para una tarea (settings.json)."""
-        settings = self.load_settings()
-        settings.setdefault("last_models", {})[task_id] = model
-        self.save_settings(settings)
+        """Guarda el último modelo seleccionado para una tarea (settings.json).
+
+        Bajo el mismo lock que :meth:`update_settings`: el merge del mapa
+        ``last_models`` no puede pisar lo que guarde otro widget a la vez.
+        """
+        with self._lock:
+            settings = self.load_settings()
+            settings.setdefault("last_models", {})[task_id] = model
+            self._save_json(
+                "settings.json", settings, SETTINGS_SCHEMA, is_list=False
+            )
 
     # ---- Resolución de clave de API ------------------------------
 
@@ -374,8 +409,11 @@ class ConfigManager:
     ) -> Any:
         path = self._file_path(filename)
         if not path.exists():
-            self._atomic_dump(path, default)
-            logger.debug("Configuración por defecto creada en '%s'.", path)
+            with self._lock:
+                # Otra instancia puede haberlo creado mientras tanto.
+                if not path.exists():
+                    self._atomic_dump(path, default)
+                    logger.debug("Configuración por defecto creada en '%s'.", path)
             return deepcopy(default)
 
         try:
@@ -402,14 +440,26 @@ class ConfigManager:
     ) -> None:
         path = self._file_path(filename)
         _validate(data, schema, is_list=is_list, source=str(path))
-        self._atomic_dump(path, data)
+        with self._lock:
+            self._atomic_dump(path, data)
         logger.debug("Configuración guardada en '%s'.", path)
 
     def _atomic_dump(self, path: Path, data: Any) -> None:
-        """Escribe ``data`` en ``path`` de forma atómica (vía archivo temporal)."""
-        tmp = path.with_name(path.name + ".tmp")
+        """Escribe ``data`` en ``path`` de forma atómica (vía archivo temporal).
+
+        El temporal es **único por escritura** (``mkstemp``). Antes se usaba un
+        nombre fijo (``<archivo>.tmp``): dos escrituras simultáneas compartían el
+        mismo temporal y en Windows eso acaba en fichero en uso a medias (o en un
+        JSON truncado si una de las dos hace ``os.replace`` mientras la otra
+        escribe). El ``os.replace`` final sigue siendo atómico.
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f"{path.name}.", suffix=".tmp"
+        )
+        tmp = Path(tmp_name)
         try:
-            with tmp.open("w", encoding="utf-8") as fh:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, ensure_ascii=False, indent=2)
                 fh.write("\n")
             os.replace(tmp, path)

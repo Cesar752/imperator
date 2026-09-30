@@ -22,6 +22,46 @@ class EngineError(Exception):
 #: widgets lo importan para no mostrarlo como error. Ver ``ui.workers``.
 CANCEL_MESSAGE = "Cancelado por el usuario"
 
+#: Tope por defecto de las descargas de resultados (512 MiB). Los motores bajan
+#: binarios de un backend externo (imagen/vídeo de ComfyUI o de la API de BFL) sin
+#: ningún límite: un workflow mal configurado o un backend que devuelva otra cosa
+#: llenarían el disco sin avisar.
+MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
+
+
+def _declared_size(resp) -> int | None:
+    """Tamaño declarado en ``Content-Length`` (``None`` si no es legible)."""
+    try:
+        valor = resp.headers.get("Content-Length")
+    except (AttributeError, TypeError):
+        return None
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        return None
+
+
+def check_download_size(
+    resp, content: bytes, label: str, max_bytes: int = MAX_DOWNLOAD_BYTES
+) -> None:
+    """Comprueba que una descarga no excede ``max_bytes``.
+
+    Se revisa lo declarado en ``Content-Length`` (si el backend lo envía) y el
+    cuerpo ya recibido. Lanza :class:`EngineError` con el motivo, para que la UI
+    lo muestre como error de motor y no como un fallo inesperado.
+    """
+    declarado = _declared_size(resp)
+    if declarado is not None and declarado > max_bytes:
+        raise EngineError(
+            f"{label}: el resultado declara {declarado} bytes y el tope es "
+            f"{max_bytes} bytes; se descarta."
+        )
+    if len(content) > max_bytes:
+        raise EngineError(
+            f"{label}: el resultado ocupa {len(content)} bytes y el tope es "
+            f"{max_bytes} bytes; se descarta."
+        )
+
 
 class Engine(ABC):
     """Contrato común a todo motor: identidad, disponibilidad y modelos."""

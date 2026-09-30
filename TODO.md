@@ -2,27 +2,41 @@
 
 Notas pendientes (revisar al retomar el proyecto).
 
-## 0. Reanudar aquí (mañana): ¿merece la pena el paralelismo?
+## 0. RESUELTO (30/09/2026): el paralelismo de páginas no compensa
 
-**Estado en el que se queda todo:** el procesado de documentos va **de dos
-páginas a la vez** (`ui/document_widget.MAX_PARALLEL_PAGES = 2`), con
-`OLLAMA_NUM_PARALLEL=2` **ya fijado en tu entorno de usuario** y Ollama
-reiniciado, y el contexto doblado en los dos motores (visión **32768** = 16 384
-por página; chat **16384** = los 8 192 de siempre, repartidos entre dos slots).
-Medido con páginas sintéticas: **0,84x** sin slots forzados, **1,32x** con dos
-slots y **1,68x** en peticiones crudas por HTTP. Suite: **422 tests en verde**,
-árbol limpio (lo último que entró es el pipeline por fases del §6: el alcance
-automático del §6.1, que arregla el resumen de 20 minutos, y el arreglo de
-calidad del §6.2, que quita el recorte, la extrapolación y el cambio de idioma).
+**Decisión:** `ui/document_widget.MAX_PARALLEL_PAGES = 1` y contexto de vuelta a
+**chat 8 192 / visión 16 384** en `config/engines.json`. El paralelo se descartó
+por medición, no por intuición (el doble de contexto sólo servía para repartir
+16 384 entre dos slots de Ollama).
 
-**Lo único que hay que hacer mañana:** procesar **un PDF real de varias páginas**
-en Documentos (con `qwen3-vl:8b`) y cronometrarlo **dos veces**: una con
-`MAX_PARALLEL_PAGES = 1` y otra con `2`. Decidir con esos números:
+**Medición (auditoría del 30/09 con el `DocumentWorker` real, PDF de 2 páginas,
+`qwen3-vl:8b`, modo resumen por página):**
 
-- **Si gana** (≥ 1,2x): se queda como está.
-- **Si no gana, o algo falla:** deshacer es quitar la variable de entorno
-  `OLLAMA_NUM_PARALLEL` (y reiniciar Ollama), poner `MAX_PARALLEL_PAGES = 1` y
-  devolver los `num_ctx` a visión 16384 / chat 8192.
+| `parallel` | Corrida 1 | Corrida 2 |
+| --- | --- | --- |
+| 1 (serie) | 60,1 s | **43,8 s** |
+| 2 (lotes) | 59,2 s | **70,1 s** |
+
+→ **1,02x** y **0,62x**: ninguna vez mejor en serie. Y con lotes el widget sólo
+recibía **un aviso de progreso por lote** (la barra saltaba de 0 a 2/2), lo que
+también quedó corregido: ahora se emite una vez por página desde la propia tarea
+(`DocumentWorker._with_progress`).
+
+**Para volver a probarlo** (si algún día hay varios slots de verdad): subir
+`MAX_PARALLEL_PAGES`, volver a doblar `num_ctx` (visión 32 768) y cronometrar el
+**mismo** documento en las dos configuraciones, mirando segundos por página.
+
+**Estado de la suite en esta sesión:** **596 tests en verde** (2 skips) y árbol
+limpio: snapshot del trabajo anterior (`a0e40fb`) + las correcciones de la
+auditoría.
+
+**Siguiente pendiente, por impacto medido:** conectar el `GpuScheduler` a Imagen,
+Vídeo, Documentos y Chat (hoy sólo lo usa Comprensión). Los números de la
+auditoría: Flux Dev pica en **15 438 MB**, el chat 35b ocupa **13 116 MB** y la
+visión 8b **10 210 MB** de los 16 303 MB de la GPU, así que ninguna de esas
+cuatro tareas puede convivir con otra si no reservan antes (o si no se descarga el
+modelo al cambiar de pestaña). Otras deudas anotadas: retención de `output/`
+(171 ficheros acumulados), `pyright`/`ruff` en el CI y `constraints.txt`.
 
 **Cómo medir sin engañarse:** el `thinking` del modelo hace que el tiempo varíe
 muchísimo entre ejecuciones — las **mismas** 3 páginas en serie tardaron 106 s en

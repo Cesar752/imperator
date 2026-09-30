@@ -38,6 +38,10 @@ python -m unittest discover -s tests -v
 
 - La configuración vive en `config/*.json` (ignorada por git); las plantillas
   versionadas son `config/*.example.json`.
+- Las URL de los motores locales se escriben con **`127.0.0.1`, no `localhost`**:
+  en Windows `localhost` intenta primero IPv6 (`::1`), donde Ollama y ComfyUI no
+  escuchan, y cada petición pagaba ~2 s de fallback (medido: 2 040 ms frente a
+  15 ms). Si tu `engines.json` venía con `localhost`, la app lo avisa en el log.
 - Los secretos se leen **solo** de `.env` (p. ej. `BFL_API_KEY`); el campo
   `key` de `apis.json` está deprecado y se ignora.
 - `settings.json` acepta `log_level` y `rutas.logs` para el nivel de log y un

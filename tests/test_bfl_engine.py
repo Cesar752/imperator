@@ -59,6 +59,37 @@ class BFLTest(unittest.TestCase):
             self.engine._submit("flux-kontext-pro", {"prompt": "x"})
 
     @mock.patch("requests.get")
+    def test_el_polling_traduce_el_http_error(self, get) -> None:
+        """Antes salía un ``requests.HTTPError`` crudo sin contexto de la API."""
+        get.return_value = _response(status_code=403, text="sin cuota")
+        with self.assertRaises(EngineError) as ctx:
+            self.engine._wait("https://api.bfl.ai/v1/get_result?id=1")
+        self.assertIn("403", str(ctx.exception))
+
+    @mock.patch("requests.get")
+    def test_descarga_con_http_error(self, get) -> None:
+        get.return_value = _response(status_code=500, text="boom")
+        with self.assertRaises(EngineError) as ctx:
+            self.engine._download_and_save("https://x/y.png", 0)
+        self.assertIn("500", str(ctx.exception))
+
+    @mock.patch("requests.get")
+    def test_descarga_demasiado_grande(self, get) -> None:
+        self.engine._MAX_DOWNLOAD_BYTES = 4
+        get.return_value = _response(content=b"x" * 5)
+        with self.assertRaises(EngineError) as ctx:
+            self.engine._download_and_save("https://x/y.png", 0)
+        self.assertIn("tope", str(ctx.exception))
+
+    @mock.patch("requests.get")
+    def test_descarga_ok_guarda_el_png(self, get) -> None:
+        get.return_value = _response(content=b"png-bytes")
+        ruta = self.engine._download_and_save("https://x/y.png", 7)
+        self.assertTrue(ruta.exists())
+        self.assertEqual(ruta.read_bytes(), b"png-bytes")
+        self.assertIn("7", ruta.name)
+
+    @mock.patch("requests.get")
     @mock.patch("requests.post")
     def test_generate_image_end_to_end(self, post, get) -> None:
         post.return_value = _response({"polling_url": "http://poll"})

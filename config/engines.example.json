@@ -2,7 +2,7 @@
   {
     "id": "ollama",
     "nombre": "Ollama",
-    "ruta": "http://localhost:11434",
+    "ruta": "http://127.0.0.1:11434",
     "enabled": true,
     "parametros": {
       "model": "qwen3.6:35b"
@@ -11,7 +11,7 @@
   {
     "id": "ollama_vision",
     "nombre": "Ollama Vision",
-    "ruta": "http://localhost:11434",
+    "ruta": "http://127.0.0.1:11434",
     "enabled": true,
     "parametros": {
       "model": "qwen3-vl:8b"

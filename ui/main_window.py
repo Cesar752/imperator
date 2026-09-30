@@ -347,9 +347,12 @@ class MainWindow(QMainWindow):
         return bool(settings.get("unload_on_tab_change", True))
 
     def _on_unload_toggle(self, checked: bool) -> None:
-        settings = self._engine_manager.config_manager.load_settings()
-        settings["unload_on_tab_change"] = checked
-        self._engine_manager.config_manager.save_settings(settings)
+        # ``update_settings`` hace el read-modify-write bajo lock: antes se leía
+        # y escribía a mano y dos cambios simultáneos (otro widget guardando una
+        # preferencia) podían perder uno de los dos.
+        self._engine_manager.config_manager.update_settings(
+            {"unload_on_tab_change": checked}
+        )
 
     def _theme_is_dark(self) -> bool:
         settings = self._engine_manager.config_manager.load_settings()
@@ -357,9 +360,7 @@ class MainWindow(QMainWindow):
 
     def _on_theme_toggled(self, checked: bool) -> None:
         theme = "dark" if checked else "light"
-        settings = self._engine_manager.config_manager.load_settings()
-        settings["theme"] = theme
-        self._engine_manager.config_manager.save_settings(settings)
+        self._engine_manager.config_manager.update_settings({"theme": theme})
         app = QApplication.instance()
         if app is not None:
             apply_theme(app, theme)
@@ -368,9 +369,7 @@ class MainWindow(QMainWindow):
         return int(self._engine_manager.config_manager.load_settings().get("font_size", 11))
 
     def _on_font_size(self, size: int) -> None:
-        settings = self._engine_manager.config_manager.load_settings()
-        settings["font_size"] = size
-        self._engine_manager.config_manager.save_settings(settings)
+        self._engine_manager.config_manager.update_settings({"font_size": size})
         app = QApplication.instance()
         if app is not None:
             font = app.font()
@@ -380,15 +379,17 @@ class MainWindow(QMainWindow):
     def _save_geometry(self) -> None:
         try:
             g = self.normalGeometry()
-            settings = self._engine_manager.config_manager.load_settings()
-            settings["geometry"] = {
-                "x": g.x(),
-                "y": g.y(),
-                "width": g.width(),
-                "height": g.height(),
-                "maximized": self.isMaximized(),
-            }
-            self._engine_manager.config_manager.save_settings(settings)
+            self._engine_manager.config_manager.update_settings(
+                {
+                    "geometry": {
+                        "x": g.x(),
+                        "y": g.y(),
+                        "width": g.width(),
+                        "height": g.height(),
+                        "maximized": self.isMaximized(),
+                    }
+                }
+            )
         except Exception as exc:  # noqa: BLE001 - no bloquear el cierre
             logger.warning("No se pudo guardar la geometría de la ventana: %s", exc)
 

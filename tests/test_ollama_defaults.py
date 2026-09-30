@@ -20,10 +20,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from core import engine_manager as em  # noqa: E402
 from core.config_manager import DEFAULT_ENGINES  # noqa: E402
 from core.engine_manager import _OLLAMA_DEFAULT_MODEL  # noqa: E402
 from core.paths import PROJECT_ROOT  # noqa: E402
 from engines import ollama as ollama_mod  # noqa: E402
+from engines import ollama_vision as vision_mod  # noqa: E402
 from engines.ollama import OllamaEngine  # noqa: E402
 from engines.ollama_api import DEFAULT_NUM_CTX, DEFAULT_VISION_NUM_CTX  # noqa: E402
 from engines.ollama_vision import OllamaVisionEngine  # noqa: E402
@@ -51,6 +53,71 @@ class OllamaDefaultModelTest(unittest.TestCase):
             entrada for entrada in ejemplo if entrada["id"] == "ollama"
         )["parametros"]["model"]
         self.assertEqual(modelo, _OLLAMA_DEFAULT_MODEL)
+
+
+class URLSinLocalhostTest(unittest.TestCase):
+    """``localhost`` cuesta ~2 s por petición en Windows (fallback de IPv6).
+
+    Medido en la auditoría: ``/api/version`` tardaba 2 041 ms con ``localhost`` y
+    15 ms con ``127.0.0.1``; lo mismo en ComfyUI. Estos tests impiden que el
+    ``localhost`` vuelva a colarse por las plantillas o los valores por defecto.
+    """
+
+    def test_los_defaults_de_la_configuracion_usan_la_ip(self) -> None:
+        for entrada in DEFAULT_ENGINES:
+            if entrada["id"] in ("ollama", "ollama_vision"):
+                self.assertNotIn("localhost", entrada["ruta"])
+                self.assertIn("127.0.0.1", entrada["ruta"])
+
+    def test_los_motores_y_el_gestor_coinciden(self) -> None:
+        self.assertEqual(ollama_mod._DEFAULT_BASE_URL, em._OLLAMA_DEFAULT_BASE_URL)
+        self.assertEqual(ollama_mod._DEFAULT_MODEL, em._OLLAMA_DEFAULT_MODEL)
+        self.assertEqual(
+            vision_mod._DEFAULT_BASE_URL, em._OLLAMA_VISION_DEFAULT_BASE_URL
+        )
+        self.assertEqual(vision_mod._DEFAULT_MODEL, em._OLLAMA_VISION_DEFAULT_MODEL)
+        for url in (
+            ollama_mod._DEFAULT_BASE_URL,
+            em._OLLAMA_DEFAULT_BASE_URL,
+            vision_mod._DEFAULT_BASE_URL,
+            em._OLLAMA_VISION_DEFAULT_BASE_URL,
+        ):
+            self.assertNotIn("localhost", url)
+
+    def test_construir_el_motor_sin_argumentos_usa_los_mismos_defaults(self) -> None:
+        # El motor decía ``qwen3.5:9b`` mientras el proyecto usaba ``qwen3.6:35b``.
+        self.assertEqual(OllamaEngine().default_model, em._OLLAMA_DEFAULT_MODEL)
+        self.assertEqual(
+            OllamaVisionEngine()._default_model, em._OLLAMA_VISION_DEFAULT_MODEL
+        )
+
+    def test_la_ui_y_el_ejemplo_versionado_no_registran_localhost(self) -> None:
+        from ui import engines_dialog as ed
+
+        self.assertNotIn("localhost", ed._TYPE_URLS["ollama"])
+        self.assertNotIn("localhost", ed._TYPE_URLS["ollama_vision"])
+        ejemplo = json.loads(
+            (PROJECT_ROOT / "config" / "engines.example.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        for entrada in ejemplo:
+            self.assertNotIn("localhost", entrada["ruta"])
+
+
+class ParalelismoDePaginasTest(unittest.TestCase):
+    """El procesado de páginas por lotes se descartó **por medición**."""
+
+    def test_las_paginas_van_de_una_en_una(self) -> None:
+        from ui.document_widget import MAX_PARALLEL_PAGES
+
+        # Medido con el worker real y 2 páginas: 1,02x y 0,62x (nunca mejor que
+        # en serie), y con lotes el progreso sólo avisaba del final del lote.
+        self.assertEqual(MAX_PARALLEL_PAGES, 1)
+
+    def test_el_contexto_de_vision_no_esta_doblado(self) -> None:
+        # El doble (32768) sólo servía para repartir 16384 entre dos slots.
+        self.assertEqual(DEFAULT_VISION_NUM_CTX, 16_384)
 
 
 class OllamaContextTest(unittest.TestCase):

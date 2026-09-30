@@ -3,6 +3,7 @@
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -105,6 +106,43 @@ class ValidationTest(unittest.TestCase):
     def test_last_models_roundtrip(self) -> None:
         self.cm.save_last_model("chat", "qwen3.5:9b")
         self.assertEqual(self.cm.load_last_models().get("chat"), "qwen3.5:9b")
+
+    def test_update_settings_conserva_lo_que_no_cambia(self) -> None:
+        """El read-modify-write va bajo lock: no puede perder otras claves.
+
+        Antes cada llamante hacía ``load_settings()`` + modificar +
+        ``save_settings()``; dos cambios a la vez se pisaban (uno de los dos
+        desaparecía). Aquí se comprueba que un cambio no borra el resto.
+        """
+        self.cm.save_last_model("chat", "modelo-x")
+        self.cm.update_settings({"theme": "light"})
+        self.cm.update_settings({"font_size": 14})
+        settings = self.cm.load_settings()
+        self.assertEqual(settings["theme"], "light")
+        self.assertEqual(settings["font_size"], 14)
+        self.assertEqual(settings["last_models"], {"chat": "modelo-x"})
+        self.assertEqual(settings["log_level"], "INFO")
+
+    def test_guardar_last_models_no_pisa_otras_claves(self) -> None:
+        self.cm.update_settings({"theme": "light"})
+        self.cm.save_last_model("video", "i2v")
+        settings = self.cm.load_settings()
+        self.assertEqual(settings["theme"], "light")
+        self.assertEqual(settings["last_models"], {"video": "i2v"})
+
+    def test_escrituras_concurrentes_no_dejan_basura_ni_corrompen(self) -> None:
+        """Varias escrituras a la vez: JSON válido, sin temporales huérfanos."""
+        hilos = [
+            threading.Thread(target=self.cm.save_last_model, args=(f"t{i}", str(i)))
+            for i in range(8)
+        ]
+        for hilo in hilos:
+            hilo.start()
+        for hilo in hilos:
+            hilo.join()
+        self.assertEqual(list(Path(self._tmp.name).glob("*.tmp")), [])
+        modelos = self.cm.load_last_models()
+        self.assertEqual(len(modelos), 8)
 
 
 class ApiKeyTest(unittest.TestCase):

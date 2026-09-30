@@ -11,7 +11,12 @@ from typing import Callable
 import requests
 from dotenv import load_dotenv
 
-from engines.base_engine import CANCEL_MESSAGE, EngineError, ImageEngine
+from engines.base_engine import (
+    CANCEL_MESSAGE,
+    EngineError,
+    ImageEngine,
+    check_download_size,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +44,8 @@ class BFLApiEngine(ImageEngine):
     _DOWNLOAD_TIMEOUT = 120.0
     _GENERATE_TIMEOUT = 600.0
     _POLL_INTERVAL = 1.0
+    #: Tope del resultado descargado (ver base_engine.MAX_DOWNLOAD_BYTES).
+    _MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
 
     def __init__(
         self,
@@ -184,7 +191,15 @@ class BFLApiEngine(ImageEngine):
                 raise EngineError(
                     f"Black Forest Labs: error consultando el estado: {exc}"
                 ) from exc
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                # Sin este envoltorio, un ``requests.HTTPError`` (403 por cuota,
+                # 500 del servidor) salía crudo y la UI lo mostraba como «error
+                # inesperado» en vez de un error del motor con su contexto.
+                raise EngineError(
+                    "Black Forest Labs: la API devolvió "
+                    f"HTTP {resp.status_code} al consultar el estado de la tarea: "
+                    f"{resp.text[:200]}"
+                )
             result = resp.json()
             status = result.get("status")
             if status == "Ready":
@@ -226,12 +241,17 @@ class BFLApiEngine(ImageEngine):
     def _download_and_save(self, url: str, seed: int) -> Path:
         try:
             resp = requests.get(url, timeout=self._DOWNLOAD_TIMEOUT)
-            resp.raise_for_status()
-            content = resp.content
         except requests.RequestException as exc:
             raise EngineError(
                 f"Black Forest Labs: error descargando la imagen: {exc}"
             ) from exc
+        if resp.status_code >= 400:
+            raise EngineError(
+                "Black Forest Labs: la API devolvió "
+                f"HTTP {resp.status_code} al descargar la imagen."
+            )
+        content = resp.content
+        check_download_size(resp, content, "Black Forest Labs", self._MAX_DOWNLOAD_BYTES)
         self._output_dir.mkdir(parents=True, exist_ok=True)
         filename = f"bfl_{datetime.now():%Y%m%d_%H%M%S}_{seed}.png"
         path = self._output_dir / filename

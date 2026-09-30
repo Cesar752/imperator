@@ -18,7 +18,7 @@ from uuid import uuid4
 
 import requests
 
-from engines.base_engine import Engine, EngineError
+from engines.base_engine import Engine, EngineError, check_download_size
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,8 @@ class ComfyUIBaseEngine(Engine):
     _SUBMIT_TIMEOUT = 30.0      # POST /prompt
     _VIEW_TIMEOUT = 120.0       # GET /view (descarga del resultado)
     _UPLOAD_TIMEOUT = 60.0      # POST /upload/image
+    #: Tope del resultado descargado (ver base_engine.MAX_DOWNLOAD_BYTES).
+    _MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
 
     def __init__(
         self,
@@ -146,7 +148,14 @@ class ComfyUIBaseEngine(Engine):
             raise EngineError(
                 f"{self._LABEL}: error subiendo la imagen: {exc}"
             ) from exc
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            # ``raise_for_status()`` lanzaba un ``requests.HTTPError`` que se
+            # escapaba del contrato de los motores (la UI lo mostraba como «error
+            # inesperado» sin decir qué operación falló).
+            raise EngineError(
+                f"{self._LABEL}: HTTP {resp.status_code} al subir la imagen "
+                f"'{image_path.name}' a {self._base_url}/upload/image."
+            )
         try:
             info = resp.json()
         except ValueError as exc:
@@ -205,11 +214,22 @@ class ComfyUIBaseEngine(Engine):
         subfolder = media_meta.get("subfolder", "")
         if subfolder:
             params["subfolder"] = subfolder
-        resp = requests.get(
-            f"{self._base_url}/view", params=params, timeout=self._VIEW_TIMEOUT
-        )
-        resp.raise_for_status()
-        return resp.content
+        try:
+            resp = requests.get(
+                f"{self._base_url}/view", params=params, timeout=self._VIEW_TIMEOUT
+            )
+        except requests.RequestException as exc:
+            raise EngineError(
+                f"{self._LABEL}: error descargando el resultado: {exc}"
+            ) from exc
+        if resp.status_code >= 400:
+            raise EngineError(
+                f"{self._LABEL}: HTTP {resp.status_code} al descargar el resultado "
+                f"'{media_meta.get('filename')}'."
+            )
+        content = resp.content
+        check_download_size(resp, content, self._LABEL, self._MAX_DOWNLOAD_BYTES)
+        return content
 
     def _save(self, content: bytes, seed: int, ext: str = ".png") -> Path:
         """Guarda el resultado en ``output/`` con nombre único."""

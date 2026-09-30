@@ -3,7 +3,7 @@
 import logging
 from copy import deepcopy
 
-from core.config_manager import DEFAULT_ENGINES, ConfigManager
+from core.config_manager import DEFAULT_ENGINES, ConfigError, ConfigManager
 from engines.base_engine import Engine
 from engines.bfl import BFLApiEngine
 from engines.comfyui import ComfyUIEngine
@@ -38,9 +38,13 @@ ENGINE_FACTORY: dict[str, type[Engine]] = {
 }
 
 # Defaults por tipo de motor (si faltan en la configuración).
-_OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
+#
+# Se usa ``127.0.0.1`` en vez de ``localhost`` a propósito: con ``localhost`` la
+# conexión intenta primero ``::1`` (donde Ollama no escucha), es rechazada y el
+# fallback a IPv4 cuesta ~2 s por petición (medido: 2 040 ms frente a 15 ms).
+_OLLAMA_DEFAULT_BASE_URL = "http://127.0.0.1:11434"
 _OLLAMA_DEFAULT_MODEL = "qwen3.6:35b"
-_OLLAMA_VISION_DEFAULT_BASE_URL = "http://localhost:11434"
+_OLLAMA_VISION_DEFAULT_BASE_URL = "http://127.0.0.1:11434"
 _OLLAMA_VISION_DEFAULT_MODEL = "qwen3-vl:8b"
 _COMFYUI_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
 _WANVIDEO_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
@@ -106,9 +110,27 @@ class EngineManager:
                 logger.error("No se pudo construir el motor '%s': %s", engine_id, exc)
 
     @staticmethod
+    def _avisar_si_usa_localhost(engine_id: str, ruta: str | None) -> None:
+        """Avisa si la URL del motor usa ``localhost`` (cuesta ~2 s por petición).
+
+        En Windows ``localhost`` resuelve a ``::1`` y a ``127.0.0.1``; Ollama y
+        ComfyUI sólo escuchan en IPv4, así que se paga el fallback en cada
+        llamada (medido en la auditoría: 2 040 ms frente a 15 ms). No se
+        reescribe la configuración del usuario: sólo se avisa.
+        """
+        if isinstance(ruta, str) and "localhost" in ruta:
+            logger.warning(
+                "El motor '%s' usa 'localhost' (%s): cada petición pagará ~2 s de "
+                "fallback a IPv4. Cambia la 'ruta' a '127.0.0.1'.",
+                engine_id,
+                ruta,
+            )
+
+    @staticmethod
     def _build(engine_id: str, entry: dict) -> Engine:
         """Construye la instancia de un motor a partir de su configuración."""
         params = entry.get("parametros", {})
+        EngineManager._avisar_si_usa_localhost(engine_id, entry.get("ruta"))
         # ``num_ctx`` (y ``num_predict`` en el chat) se pueden fijar por motor en
         # engines.json; si no están, se usan los valores del propio motor, que son
         # la única fuente de verdad.
@@ -185,7 +207,15 @@ class EngineManager:
             )
         # Genérico para futuros motores: los parametros se pasan tal cual.
         cls = ENGINE_FACTORY[engine_id]
-        return cls(**params)
+        try:
+            return cls(**params)
+        except TypeError as exc:
+            # Antes salía un ``TypeError`` crudo que la UI mostraba como «error
+            # inesperado»; el problema real es de la configuración del motor.
+            raise ConfigError(
+                f"El motor '{engine_id}' no acepta esos 'parametros' en "
+                f"engines.json ({exc})."
+            ) from exc
 
     # ---- Consultas ----------------------------------------------
 
@@ -218,7 +248,13 @@ class EngineManager:
     # ---- Mutación (persisten vía ConfigManager) -----------------
 
     def add_engine(self, config: dict) -> None:
+        """Añade un motor a la configuración (no admite ids repetidos)."""
+        engine_id = config.get("id", "")
         engines = self._config.load_engines()
+        if any(entry.get("id") == engine_id for entry in engines):
+            # El esquema ya rechaza ids duplicados al guardar, pero el mensaje
+            # genérico («id duplicado») no decía qué motor ni por qué.
+            raise ConfigError(f"Ya existe un motor con el id '{engine_id}'.")
         engines.append(config)
         self._config.save_engines(engines)
         self.reload()

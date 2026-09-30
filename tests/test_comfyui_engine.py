@@ -119,6 +119,37 @@ class ComfyUISubmitTest(unittest.TestCase):
         with self.assertRaises(EngineError):
             self.engine._submit({})
 
+    @mock.patch("requests.post")
+    def test_upload_con_http_error_da_engine_error(self, post) -> None:
+        """Un HTTPError crudo se escapaba del contrato de los motores."""
+        imagen = self.dir / "ref.png"
+        imagen.write_bytes(b"png")
+        post.return_value = _response(status_code=413, text="demasiado grande")
+        with self.assertRaises(EngineError) as ctx:
+            self.engine._upload_image(imagen)
+        self.assertIn("413", str(ctx.exception))
+
+    @mock.patch("requests.get")
+    def test_descarga_con_http_error_da_engine_error(self, get) -> None:
+        get.return_value = _response(status_code=500, text="boom")
+        with self.assertRaises(EngineError) as ctx:
+            self.engine._download({"filename": "x.png"})
+        self.assertIn("500", str(ctx.exception))
+
+    @mock.patch("requests.get")
+    def test_descarga_demasiado_grande_da_engine_error(self, get) -> None:
+        """Sin tope, un backend que devuelva un cuerpo enorme llena el disco."""
+        self.engine._MAX_DOWNLOAD_BYTES = 4
+        get.return_value = _response(content=b"x" * 5)
+        with self.assertRaises(EngineError) as ctx:
+            self.engine._download({"filename": "x.png"})
+        self.assertIn("tope", str(ctx.exception))
+
+    @mock.patch("requests.get")
+    def test_descarga_normal_sigue_funcionando(self, get) -> None:
+        get.return_value = _response(content=b"png-bytes")
+        self.assertEqual(self.engine._download({"filename": "x.png"}), b"png-bytes")
+
     @mock.patch("requests.get")
     def test_is_available(self, get) -> None:
         get.return_value = _response({}, status_code=200)

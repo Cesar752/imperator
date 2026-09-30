@@ -1,9 +1,16 @@
 """Ayuda compartida para hablar con la API HTTP de Ollama.
 
-Ollama tarda ~2 s en responder ``GET /api/tags`` (con 13 modelos, recalcula
-tamaños en disco en cada llamada). Sin caché, el arranque de Imperator lo
-llama 3 veces de forma síncrona (Chat, Documentos y barra de estado) y bloquea
-~6 s. Esta caché corta (TTL) colapsa esas llamadas en una sola.
+Sin caché, el arranque de Imperator llama a ``GET /api/tags`` tres veces de
+forma síncrona (Chat, Documentos y barra de estado) y bloquea lo que tarde cada
+una. Esta caché corta (TTL) colapsa esas llamadas en una sola.
+
+Ojo con el motivo del retardo: durante mucho tiempo se atribuyó a que Ollama
+recalcula los tamaños en disco, pero **era falso**. Medido en la auditoría, cada
+petición (incluso ``/api/version``, que no calcula nada) tardaba ~2 s si la URL
+usaba ``localhost`` y ~15 ms con ``127.0.0.1``: en Windows ``localhost`` resuelve
+a ``::1`` y a ``127.0.0.1``, Ollama sólo escucha en IPv4, la conexión a ``::1``
+se rechaza (WinError 10061) y el fallback a IPv4 cuesta esos ~2 s. Por eso la
+configuración usa ``127.0.0.1`` (ver ``core.config_manager.DEFAULT_ENGINES``).
 """
 
 import time
@@ -21,23 +28,21 @@ _TAGS_TTL = 30.0  # segundos
 #: (``options.num_ctx``); el servidor lo respeta (comprobado con /api/ps).
 DEFAULT_NUM_CTX = 8192
 
-#: Ventana de contexto para el análisis de documentos, mayor que la del chat por
-#: dos motivos que se suman:
+#: Ventana de contexto para el análisis de documentos, el doble que la del chat
+#: porque los modelos de visión tipo qwen3-vl gastan ~90 % de los tokens en
+#: ``thinking`` (medido: 4143 tokens generados para 390 caracteres de respuesta):
+#: con 8192, el prompt + el razonamiento llenaban la ventana y la respuesta
+#: llegaba vacía. Con 16384 cabe una página de ~9 800 caracteres (4 303 tokens de
+#: prompt) más su razonamiento.
 #:
-#: 1. El **razonamiento**: los modelos de visión tipo qwen3-vl gastan ~90% de los
-#:    tokens en ``thinking`` (medido: 4143 tokens generados para 390 caracteres
-#:    de respuesta), así que con 8192 el prompt + el razonamiento llenaban la
-#:    ventana y la respuesta llegaba vacía.
-#: 2. El **reparto entre slots**: si se activa el procesado por lotes
-#:    (``ui.document_widget.MAX_PARALLEL_PAGES``) hay que doblar este valor,
-#:    porque Ollama divide ``num_ctx`` entre las peticiones que atiende a la vez:
-#:    con 16384 pedidos, cada página se quedaría en 8192 y volverían los fallos de
-#:    contexto. Para dos páginas a la vez, 32768 (medido: 9,5 GB de VRAM con
-#:    ``qwen3-vl:8b``, cabe entero en los 16 GB de la GPU).
-#:
-#: Es el valor que se usa por defecto, porque el procesado va de dos en dos
-#: (``ui.document_widget.MAX_PARALLEL_PAGES``).
-DEFAULT_VISION_NUM_CTX = 32768
+#: Era 32768 únicamente para el procesado **por lotes**: Ollama reparte
+#: ``num_ctx`` entre las peticiones simultáneas, así que dos páginas a la vez
+#: exigían el doble. El paralelismo se descartó por medición
+#: (``ui.document_widget.MAX_PARALLEL_PAGES`` es ``1`` y el doble no aportaba:
+#: 1,02x y 0,62x), así que el valor vuelve a 16384. Si alguien vuelve a subir
+#: ``MAX_PARALLEL_PAGES`` con ``OLLAMA_NUM_PARALLEL=2``, tiene que doblar esto
+#: otra vez (y asumir los ~9,5 GB de VRAM que ocupa el modelo con 32768).
+DEFAULT_VISION_NUM_CTX = 16_384
 
 
 def fetch_tags(base_url: str, timeout: float = 2.0) -> dict:
