@@ -425,18 +425,33 @@ def render_tables(index: int, body: str) -> Section:
     return Section(title=TABLES_HEADING.format(index=index), body=body)
 
 
-_NUMERO_RE = re.compile(r"\d[\d.,]*")
+#: Separadores de millar que se aceptan **dentro** de una cifra: el espacio
+#: normal, el duro (``\u00a0``), el fino (``\u202f``/``\u2009``), el punto y la
+#: coma. El regex exige grupos de tres dígitos, que es lo que distingue un
+#: separador de millar de dos números distintos separados por un espacio
+#: («74 personas y 1 240 horas» son 74 y 1 240, no 74 124).
+_SEP_MILLAR = r"[ \u00a0\u202f\u2009.,]"
+_NUMERO_RE = re.compile(
+    rf"\d{{1,3}}(?:{_SEP_MILLAR}\d{{3}})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?"
+)
 
 
 def numbers(text: str) -> tuple[str, ...]:
     """Cifras del texto normalizadas a dígitos («1.234,50» → «123450»).
 
-    Quita separadores de millar y de decimal para que «2,5» y «2.5» se comparen
-    igual, sin depender del formato que use el modelo.
+    Quita separadores de millar y de decimal para que la misma cifra se compare
+    igual sin depender del formato: «4 320 000» (espacio, la tipografía española
+    que sale de un PDF), «4.320.000» y «4,320,000» son todas «4320000».
+
+    No siempre fue así: el regex anterior sólo veía puntos y comas, así que un
+    documento con «4 320 000» se leía como tres números (4, 320, 000) y el aviso
+    de fidelidad marcaba la misma cifra como **inventada** y como **omitida** a la
+    vez (medido el 30/09/2026 con un PDF de 10 páginas: 8 falsos positivos de
+    «datos inventados» sobre un resumen fiel).
     """
     salida: list[str] = []
     for bruto in _NUMERO_RE.findall(text or ""):
-        digitos = bruto.rstrip(".,").replace(".", "").replace(",", "")
+        digitos = re.sub(r"[^\d]", "", bruto)
         if digitos:
             salida.append(digitos)
     return tuple(salida)
@@ -446,7 +461,90 @@ def significant_numbers(
     text: str, min_digits: int = MIN_FIDELITY_DIGITS
 ) -> tuple[str, ...]:
     """Cifras con al menos ``min_digits`` dígitos, sin repetir y en orden."""
-    return tuple(dict.fromkeys(n for n in numbers(text) if len(n) >= min_digits))
+    return tuple(n for n in comparable_numbers(text) if len(n) >= min_digits)
+
+
+#: Factores de las palabras con las que el modelo abrevia cifras grandes.
+#: «4,32 millones» vale 4 320 000 y el documento lo escribe completo: sin esto,
+#: el aviso de fidelidad marcaba como inventadas las cifras abreviadas (medido:
+#: «4,32 millones» → 432 y «1,45 millones» → 145, ambos falsos positivos).
+_ESCALA = {
+    "mil": 10**3,
+    "millon": 10**6,
+    "millones": 10**6,
+    "million": 10**6,
+    "millions": 10**6,
+    "billon": 10**12,
+    "billones": 10**12,
+    "billion": 10**9,
+    "billions": 10**9,
+}
+
+#: Cifra seguida de una palabra («4,32 millones»). La palabra se captura completa
+#: para no confundir «mil» con «milagro».
+_ESCALA_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*([^\W\d_]+)", re.UNICODE)
+
+
+def scaled_numbers(text: str) -> tuple[str, ...]:
+    """Cifras abreviadas con palabra de escala, expandidas a dígitos.
+
+    ``«4,32 millones»`` → ``("4320000",)``. Se comparan junto a las cifras
+    completas, así que «4 320 000» (documento) y «4,32 millones» (resumen) se
+    reconocen como la misma cantidad.
+    """
+    return tuple(expandido for _, expandido in _expansiones(text))
+
+
+def _expansiones(text: str) -> tuple[tuple[str, str], ...]:
+    """Pares ``(literal, expandido)`` de las cifras abreviadas del texto."""
+    salida: list[tuple[str, str]] = []
+    for valor, palabra in _ESCALA_RE.findall(text or ""):
+        factor = _ESCALA.get(_sin_acentos(palabra).lower())
+        if factor is None:
+            continue
+        numero = _a_numero(valor)
+        if numero is None:
+            continue
+        literal = re.sub(r"\D", "", valor)
+        if literal:
+            salida.append((literal, str(int(round(numero * factor)))))
+    return tuple(salida)
+
+
+def comparable_numbers(text: str) -> tuple[str, ...]:
+    """Cifras del texto listas para comparar, en orden de aparición.
+
+    Incluye las completas y las **abreviadas expandidas**, y excluye el literal
+    que acompaña a una abreviatura: «4,32 millones» cuenta como ``4320000`` y no
+    como ``432`` (ese fragmento era el que salía como cifra inventada).
+    """
+    expansiones = _expansiones(text)
+    consumidos = {literal for literal, _ in expansiones}
+    salida = [cifra for cifra in numbers(text) if cifra not in consumidos]
+    salida.extend(expandido for _, expandido in expansiones)
+    return tuple(dict.fromkeys(salida))
+
+
+def _a_numero(valor: str) -> float | None:
+    """Valor de la cifra: el punto es separador de millar y la coma, decimal.
+
+    ``«4,32»`` → 4.32 · ``«1.234,50»`` → 1234.5 · ``«1.234»`` → 1234. Si no se
+    puede interpretar, devuelve ``None``.
+    """
+    try:
+        if "," in valor:
+            entero, _, decimal = valor.rpartition(",")
+            entero = entero.replace(".", "") or "0"
+            return float(f"{entero}.{decimal}") if decimal else float(entero)
+        return float(valor.replace(".", ""))
+    except ValueError:  # pragma: no cover - el regex ya garantiza el formato
+        return None
+
+
+def _sin_acentos(texto: str) -> str:
+    """``millón`` → ``millon`` (las tablas comparan sin acentos)."""
+    reemplazos = str.maketrans("áéíóúüÁÉÍÓÚÜ", "aeiouuAEIOUU")
+    return (texto or "").translate(reemplazos)
 
 
 def _lista(cifras: tuple[str, ...], maximo: int = 5) -> str:
@@ -486,9 +584,12 @@ def check_fidelity(
     objetivo y barato —que las cifras del resultado estén en el documento y que
     las del documento no se hayan perdido—, que es lo que delata un resumen
     inventado o incompleto.
+
+    Las cifras abreviadas con palabra de escala se expanden antes de comparar
+    («4,32 millones» = «4 320 000»): sin eso, resumir bien y abreviar salía caro.
     """
-    base = set(numbers(source))
-    producidas = set(numbers(result))
+    base = set(comparable_numbers(source))
+    producidas = set(comparable_numbers(result))
     inventadas = tuple(
         n for n in significant_numbers(result, min_digits) if n not in base
     )

@@ -463,6 +463,23 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   ficheros, 90 días, 8 GB y 24 h de gracia; configurable en `settings.json` →
   `output_limpieza`) y se aplica al arrancar en el pool. Sólo mira extensiones que
   escribe la app, así que lo que no sea un producto de Imperator se respeta.
+- **Resumen global medido con un PDF real de 10 páginas** (30/09/2026,
+  `qwen3-vl:8b` a 16 384, alcance automático ⇒ global): 16 003 caracteres de
+  documento → **2 bloques** (el tope por llamada es `MAX_GLOBAL_CHARS`, 16 000) →
+  **5 llamadas en 246 s** (ejecutivo: una por bloque + una del conjunto; detalle
+  por apartados: una por bloque) → 3 825 caracteres de entrega con los **10
+  epígrafes** y las dos partes (`== Resumen ejecutivo ==`, `== Detalle por
+  apartados ==`), sin flechas de cierre y sin ninguna cifra inventada. El progreso
+  notificó las 10 páginas: con capa de texto nativa la FASE 1 no llama al modelo.
+- **Corregido el chequeo de cifras de la FASE 4** (`document_pipeline.numbers`):
+  sólo entendía puntos y comas, así que un documento que escribe los millares con
+  espacio («4 320 000», lo que sale al extraer el texto de un PDF) y un resumen que
+  los escribe con punto («4.320.000») daban **la misma cifra como inventada y como
+  omitida a la vez**: 8 falsos positivos de «datos inventados» sobre un resumen
+  fiel. Ahora los separadores de millar (espacio, espacio duro, fino, punto y coma)
+  se normalizan y las cifras abreviadas con palabra de escala se expanden
+  («4,32 millones» = «4 320 000»), que era el otro falso positivo. Medido en el
+  mismo documento: **8 → 0**. Tests en `tests/test_fidelidad_cifras.py`.
 - `services/intent_router.py` es el router de intención del chat: reglas léxicas
   deterministas (es/eu/en, sin LLM) que deciden a qué tarea apunta un mensaje.
   Exige **señal compuesta** (umbral 2.5): «pdf» a secas no enruta, «resume este

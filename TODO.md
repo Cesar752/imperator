@@ -67,8 +67,19 @@ avisos y ninguno era un fallo real.
 (`QWidget` sin stubs) da más ruido que señal; sigue disponible como herramienta
 local con `pyrightconfig.json`.
 
-**Deuda que queda anotada:** medir el resumen global con un documento real de
-muchas páginas (sólo se probó el modo por página con 2 páginas).
+**Verificación del resumen global hecha (30/09/2026):** PDF propio de 10 páginas
+(16 003 caracteres) con `qwen3-vl:8b` a 16 384 y alcance automático ⇒ global:
+**2 bloques → 5 llamadas en 246 s**, entrega de 3 825 caracteres con los 10
+epígrafes y las dos partes (ejecutivo + detalle), sin recortar nada
+(`truncado: false`) y con la nota de bloques en su sitio.
+
+**Y encontró un fallo real, ya corregido:** el chequeo de cifras de la FASE 4
+dependía de cómo se escribieran los millares y de si el resumen abreviaba con
+«millones»: marcaba **8 cifras como inventadas** en un resumen fiel. Ahora
+normaliza los separadores (espacio / espacio duro / fino / punto / coma) y expande
+las abreviaturas de escala (`4,32 millones` = `4 320 000`); medido en el mismo
+documento, las cifras inventadas pasan de **8 a 0**. Test-guarda en
+`tests/test_fidelidad_cifras.py`. Con esto queda cerrada la lista de mejoras.
 
 **Cómo medir sin engañarse:** el `thinking` del modelo hace que el tiempo varíe
 muchísimo entre ejecuciones — las **mismas** 3 páginas en serie tardaron 106 s en
