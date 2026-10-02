@@ -326,10 +326,21 @@ class AssemblerWidget(TaskWidget):
         )
         if not path:
             return
-        self._video_path = path
-        self._video_label.setText(path)
+        self.set_video(path)
+
+    def set_video(self, path: str) -> None:
+        """Precarga un vídeo (lo usa la pestaña Vídeo al enviar la secuencia).
+
+        Es la puerta pública para que la ventana principal pueda empalmar la
+        salida de la pestaña Vídeo con esta, sin que el widget de vídeo conozca
+        el Ensamblador.
+        """
+        if not path:
+            return
+        self._video_path = str(path)
+        self._video_label.setText(self._video_path)
         try:
-            info = self._assembler.probe(path)
+            info = self._assembler.probe(self._video_path)
         except EngineError as exc:
             self._set_status(f"No se pudo inspeccionar el vídeo: {exc}")
             info = {}

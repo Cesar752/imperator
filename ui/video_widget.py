@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import time
+from dataclasses import replace
 from pathlib import Path
 
 try:
@@ -13,14 +14,15 @@ try:
 except ImportError:  # pragma: no cover - dependencia declarada en requirements.txt
     imageio_ffmpeg = None
 
-from PyQt6.QtCore import Qt, QUrl
-from PyQt6.QtGui import QDesktopServices, QPixmap
+from PyQt6.QtCore import QSize, Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -31,15 +33,20 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from core.frame_extractor import FrameExtractor
 from core.video_assembler import VideoAssembler
 from engines.base_engine import CANCEL_MESSAGE, Engine, EngineError
 from services import preferences as prefs
 from services import system_stats as stats
 from services import video_params as vp
+from services import video_project as vproject
+from services import video_script as vs
 from ui.task_widget import TaskWidget
 from ui.workers import ThreadWorker, gpu_slot, run_pool_task
 
@@ -117,25 +124,211 @@ class VideoWorker(ThreadWorker):
         self.progress.emit(overall, f"Clip {clip_index + 1}/{total}: {message}")
 
 
+class SequenceWorker(ThreadWorker):
+    """Genera todas las escenas de un guion con continuidad y las concatena.
+
+    Continuidad = misma semilla base (``video_params.scene_seed``) + prompt con
+    estilo y personajes repetidos + **encadenado i2v**: el último fotograma de una
+    escena entra como imagen de la siguiente (``FrameExtractor``). Todo el trabajo
+    pesado va bajo una sola reserva de GPU (``gpu_slot``).
+    """
+
+    def __init__(
+        self,
+        engine: Engine,
+        script: "vs.Script",
+        project: "vproject.Project",
+        *,
+        base_seed: int,
+        negative_prompt: str = "",
+        fps: int = 16,
+        chain: bool = True,
+        transitions: bool = False,
+        parent=None,
+        scheduler=None,
+        liberar_otros=None,
+    ) -> None:
+        super().__init__(parent)
+        self._engine = engine
+        self._script = script
+        self._project = project
+        self._base_seed = base_seed
+        self._negative_prompt = negative_prompt
+        self._fps = fps
+        self._chain = chain
+        self._transitions = transitions
+        self._scheduler = scheduler
+        self._liberar_otros = liberar_otros
+
+    def work(self) -> dict:
+        total = len(self._script.scenes)
+        if total == 0:
+            raise EngineError("El guion no tiene escenas que generar.")
+        extractor = FrameExtractor(self._project.directory)
+        clips: list[str] = []
+        previous_frame: str | None = None
+        with gpu_slot(self._scheduler, "video", liberar_otros=self._liberar_otros):
+            for index in range(total):
+                if self.isInterruptionRequested():
+                    raise EngineError(CANCEL_MESSAGE)
+                mode = "i2v" if (self._chain and previous_frame) else "t2v"
+                params = vp.scene_generate_params(
+                    self._script,
+                    index,
+                    base_seed=self._base_seed,
+                    fps=self._fps,
+                    mode=mode,
+                    negative_prompt=self._negative_prompt,
+                    previous_frame=previous_frame,
+                )
+                params["cancel_check"] = self.isInterruptionRequested
+                params["progress_callback"] = (
+                    lambda percent, message, i=index: self._on_scene_progress(
+                        i, total, percent, message
+                    )
+                )
+                clip = Path(str(self._engine.generate_video(**params)))
+                destination = self._project.clip_path(index)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if clip.resolve() != destination.resolve():
+                    shutil.copyfile(clip, destination)
+                clips.append(str(destination))
+                if self._chain:
+                    previous_frame = self._last_frame(extractor, destination, index)
+
+        sequence = None
+        if len(clips) > 1:
+            builder = VideoAssembler(output_dir=self._project.directory)
+            sequence = self._concat(builder, clips)
+        elif clips:
+            sequence = clips[0]
+        return {"clips": clips, "sequence": sequence}
+
+    def _concat(self, builder: VideoAssembler, clips: list[str]) -> str:
+        """Concatena los clips; con transiciones activadas usa ``xfade``."""
+        if self._transitions:
+            try:
+                return str(
+                    builder.concat_clips_with_transitions(
+                        clips,
+                        transitions=vs.transition_sequence(self._script),
+                        output_name="secuencia.mp4",
+                    )
+                )
+            except EngineError as exc:
+                # Las transiciones recodifican y son más frágiles; si fallan, se
+                # deja la secuencia unida (corte seco) en vez de no entregar nada.
+                logger.warning("Transiciones no aplicadas (%s); corte seco.", exc)
+        return str(builder.concat_clips(clips, output_name="secuencia.mp4"))
+
+    def _last_frame(
+        self, extractor: FrameExtractor, clip: Path, index: int
+    ) -> str | None:
+        """Último fotograma del clip (para encadenar); ``None`` si falla."""
+        try:
+            duration = extractor.duration(clip) or 0.0
+            output = self._project.directory / f"ultimo_{index:02d}.png"
+            extractor.extract_frame(clip, max(0.0, duration - 0.1), output)
+            return str(output)
+        except EngineError as exc:
+            logger.debug("Sin encadenado en la escena %d: %s", index + 1, exc)
+            return None
+
+    def _on_scene_progress(
+        self, index: int, total: int, percent: int, message: str
+    ) -> None:
+        overall = int(((index + percent / 100.0) / total) * 100)
+        self.progress.emit(overall, f"Escena {index + 1}/{total}: {message}")
+
+
+class ScriptWorker(ThreadWorker):
+    """Pide a Ollama un guion (JSON) y lo convierte en un ``Script`` validado.
+
+    Es la forma correcta de hablar con el motor para un vídeo: se le da el rol de
+    guionista y un esquema (``services.video_script``), no una conversación
+    abierta. La llamada HTTP va fuera del hilo de la UI y bajo ``gpu_slot('chat')``.
+    """
+
+    def __init__(
+        self,
+        engine: Engine,
+        idea: str,
+        *,
+        scenes: int = vs.DEFAULT_SCENES,
+        language: str = vs.DEFAULT_LANGUAGE,
+        aspect: str = vs.ASPECT_HORIZONTAL,
+        style: str = "",
+        model: str | None = None,
+        parent=None,
+        scheduler=None,
+        liberar_otros=None,
+    ) -> None:
+        super().__init__(parent)
+        self._engine = engine
+        self._idea = idea
+        self._scenes = scenes
+        self._language = language
+        self._aspect = aspect
+        self._style = style
+        self._model = model
+        self._scheduler = scheduler
+        self._liberar_otros = liberar_otros
+
+    def work(self) -> "vs.Script":
+        messages = vs.script_generation_messages(
+            self._idea,
+            scenes=self._scenes,
+            language=self._language,
+            aspect=self._aspect,
+            style=self._style,
+        )
+        with gpu_slot(self._scheduler, "chat", liberar_otros=self._liberar_otros):
+            reply = self._engine.chat(messages, model=self._model)
+        script, error = vs.try_parse_script(reply)
+        if script is None:
+            raise EngineError(f"No se pudo interpretar el guion del modelo: {error}")
+        return script
+
+
 class VideoWidget(TaskWidget):
     """Formulario de generación de vídeo con barra de progreso y salida MP4."""
 
     _PREVIEW_SIZE = 256
 
-    def __init__(self, engine: Engine | None, config_manager=None, parent=None) -> None:
+    #: Emite la ruta del vídeo de secuencia cuando el usuario lo envía al
+    #: Ensamblador (la ventana principal lo precarga en esa pestaña).
+    clips_ready = pyqtSignal(object)
+
+    def __init__(
+        self,
+        engine: Engine | None,
+        config_manager=None,
+        parent=None,
+        chat_engine: Engine | None = None,
+    ) -> None:
         super().__init__(parent)
         self._engine: Engine | None = engine
+        #: Motor de chat (Ollama) para generar el guion; puede ser ``None``.
+        self._chat_engine: Engine | None = chat_engine
         self._config_manager = config_manager
         self._prefs = prefs.PrefsStore(config_manager)
         self._worker: VideoWorker | None = None
         self._last_path: str | None = None
         self._photos: list[dict] = []
         self._prompt_edits: list[QLineEdit] = []
+        # Guion de escenas (lo carga el chat/ventana); su proyecto y clips.
+        self._script: vs.Script | None = None
+        self._project: vproject.Project | None = None
+        self._clips: list[str] = []
+        self._sequence_path: str | None = None
+        self._script_worker = None
+        self._reordering = False
         self._stats_task = None
         self._ram_free_bytes: object = None
         self._ram_free_at = 0.0
         self._build_ui()
         self._populate_modes()
+        self._populate_script_models()
         self._restore_timeout()
         self._refresh_system_stats()
         if self._engine is None:
@@ -224,6 +417,87 @@ class VideoWidget(TaskWidget):
         image_layout.addLayout(image_buttons)
         image_layout.addWidget(photos_scroll)
 
+        # --- Guion: escenas editables y envío al Ensamblador ---
+        self._scene_table = QTableWidget(0, 4)
+        self._scene_table.setHorizontalHeaderLabels(
+            ["Escena", "Narración", "Prompt visual", "Duración"]
+        )
+        self._scene_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self._scene_table.setMinimumHeight(140)
+        self._scene_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        # Reordenar escenas arrastrando (la coherencia i2v se avisa al generar).
+        self._scene_table.setDragDropMode(QTableWidget.DragDropMode.InternalMove)
+        self._scene_table.model().rowsMoved.connect(self._on_scene_rows_moved)
+        self._scene_table.setIconSize(QSize(48, 27))
+
+        self._plan_button = QPushButton("Generar escenas")
+        self._plan_button.clicked.connect(self._generate_sequence)
+        self._send_button = QPushButton("Enviar al Ensamblador")
+        self._send_button.setEnabled(False)
+        self._send_button.clicked.connect(self._send_to_assembler)
+
+        script_buttons = QHBoxLayout()
+        script_buttons.addWidget(self._plan_button)
+        script_buttons.addWidget(self._send_button)
+        script_buttons.addStretch(1)
+
+        self._idea = QLineEdit()
+        self._idea.setPlaceholderText("Idea del vídeo para generar el guion...")
+        self._scenes_spin = QSpinBox()
+        self._scenes_spin.setRange(1, 20)
+        self._scenes_spin.setValue(vs.DEFAULT_SCENES)
+        self._script_button = QPushButton("Generar guion")
+        self._script_button.clicked.connect(self._generate_script)
+
+        idea_row = QHBoxLayout()
+        idea_row.addWidget(self._idea, 1)
+        idea_row.addWidget(QLabel("Escenas:"))
+        idea_row.addWidget(self._scenes_spin)
+        idea_row.addWidget(self._script_button)
+
+        self._script_model = QComboBox()
+        self._script_model.setToolTip("Modelo de Ollama que escribe el guion.")
+        self._refresh_models_button = QPushButton("↻")
+        self._refresh_models_button.setFixedWidth(28)
+        self._refresh_models_button.setToolTip("Recargar la lista de modelos.")
+        self._refresh_models_button.clicked.connect(self._populate_script_models)
+
+        model_row = QHBoxLayout()
+        model_row.addWidget(QLabel("Modelo:"))
+        model_row.addWidget(self._script_model, 1)
+        model_row.addWidget(self._refresh_models_button)
+
+        self._transitions_check = QCheckBox("Transiciones entre escenas")
+        self._transitions_check.setChecked(True)
+        self._transition_combo = QComboBox()
+        self._transition_combo.addItem("(por escena)", None)
+        for key in vs.TRANSITIONS:
+            self._transition_combo.addItem(vs.TRANSITION_LABELS.get(key, key), key)
+        self._transition_combo.setToolTip(
+            "Tipo de transición para todos los cruces (o «por escena»)."
+        )
+
+        transitions_row = QHBoxLayout()
+        transitions_row.addWidget(self._transitions_check)
+        transitions_row.addWidget(self._transition_combo, 1)
+
+        self._projects_button = QPushButton("Proyectos…")
+        self._projects_button.setToolTip("Abrir o borrar proyectos guardados.")
+        self._projects_button.clicked.connect(self._open_projects_dialog)
+        script_buttons.addWidget(self._projects_button)
+
+        self._script_group = QGroupBox("Guion · escenas")
+        script_layout = QVBoxLayout(self._script_group)
+        script_layout.addLayout(idea_row)
+        script_layout.addLayout(model_row)
+        script_layout.addLayout(transitions_row)
+        script_layout.addWidget(self._scene_table)
+        script_layout.addLayout(script_buttons)
+
         self._generate_button = QPushButton("Generar")
         self._cancel_button = QPushButton("Cancelar")
         self._cancel_button.setEnabled(False)
@@ -287,6 +561,7 @@ class VideoWidget(TaskWidget):
         layout.addLayout(form)
         layout.addWidget(advanced_group)
         layout.addWidget(self._image_section)
+        layout.addWidget(self._script_group)
         layout.addLayout(buttons)
         layout.addWidget(self._progress)
         layout.addWidget(self._status)
@@ -299,6 +574,332 @@ class VideoWidget(TaskWidget):
 
         # Mostrar/ocultar la sección de imagen según el modo inicial.
         self._update_image_section()
+
+    # ---- Guion y secuencia ---------------------------------------
+
+    def load_script(self, script: "vs.Script", project=None) -> None:
+        """Carga un guion (del chat o de un proyecto) en la tabla de escenas."""
+        self._script = script
+        self._project = project if isinstance(project, vproject.Project) else None
+        self._clips = []
+        self._sequence_path = None
+        if self._project is not None:
+            self._clips = [str(path) for path in self._project.saved_clips()]
+            sequence = self._project.directory / "secuencia.mp4"
+            if sequence.is_file():
+                self._sequence_path = str(sequence)
+            elif self._clips:
+                self._sequence_path = self._clips[-1]
+        self._send_button.setEnabled(bool(self._clips))
+        self._restore_config()
+        self._rebuild_scenes()
+        self._script_group.setVisible(True)
+        self._refresh_thumbnails()
+        self._set_status(
+            f"Guion cargado: «{script.title}» ({len(script.scenes)} escenas)."
+        )
+
+    def _rebuild_scenes(self) -> None:
+        script = self._script
+        self._scene_table.setRowCount(0)
+        if script is None:
+            return
+        self._scene_table.setRowCount(len(script.scenes))
+        for row, scene in enumerate(script.scenes):
+            self._set_scene_row(row, scene)
+
+    def _set_scene_row(self, row: int, scene) -> None:
+        heading = QTableWidgetItem(scene.heading or f"Escena {row + 1}")
+        heading.setFlags(heading.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        # El índice original viaja con la fila: es lo que permite reordenar
+        # arrastrando sin depender del texto (que puede repetirse).
+        heading.setData(Qt.ItemDataRole.UserRole, row)
+        self._scene_table.setItem(row, 0, heading)
+        self._scene_table.setItem(row, 1, QTableWidgetItem(scene.narration))
+        self._scene_table.setItem(row, 2, QTableWidgetItem(scene.visual_prompt))
+        self._scene_table.setItem(row, 3, QTableWidgetItem(str(scene.duration_s)))
+
+    def _cell_text(self, row: int, column: int) -> str:
+        item = self._scene_table.item(row, column)
+        return item.text().strip() if item is not None else ""
+
+    def _script_from_table(self) -> "vs.Script | None":
+        """Vuelca la tabla (editable) en un guion validado, o ``None`` si falla."""
+        script = self._script
+        if script is None:
+            return None
+        scenes = []
+        for row, scene in enumerate(script.scenes):
+            narration = self._cell_text(row, 1)
+            visual = self._cell_text(row, 2)
+            duration = vs.clamp_duration(self._cell_text(row, 3), scene.duration_s)
+            scenes.append(
+                replace(
+                    scene,
+                    narration=narration,
+                    visual_prompt=visual or scene.action,
+                    duration_s=duration,
+                )
+            )
+        try:
+            updated = replace(script, scenes=tuple(scenes))
+            updated.validate()
+        except vs.ScriptError as exc:
+            self._set_status(f"Guion inválido: {exc}")
+            return None
+        self._script = updated
+        return updated
+
+    def _generate_sequence(self) -> None:
+        if self._engine is None:
+            self._set_status("Wan Video no está configurado.")
+            return
+        if self._worker is not None and self._worker.isRunning():
+            return
+        script = self._script_from_table()
+        if script is None:
+            self._set_status("Carga y revisa un guion antes de generar escenas.")
+            return
+        script = self._apply_transition_override(script)
+        script = self._with_config(script)
+        self._script = script
+        try:
+            project = vproject.create_project(script.title, script, overwrite=True)
+        except (OSError, vs.ScriptError) as exc:
+            self._set_status(f"No se pudo crear el proyecto: {exc}")
+            return
+        self._project = project
+
+        set_timeout = getattr(self._engine, "set_timeout", None)
+        if callable(set_timeout):
+            set_timeout(self._timeout.value())
+        if not self._warn_low_ram():
+            return
+
+        self._set_busy(True)
+        self._progress.setValue(0)
+        self._set_status("Generando escenas... 0%")
+        self._worker = SequenceWorker(
+            self._engine,
+            script,
+            project,
+            base_seed=vp.new_base_seed(),
+            negative_prompt=self._negative_prompt.text().strip(),
+            fps=self._fps.value(),
+            transitions=self._transitions_check.isChecked(),
+            parent=self,
+            scheduler=self._gpu_scheduler(),
+            liberar_otros=self._gpu_liberar_otros,
+        )
+        self._worker.progress.connect(self._on_progress)
+        self._worker.result.connect(self._on_sequence_ready)
+        self._worker.failed.connect(self._on_error)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.start()
+
+    def _on_sequence_ready(self, result: dict) -> None:
+        self._clips = list(result.get("clips") or [])
+        self._sequence_path = result.get("sequence")
+        self._last_path = self._sequence_path
+        self._progress.setValue(100)
+        self._save_button.setEnabled(bool(self._last_path))
+        self._open_button.setEnabled(bool(self._last_path))
+        self._send_button.setEnabled(bool(self._clips))
+        self._refresh_thumbnails()
+        where = f" en «{self._project.name}»" if self._project is not None else ""
+        self._set_status(f"Escenas listas: {len(self._clips)} clips{where}.")
+
+    def _send_to_assembler(self) -> None:
+        target = self._sequence_path or (self._clips[0] if self._clips else None)
+        if not target:
+            self._set_status("No hay vídeo de secuencia que enviar.")
+            return
+        self.clips_ready.emit(target)
+        self._set_status("Secuencia enviada al Ensamblador.")
+
+    def _generate_script(self) -> None:
+        """Pide un guion a Ollama y lo carga en la tabla de escenas."""
+        if self._chat_engine is None:
+            self._set_status("Ollama no está configurado; no se puede generar el guion.")
+            return
+        idea = self._idea.text().strip()
+        if not idea:
+            self._set_status("Escribe una idea para el guion.")
+            return
+        if self._script_worker is not None and self._script_worker.isRunning():
+            return
+        self._script_button.setEnabled(False)
+        self._script_button.setText("Generando guion...")
+        self._set_status("Generando guion con el modelo...")
+        self._script_worker = ScriptWorker(
+            self._chat_engine,
+            idea,
+            scenes=self._scenes_spin.value(),
+            aspect=vs.ASPECT_HORIZONTAL,
+            model=self._script_model.currentData(),
+            parent=self,
+            scheduler=self._gpu_scheduler(),
+            liberar_otros=self._gpu_liberar_otros,
+        )
+        self._script_worker.result.connect(self._on_script_ready)
+        self._script_worker.failed.connect(self._on_script_failed)
+        self._script_worker.finished.connect(self._on_script_finished)
+        self._script_worker.start()
+
+    def start_script(self, idea: str, scenes: int | None = None) -> None:
+        """Genera el guion desde el chat: rellena la idea y lanza el worker.
+
+        Es el punto de entrada que usa la ventana principal cuando el mensaje del
+        chat trae un guion (``Dispatch.payload``): mismo camino que el botón.
+        """
+        self._idea.setText(str(idea or "").strip())
+        if scenes:
+            try:
+                self._scenes_spin.setValue(int(scenes))
+            except (TypeError, ValueError):
+                pass
+        self._generate_script()
+
+    def _on_script_ready(self, script) -> None:
+        self.load_script(script)
+
+    def _on_script_failed(self, message: str) -> None:
+        self._set_status(f"No se pudo generar el guion: {message}")
+
+    def _on_script_finished(self) -> None:
+        self._script_button.setEnabled(True)
+        self._script_button.setText("Generar guion")
+        self._script_worker = None
+
+    def set_chat_engine(self, engine: Engine | None) -> None:
+        """Actualiza el motor de chat usado para generar el guion."""
+        self._chat_engine = engine
+
+    def _populate_script_models(self) -> None:
+        """Rellena el combo de modelo del guion con los del motor de chat."""
+        self._script_model.clear()
+        self._script_model.addItem("(modelo por defecto)", None)
+        engine = self._chat_engine
+        list_models = getattr(engine, "list_models", None)
+        if not callable(list_models):
+            return
+        try:
+            names = [str(name) for name in list_models()]
+        except Exception as exc:  # noqa: BLE001 - un motor caído no rompe la UI
+            logger.debug("No se pudieron listar los modelos de chat: %s", exc)
+            names = []
+        default = getattr(engine, "default_model", None)
+        if default and default not in names:
+            names.insert(0, default)
+        for name in names:
+            self._script_model.addItem(name, name)
+        if default:
+            index = self._script_model.findData(default)
+            if index >= 0:
+                self._script_model.setCurrentIndex(index)
+
+    def _restore_config(self) -> None:
+        """Restaura fps y transiciones guardados en ``Script.config``."""
+        config = self._script.config if self._script is not None else {}
+        fps = config.get("fps")
+        if isinstance(fps, int) and self._fps.minimum() <= fps <= self._fps.maximum():
+            self._fps.setValue(fps)
+        if isinstance(config.get("transitions"), bool):
+            self._transitions_check.setChecked(config["transitions"])
+        key = config.get("transition")
+        index = self._transition_combo.findData(key) if key else 0
+        self._transition_combo.setCurrentIndex(index if index >= 0 else 0)
+
+    def _with_config(self, script: "vs.Script") -> "vs.Script":
+        """Guarda en el guion los ajustes de generación actuales (por proyecto)."""
+        config = dict(script.config)
+        config.update(
+            {
+                "fps": self._fps.value(),
+                "transitions": self._transitions_check.isChecked(),
+                "transition": self._transition_combo.currentData(),
+            }
+        )
+        return replace(script, config=config)
+
+    def _apply_transition_override(self, script: "vs.Script") -> "vs.Script":
+        """Aplica la transición elegida a todos los cruces (si no es «por escena»)."""
+        key = self._transition_combo.currentData()
+        if not key:
+            return script
+        scenes = tuple(replace(scene, transition=key) for scene in script.scenes)
+        return replace(script, scenes=scenes)
+
+    def _on_scene_rows_moved(self, parent, start, end, dest, row) -> None:
+        """Reordena el guion tras arrastrar una fila de la tabla."""
+        if self._reordering or self._script is None:
+            return
+        script = self._script
+        order: list[int] = []
+        for position in range(self._scene_table.rowCount()):
+            item = self._scene_table.item(position, 0)
+            data = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+            try:
+                order.append(int(data))
+            except (TypeError, ValueError):
+                return
+        if sorted(order) != list(range(len(script.scenes))):
+            return
+        self._script = replace(script, scenes=tuple(script.scenes[i] for i in order))
+        self._reordering = True
+        try:
+            self._rebuild_scenes()
+        finally:
+            self._reordering = False
+        self._set_status("Escenas reordenadas (la coherencia i2v puede resentirse).")
+        self._refresh_thumbnails()
+
+    def _refresh_thumbnails(self) -> None:
+        """Pone como icono de cada escena el primer fotograma de su clip (si existe)."""
+        if self._script is None or self._project is None:
+            return
+        extractor = FrameExtractor(self._project.directory)
+        for row in range(self._scene_table.rowCount()):
+            item = self._scene_table.item(row, 0)
+            if item is None:
+                continue
+            clip = self._project.clip_path(row)
+            if not clip.is_file():
+                item.setIcon(QIcon())
+                continue
+            mini = self._project.directory / f"miniatura_{row:02d}.png"
+            if not mini.is_file():
+                try:
+                    extractor.extract_frame(clip, 0.1, mini)
+                except EngineError as exc:
+                    logger.debug("Sin miniatura para %s: %s", clip, exc)
+                    continue
+            pixmap = QPixmap(str(mini))
+            if not pixmap.isNull():
+                item.setIcon(
+                    QIcon(
+                        pixmap.scaled(
+                            48,
+                            27,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation,
+                        )
+                    )
+                )
+
+    def _open_projects_dialog(self) -> None:
+        """Abre la cola de proyectos y carga el elegido en la tabla."""
+        from ui.projects_dialog import ProjectsDialog
+
+        dialog = ProjectsDialog(self)
+        if not dialog.exec() or dialog.selected_project is None:
+            return
+        try:
+            project = vproject.load_project(dialog.selected_project)
+        except vs.ScriptError as exc:
+            self._set_status(f"No se pudo abrir el proyecto: {exc}")
+            return
+        self.load_script(project.script, project)
 
     def _apply_preset(self, key: str) -> None:
         label, width, height, duration, _tooltip = vp.PRESETS[key]
@@ -633,6 +1234,9 @@ class VideoWidget(TaskWidget):
             self._use_last_button,
             self._select_button,
             self._photos_container,
+            self._plan_button,
+            self._send_button,
+            self._scene_table,
         )
 
     def _busy_only_widgets(self) -> tuple:

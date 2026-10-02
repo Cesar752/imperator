@@ -1,4 +1,15 @@
-"""Presets y construcción de parámetros de la tarea de vídeo (sin Qt)."""
+"""Presets y construcción de parámetros de la tarea de vídeo (sin Qt).
+
+Incluye la **continuidad entre escenas**: un guion (``services.video_script``) se
+traduce a los parámetros de cada clip con una semilla derivada de una base común
+(así todos los planos comparten "ADN" y no cambian de aspecto) y, opcionalmente,
+con el **encadenado i2v** (el último fotograma de una escena entra como imagen de
+la siguiente), que es lo que da continuidad visual real.
+"""
+
+import random
+
+from services import video_script as vscript
 
 # Preset: id -> (label, width, height, duración_s, tooltip).
 PRESETS: dict[str, tuple[str, int, int, int, str]] = {
@@ -77,3 +88,73 @@ def build_generate_params(
 def parse_seed(text: str) -> int:
     """Convierte el texto del campo seed a entero (lanza ``ValueError``)."""
     return int(text.strip())
+
+
+# ---- Continuidad entre escenas ----------------------------------------------
+
+#: Máximo de una semilla de 31 bits (el rango que aceptan los nodos de ComfyUI).
+MAX_SEED = 2**31 - 1
+
+
+def new_base_seed() -> int:
+    """Semilla base aleatoria para una secuencia de escenas."""
+    return random.randint(0, MAX_SEED)
+
+
+def scene_seed(base_seed: int, index: int) -> int:
+    """Semilla de la escena ``index`` derivada de ``base_seed``.
+
+    Deterministica y distinta por escena: la misma base reproduce la secuencia
+    entera, y cada escena no es un clon del mismo ruido (que daría planos
+    repetidos). El primo ``9973`` desacopla semillas consecutivas.
+    """
+    return (int(base_seed) + (index + 1) * 9973) % MAX_SEED
+
+
+def default_preset_for(aspect: str) -> str:
+    """Preset por defecto según el formato del guion (vertical ⇒ TikTok)."""
+    if aspect == vscript.ASPECT_VERTICAL:
+        return "tiktok_calidad"
+    return "equilibrado"
+
+
+def scene_generate_params(
+    script: vscript.Script,
+    index: int,
+    *,
+    base_seed: int,
+    preset_key: str | None = None,
+    fps: int = 16,
+    mode: str = "t2v",
+    negative_prompt: str = "",
+    previous_frame: str | None = None,
+) -> dict:
+    """Parámetros de ``generate_video`` para la escena ``index`` del guion.
+
+    - El prompt combina estilo + apariencia de los personajes + plano
+      (:func:`services.video_script.scene_visual_prompt`), así el clip es
+      coherente con el resto.
+    - La semilla sale de ``base_seed`` (misma secuencia reproducible).
+    - Con ``mode="i2v"`` y ``previous_frame``, ese fotograma entra como imagen de
+      partida: es el encadenado que mantiene la continuidad entre escenas.
+    """
+    scene = script.scenes[index]
+    preset_key = preset_key or default_preset_for(script.aspect)
+    _label, width, height, _duration, _tip = PRESETS.get(
+        preset_key, PRESETS["equilibrado"]
+    )
+    prompt = vscript.scene_visual_prompt(script, scene)
+    params = build_generate_params(
+        mode=mode,
+        negative_prompt=negative_prompt,
+        width=width,
+        height=height,
+        duration=scene.duration_s,
+        fps=fps,
+        prompt=prompt,
+        seed=scene_seed(base_seed, index),
+    )
+    if mode == "i2v" and previous_frame:
+        params["image_path"] = str(previous_frame)
+        params["prompt"] = prompt
+    return params

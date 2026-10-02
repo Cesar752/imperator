@@ -59,6 +59,9 @@ ACTION_GENERATE = "generate"
 ACTION_TRANSCRIBE = "transcribe"
 ACTION_ANALYZE = "analyze"
 ACTION_ASSEMBLE = "assemble"
+#: Pedir un **guion** (no la generación directa): el chat planifica una historia
+#: coherente y la pestaña Vídeo la muestra como escenas editables.
+ACTION_PLAN_SCRIPT = "plan_script"
 
 ACTION_LABELS: dict[str, str] = {
     ACTION_NONE: "abrir la tarea",
@@ -69,6 +72,7 @@ ACTION_LABELS: dict[str, str] = {
     ACTION_TRANSCRIBE: "transcripción",
     ACTION_ANALYZE: "análisis",
     ACTION_ASSEMBLE: "montaje",
+    ACTION_PLAN_SCRIPT: "guion",
 }
 
 #: Puntuación mínima para enrutar. Con 2.5 hacen falta dos señales (un tipo de
@@ -150,6 +154,24 @@ RULES: tuple[_Rule, ...] = (
     _r("genera un video", KIND_VIDEO, ACTION_GENERATE, W_PHRASE),
     _r("crea un video", KIND_VIDEO, ACTION_GENERATE, W_PHRASE),
     _r("generate a video", KIND_VIDEO, ACTION_GENERATE, W_PHRASE),
+    # ---- Vídeo (guion: historia coherente con escenas) --------------
+    # Frases explícitas (2.5) para no secuestrar conversaciones: «guion» a secas
+    # pesa 1.2 y por debajo del umbral no enruta.
+    _r("guion de un video", KIND_VIDEO, ACTION_PLAN_SCRIPT, W_PHRASE),
+    _r("guion de video", KIND_VIDEO, ACTION_PLAN_SCRIPT, W_PHRASE),
+    _r("hazme un guion", KIND_VIDEO, ACTION_PLAN_SCRIPT, W_PHRASE),
+    _r("escribe un guion", KIND_VIDEO, ACTION_PLAN_SCRIPT, W_PHRASE),
+    _r("guion", KIND_VIDEO, ACTION_PLAN_SCRIPT, W_VERB),
+    _r("guiones", KIND_VIDEO, ACTION_PLAN_SCRIPT, W_VERB),
+    _r("storyboard", KIND_VIDEO, ACTION_PLAN_SCRIPT, W_CONTENT),
+    _r("cortometraje", KIND_VIDEO, ACTION_PLAN_SCRIPT, W_CONTENT),
+    _r("corto animado", KIND_VIDEO, ACTION_PLAN_SCRIPT, W_PHRASE),
+    _r("historia cinematografica", KIND_VIDEO, ACTION_PLAN_SCRIPT, W_PHRASE),
+    _r("video con escenas", KIND_VIDEO, ACTION_PLAN_SCRIPT, W_PHRASE),
+    _r("escenas", KIND_VIDEO, ACTION_PLAN_SCRIPT, W_VERB),
+    _r("movie script", KIND_VIDEO, ACTION_PLAN_SCRIPT, W_PHRASE),
+    _r("short film", KIND_VIDEO, ACTION_PLAN_SCRIPT, W_PHRASE),
+    _r("gidoia", KIND_VIDEO, ACTION_PLAN_SCRIPT, W_VERB),
     # ---- Comprensión de vídeo ---------------------------------------
     _r("analiza este video", KIND_UNDERSTANDING, ACTION_ANALYZE, W_PHRASE),
     _r("analiza el video", KIND_UNDERSTANDING, ACTION_ANALYZE, W_PHRASE),

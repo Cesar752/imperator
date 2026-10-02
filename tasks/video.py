@@ -32,10 +32,19 @@ class VideoTask(Task):
 
     def build_widget(self, parent: QWidget | None = None) -> QWidget:
         engine = self._engine_manager.get_engine("wanvideo")
-        self._widget = VideoWidget(engine, self._engine_manager.config_manager, parent)
+        # El motor de chat (Ollama) es opcional: solo se usa para generar el
+        # guion de escenas. Sin él, la pestaña sigue generando clip a clip.
+        chat = self._engine_manager.get_engine("ollama")
+        self._widget = VideoWidget(
+            engine,
+            self._engine_manager.config_manager,
+            parent,
+            chat_engine=chat,
+        )
         return self._widget
 
     def refresh_engine(self) -> None:
-        """Relee el motor WanVideo y lo propaga al widget de vídeo."""
+        """Relee los motores WanVideo y Ollama y los propaga al widget de vídeo."""
         if self._widget is not None:
             self._widget.set_engine(self._engine_manager.get_engine("wanvideo"))
+            self._widget.set_chat_engine(self._engine_manager.get_engine("ollama"))

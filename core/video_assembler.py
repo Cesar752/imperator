@@ -40,6 +40,29 @@ CONCAT_TIMEOUT = 600
 ENCODE_TIMEOUT_MIN = 600
 ENCODE_TIMEOUT_FACTOR = 20
 
+# Transiciones (``xfade``). ``concat_clips`` une sin recodificar (corte seco);
+# cuando se piden transiciones hay que normalizar y recodificar, así que se fija
+# un fps de destino y una duración de cruce por defecto.
+TRANSITION_FPS = 30
+DEFAULT_TRANSITION_S = 0.5
+
+#: Traducción de las transiciones del guion a los nombres de ``xfade``. Debe
+#: cubrir todas las claves de ``services.video_script.TRANSITIONS`` (un test lo
+#: comprueba). Un «corte» se implementa como un cruce de un fotograma
+#: (imperceptible): ``xfade`` no admite duración cero y encadenar sin transición
+#: exigiría otro camino.
+XFADE_NAMES: dict[str, str] = {
+    "cut": "fade",
+    "fade": "fade",
+    "dissolve": "dissolve",
+    "slide_left": "slideleft",
+    "slide_right": "slideright",
+    "wipe_left": "wipeleft",
+    "wipe_right": "wiperight",
+    "circle": "circleopen",
+    "zoom": "zoomin",
+}
+
 
 class VideoAssembler:
     """Servicio que ensambla un MP4 final (vídeo + audio + subtítulos).
@@ -88,7 +111,7 @@ class VideoAssembler:
             raise EngineError(f"No se pudo ejecutar ffmpeg para inspeccionar: {exc}") from exc
 
         stderr = proc.stderr or ""
-        info: dict = {"duration": None, "width": None, "height": None}
+        info: dict = {"duration": None, "width": None, "height": None, "fps": None}
 
         match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", stderr)
         if match:
@@ -102,6 +125,10 @@ class VideoAssembler:
         if match:
             info["width"] = int(match.group(1))
             info["height"] = int(match.group(2))
+
+        match = re.search(r"(\d+(?:\.\d+)?)\s*fps", stderr)
+        if match:
+            info["fps"] = float(match.group(1))
 
         return info
 
@@ -236,6 +263,133 @@ class VideoAssembler:
 
         logger.info("VideoAssembler: secuencia concatenada en '%s'.", output_path)
         return output_path
+
+    def concat_clips_with_transitions(
+        self,
+        clip_paths: list[str | Path],
+        transitions: list[str] | None = None,
+        transition_s: float = DEFAULT_TRANSITION_S,
+        output_name: str | None = None,
+        fps: int = TRANSITION_FPS,
+    ) -> Path:
+        """Une varios MP4 con ``xfade`` (fundido/disolvencia) y devuelve su ruta.
+
+        A diferencia de :meth:`concat_clips` (copia sin recodificar, corte seco),
+        aquí **se recodifica**: ``xfade`` exige el mismo formato en todas las
+        entradas, así que cada clip se normaliza (escala, relleno, fps y
+        ``yuv420p``) antes de encadenarse. Tolera clips de tamaños distintos a
+        costa de tiempo de codificación.
+        """
+        clips = [Path(p) for p in clip_paths]
+        if len(clips) < 2:
+            raise EngineError("Se necesitan al menos dos clips para concatenar.")
+        for clip in clips:
+            if not clip.is_file():
+                raise EngineError(f"El clip no existe: {clip}")
+
+        infos = [self.probe(clip) for clip in clips]
+        durations = [info.get("duration") or 0.0 for info in infos]
+        width = next((info["width"] for info in infos if info.get("width")), 832)
+        height = next((info["height"] for info in infos if info.get("height")), 480)
+
+        graph, out_label = self.xfade_filter_complex(
+            durations,
+            transitions=transitions,
+            transition_s=transition_s,
+            fps=fps,
+            width=int(width),
+            height=int(height),
+        )
+
+        self._output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = self._output_dir / (
+            output_name
+            or f"plataformaia_{datetime.now():%Y%m%d_%H%M%S_%f}_transiciones.mp4"
+        )
+
+        ffmpeg = self._ffmpeg()
+        cmd = [ffmpeg, "-y"]
+        for clip in clips:
+            cmd += ["-i", str(clip)]
+        cmd += [
+            "-filter_complex",
+            graph,
+            "-map",
+            f"[{out_label}]",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+        total = sum(duration or 0.0 for duration in durations)
+        timeout = max(float(ENCODE_TIMEOUT_MIN), total * ENCODE_TIMEOUT_FACTOR)
+        self._run(cmd, timeout)
+
+        logger.info("VideoAssembler: secuencia con transiciones en '%s'.", output_path)
+        return output_path
+
+    @staticmethod
+    def xfade_filter_complex(
+        durations: list[float],
+        transitions: list[str] | None = None,
+        transition_s: float = DEFAULT_TRANSITION_S,
+        fps: int = TRANSITION_FPS,
+        width: int = 0,
+        height: int = 0,
+    ) -> tuple[str, str]:
+        """Grafo ``xfade`` que encadena N clips; devuelve ``(filtro, etiqueta)``.
+
+        Normaliza cada entrada (escala/relleno si se dan ``width``/``height``,
+        ``fps`` y ``yuv420p``) y encadena con ``xfade``. El ``offset`` de cada
+        cruce es la duración acumulada menos el tiempo consumido por los cruces
+        previos, que es la fórmula que exige ``xfade``.
+        """
+        count = len(durations)
+        if count < 2:
+            raise EngineError("Se necesitan al menos dos clips para encadenar.")
+        cross = max(0.04, float(transition_s))
+        names = list(transitions or [])
+
+        parts: list[str] = []
+        for index in range(count):
+            chain = f"fps={int(fps)},format=yuv420p,setpts=PTS-STARTPTS"
+            if width and height:
+                chain = (
+                    f"scale={int(width)}:{int(height)}:"
+                    "force_original_aspect_ratio=decrease,"
+                    f"pad={int(width)}:{int(height)}:(ow-iw)/2:(oh-ih)/2,setsar=1,"
+                    + chain
+                )
+            parts.append(f"[{index}:v]{chain}[v{index}]")
+
+        last = "v0"
+        accumulated = float(durations[0] or 0.0)
+        one_frame = 1.0 / max(1, int(fps))
+        for index in range(count - 1):
+            name = names[index] if index < len(names) else "fade"
+            if name == "cut":
+                # Un corte no es un cruce: un fotograma lo hace imperceptible
+                # (``xfade`` no admite duración cero).
+                cross_i = one_frame
+                xfade = "fade"
+            else:
+                cross_i = cross
+                xfade = XFADE_NAMES.get(name, "fade")
+            offset = max(0.0, accumulated - cross_i)
+            out = f"x{index}"
+            parts.append(
+                f"[{last}][v{index + 1}]xfade=transition={xfade}:"
+                f"duration={cross_i:.3f}:offset={offset:.3f}[{out}]"
+            )
+            accumulated = accumulated + float(durations[index + 1] or 0.0) - cross_i
+            last = out
+
+        return ";".join(parts), last
 
     @staticmethod
     def _concat_entry(path: Path) -> str:

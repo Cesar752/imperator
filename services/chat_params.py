@@ -41,3 +41,20 @@ def _message_chars(message: dict) -> int:
     """Tamaño aproximado del mensaje en caracteres (0 si no hay contenido)."""
     contenido = message.get("content")
     return len(contenido) if isinstance(contenido, str) else 0
+
+
+def with_system_prompt(messages: list[dict], system_prompt: str) -> list[dict]:
+    """Devuelve los mensajes con un mensaje de ``system`` al frente.
+
+    El chat libre no usa prompt de sistema (conversa sin rol impuesto). Cuando el
+    motor debe comportarse como **guionista** (ver ``services.video_script``), se
+    le antepone ese rol. Si ``messages`` ya empieza por un ``system``, se
+    reemplaza: nunca se envían dos mensajes de sistema seguidos, que algunos
+    motores interpretan mal. No muta ``messages``.
+    """
+    system_prompt = (system_prompt or "").strip()
+    if not system_prompt:
+        return list(messages)
+    if messages and messages[0].get("role") == "system":
+        return [{"role": "system", "content": system_prompt}, *messages[1:]]
+    return [{"role": "system", "content": system_prompt}, *messages]

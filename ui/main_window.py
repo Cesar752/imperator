@@ -19,6 +19,7 @@ from core.engine_manager import EngineManager
 from core.gpu_scheduler import GpuScheduler
 from core.paths import ASSETS, OUTPUT
 from core.task_manager import TaskManager
+from services import intent_router as ir
 from services.output_cleanup import (
     DEFAULT_KEEP_RECENT_HOURS,
     DEFAULT_MAX_AGE_DAYS,
@@ -230,6 +231,7 @@ class MainWindow(QMainWindow):
             self._task_tabs[task.id] = tabs.addTab(widget, task.nombre)
         self._tabs = tabs
         self._connect_chat_router()
+        self._connect_video_to_assembler()
 
         header = self._build_header()
         if header is None:
@@ -317,9 +319,19 @@ class MainWindow(QMainWindow):
             signal.connect(self._on_chat_routed)
 
     def _on_chat_routed(self, dispatch) -> None:
-        """Ofrece abrir la pestaña a la que apunta un mensaje del chat."""
+        """Lleva el mensaje del chat a su pestaña.
+
+        Si el dispatch trae lo necesario para **arrancar** la tarea (hoy: el
+        guion de escenas), se abre la pestaña y se lanza; si no, se ofrece
+        abrirla, como siempre.
+        """
         index = self._task_tabs.get(getattr(dispatch, "task_id", ""))
-        if index is None or index == self._tabs.currentIndex():
+        if index is None:
+            return
+        if self._start_routed_task(dispatch):
+            self._tabs.setCurrentIndex(index)
+            return
+        if index == self._tabs.currentIndex():
             return
         answer = QMessageBox.question(
             self,
@@ -330,6 +342,52 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.Yes,
         )
         if answer == QMessageBox.StandardButton.Yes:
+            self._tabs.setCurrentIndex(index)
+
+    def _start_routed_task(self, dispatch) -> bool:
+        """Arranca la tarea destino si el dispatch trae lo necesario.
+
+        Hoy solo el guion de vídeo lo trae (``Dispatch.payload``): idea + nº de
+        escenas. Ningún widget conoce el router ni al revés; la ventana es la que
+        empalma ambos con ``getattr``.
+        """
+        if getattr(dispatch, "task_id", "") != "video":
+            return False
+        if getattr(dispatch, "action", "") != ir.ACTION_PLAN_SCRIPT:
+            return False
+        payload = getattr(dispatch, "payload", None) or {}
+        idea = str(payload.get("idea") or getattr(dispatch, "text", "") or "").strip()
+        if not idea:
+            return False
+        video = self._task_widgets.get("video")
+        start = getattr(video, "start_script", None)
+        if not callable(start):
+            return False
+        start(idea, payload.get("scenes"))
+        return True
+
+    # ---- Vídeo -> Ensamblador ------------------------------------
+
+    def _connect_video_to_assembler(self) -> None:
+        """Conecta la señal ``clips_ready`` de la pestaña Vídeo con esta ventana.
+
+        Ni el widget de Vídeo conoce el Ensamblador ni al contrario: el primero
+        emite la ruta de su secuencia y la ventana la precarga en el segundo. Se
+        usa ``getattr`` para no acoplar los widgets a este mecanismo.
+        """
+        video = self._task_widgets.get("video")
+        signal = getattr(video, "clips_ready", None)
+        if signal is not None:
+            signal.connect(self._on_video_clips_ready)
+
+    def _on_video_clips_ready(self, path) -> None:
+        """Precarga la secuencia generada en el Ensamblador y abre su pestaña."""
+        assembler = self._task_widgets.get("assembler")
+        set_video = getattr(assembler, "set_video", None)
+        if path and callable(set_video):
+            set_video(path)
+        index = self._task_tabs.get("assembler")
+        if index is not None:
             self._tabs.setCurrentIndex(index)
 
     # ---- Liberación de VRAM --------------------------------------

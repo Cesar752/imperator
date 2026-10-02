@@ -14,9 +14,10 @@ diferida (evita el ciclo ``TaskManager → orchestrator → TaskManager``).
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from services import intent_router as ir
+from services import video_script as vscript
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,9 @@ class Dispatch:
     confidence: float
     matched: tuple[str, ...] = ()
     text: str = ""
+    #: Datos ya resueltos que la tarea destino puede consumir sin volver a
+    #: interpretarlos (p. ej. el guion de escenas: ``{"idea": ..., "scenes": N}``).
+    payload: dict = field(default_factory=dict)
 
     @property
     def label(self) -> str:
@@ -78,12 +82,16 @@ class TaskOrchestrator:
             return None
         if not self.is_available(intent.kind):
             return None
+        payload: dict = {}
+        if intent.kind == ir.KIND_VIDEO and intent.action == ir.ACTION_PLAN_SCRIPT:
+            payload = _script_payload(text)
         return Dispatch(
             task_id=intent.kind,
             action=intent.action,
             confidence=intent.confidence,
             matched=intent.matched,
             text=text,
+            payload=payload,
         )
 
     def plan(self, text: str) -> str:
@@ -94,3 +102,16 @@ class TaskOrchestrator:
         if not self.is_available(intent.kind):
             return f"{intent.describe()} Pero esa pestaña no está registrada."
         return intent.describe()
+
+
+def _script_payload(text: str) -> dict:
+    """Datos que la pestaña Vídeo necesita para generar el guion desde el chat.
+
+    ``scenes`` solo se incluye si el usuario lo pidió («de 4 escenas»); si no, la
+    pestaña usa su valor por defecto.
+    """
+    payload: dict = {"idea": (text or "").strip()}
+    scenes = vscript.parse_scene_count(text)
+    if scenes is not None:
+        payload["scenes"] = scenes
+    return payload
