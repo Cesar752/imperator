@@ -96,16 +96,18 @@ C:\Imperator\
 ├── services/               # Lógica pura sin Qt, extraída de los widgets
 │   ├── assembler_params.py # Presets y estilos del Ensamblador
 │   ├── audio_params.py     # Motores TTS, rango de velocidad y voces
-│   ├── chat_params.py      # Ventana de historial que se envía al motor
+│   ├── chat_params.py      # Ventana de historial + with_system_prompt()
 │   ├── document_params.py  # Formatos, prompts y helpers de documentos
 │   ├── document_pipeline.py# Plan por fases del procesado de documentos
 │   ├── image_params.py     # Presets y parámetros de imagen
 │   ├── preferences.py      # Preferencias tipadas (PrefsStore + dataclasses)
 │   ├── intent_router.py    # Router de intención del chat (a qué tarea apunta)
 │   ├── output_cleanup.py   # Retención de output/ (qué se borra y por qué)
-│   ├── task_orchestrator.py# Resuelve la intención contra las tareas registradas
+│   ├── task_orchestrator.py# Resuelve la intención (Dispatch con payload)
 │   ├── system_stats.py     # Sondeo de /system_stats de ComfyUI
-│   ├── video_params.py     # Presets y parámetros de vídeo
+│   ├── video_params.py     # Presets + continuidad (semilla/encadenado)
+│   ├── video_project.py    # Proyecto persistente por trabajo (projects/)
+│   ├── video_script.py     # Guion: modelo, validación y prompts
 │   └── video_understanding.py # Muestreo de fotogramas, prompts e informe
 ├── config/                 # Config real (gitignored) + plantillas (versionadas)
 │   ├── engines.json        # Motores (real)
@@ -118,6 +120,8 @@ C:\Imperator\
 ├── music/                  # Música de fondo para el ensamblador (gitignored)
 ├── output/                 # Imágenes, vídeos y audios generados (gitignored)
 │                           #   Con retención al arrancar: services/output_cleanup.py
+├── projects/               # Proyectos de vídeo persistentes (gitignored)
+│                           #   guion.json + escena_NN.mp4 + narración + montaje
 ├── tools/                  # Scripts auxiliares
 │   ├── generar_narracion_basajaun.py  # Narración con Piper
 │   └── make_icon.py        # Regenera el icono (requiere Pillow; ver uso)
@@ -318,7 +322,7 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   (`config/*.json`) y se descartó el intento de config unificada
   (`~/.imperator/config.json`).
 - `bfl` incluido en `DEFAULT_ENGINES` (antes solo existía en el factory).
-- Suite de tests (stdlib `unittest`, 631 tests) + CI en GitHub Actions (con
+- Suite de tests (stdlib `unittest`, 762 tests) + CI en GitHub Actions (con
   `ruff` y versiones congeladas en `constraints-test.txt`). Incluye
   un smoke test de la `MainWindow` opt-in (`IMPERATOR_GUI_SMOKE=1`), que el CI
   activa. Las suites nuevas (`test_gpu_scheduler`, `test_intent_router`,
@@ -513,6 +517,21 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   de este mismo apartado, que decía 2), el estado mutable compartido entre
   hilos de los motores (`piper_tts`, `ollama`), el saneado del nombre de voz de
   Piper y la ausencia de lockfile de runtime (`constraints.txt`).
+- **Vídeo por escenas (pipeline de guion).** El chat reconoce peticiones de guion
+  (`ACTION_PLAN_SCRIPT`), el `Dispatch` lleva `{idea, scenes}` y `MainWindow`
+  abre la pestaña Vídeo y arranca la generación. El guion es un `Script`
+  validado (`services/video_script.py`) con estilo único y personajes de
+  **apariencia bloqueada**; la generación encadena las escenas con semilla
+  compartida y, opcionalmente, **i2v** (último fotograma → siguiente escena).
+  Los artefactos viven en un **proyecto persistente** (`projects/<slug>/`, fuera
+  de la retención de `output/`); la secuencia se une con `concat_clips` (rápido)
+  o `concat_clips_with_transitions` (`xfade`, recodifica) y «Enviar al
+  Ensamblador» la precarga en esa pestaña. Las escenas muestran **miniatura**, se
+  **reordenan arrastrando** y el proyecto guarda su `config` (fps y
+  transiciones); el botón «Proyectos…» (`ui/projects_dialog.py`) abre la **cola**
+  de trabajos con abrir/borrar. Detalle completo en
+  [`VIDEO-GUION.md`](./VIDEO-GUION.md). El núcleo es puro y probado con dobles
+  (sin GPU, red ni ffmpeg).
 
 ## 9. Coordinación de GPU y orquestación
 
@@ -532,6 +551,8 @@ a este mensaje»:
   Ollama y ComfyUI siguen por HTTP, y el planificador se limita a decidir *si*
   se les lanza trabajo.
 - **Orquestación del chat.** El chat no abre pestañas ni conoce widgets: emite
-  una intención (`routed`) y `MainWindow` decide (hoy pregunta al usuario). El
-  punto de extensión para una ejecución automática futura es
-  `services/task_orchestrator.py`, no el widget de chat.
+  una intención (`routed`) y `MainWindow` decide. Si el `Dispatch` trae
+  `payload` (hoy: el guion de escenas), la tarea se **arranca** directamente y
+  se abre su pestaña; si no, se ofrece abrirla con un diálogo. El punto de
+  extensión sigue siendo `services/task_orchestrator.py`, no el widget de chat
+  (ver [`VIDEO-GUION.md`](./VIDEO-GUION.md) §5).

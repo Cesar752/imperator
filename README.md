@@ -2,6 +2,18 @@
 
 Plataforma modular de IA con backend Python y GUI PyQt6: unifica motores locales (Ollama, llama.cpp, LM Studio, ...), modelos (LLM, imagen, vídeo, audio, multimodal), APIs externas (OpenAI, DeepSeek, Kling, ...) y tareas tipo plugin (chat, OCR, imagen, vídeo, TTS/STT, documentos).
 
+## Vídeo por escenas
+
+Pide un guion desde el chat y la pestaña **Vídeo** lo convierte en una secuencia
+coherente: «Haz un guion de 4 escenas sobre un viajero en un bosque». El chat
+detecta la intención, genera el guion (Ollama), lo muestra como escenas
+**editables** y lo genera con los **mismos personajes** (apariencia fija,
+semilla compartida y encadenado *i2v*). Los artefactos quedan en
+`projects/<slug>/` (fuera de la retención de `output/`) y **Enviar al
+Ensamblador** cierra el montaje.
+
+Guía completa: [VIDEO-GUION.md](VIDEO-GUION.md). Arquitectura: [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Cómo arrancar
 
 ```powershell
