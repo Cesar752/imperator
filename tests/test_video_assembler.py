@@ -24,6 +24,16 @@ con salto
 """
 
 
+class XfadeCoverageTest(unittest.TestCase):
+    """El mapa de ``xfade`` debe cubrir todas las transiciones del guion."""
+
+    def test_cubre_todas_las_transiciones(self) -> None:
+        from services import video_script as vs
+
+        for key in vs.TRANSITIONS:
+            self.assertIn(key, vc.XFADE_NAMES, f"Falta la transición «{key}» en xfade")
+
+
 class TimeHelpersTest(unittest.TestCase):
     def test_time_to_seconds(self) -> None:
         self.assertEqual(
@@ -144,6 +154,45 @@ class FfmpegTimeoutTest(unittest.TestCase):
         ), mock.patch.object(vc.subprocess, "run", return_value=fake) as run:
             self.assembler.probe("v.mp4")
         self.assertEqual(run.call_args.kwargs["timeout"], 11)
+
+
+class XfadeFilterTest(unittest.TestCase):
+    """El grafo ``xfade`` se construye sin ejecutar ffmpeg (lógica pura)."""
+
+    def test_dos_clips_fundido(self) -> None:
+        graph, out = VideoAssembler.xfade_filter_complex(
+            [4.0, 4.0], transition_s=0.5, fps=16, width=832, height=480
+        )
+        self.assertEqual(out, "x0")
+        self.assertIn("xfade=transition=fade:duration=0.500:offset=3.500", graph)
+        self.assertIn("scale=832:480", graph)
+        self.assertIn("fps=16", graph)
+
+    def test_tres_clips_offset_acumulado(self) -> None:
+        graph, out = VideoAssembler.xfade_filter_complex(
+            [4.0, 4.0, 4.0], transition_s=0.5, fps=16
+        )
+        self.assertEqual(out, "x1")
+        self.assertIn("offset=3.500", graph)
+        self.assertIn("offset=7.000", graph)
+
+    def test_transicion_dissolve(self) -> None:
+        graph, _ = VideoAssembler.xfade_filter_complex(
+            [3.0, 3.0], transitions=["dissolve"], transition_s=0.5
+        )
+        self.assertIn("transition=dissolve", graph)
+
+    def test_corte_no_usa_medio_segundo(self) -> None:
+        graph, _ = VideoAssembler.xfade_filter_complex(
+            [3.0, 3.0], transitions=["cut"], transition_s=0.5, fps=16
+        )
+        # Un corte se resuelve como cruce de un fotograma, no de 0,5 s.
+        self.assertNotIn("duration=0.500", graph)
+        self.assertIn("xfade=transition=fade:duration=0.062", graph)
+
+    def test_un_clip_lanza(self) -> None:
+        with self.assertRaises(EngineError):
+            VideoAssembler.xfade_filter_complex([3.0])
 
 
 if __name__ == "__main__":

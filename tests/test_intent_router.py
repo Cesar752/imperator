@@ -130,6 +130,31 @@ class RouteTest(unittest.TestCase):
         self.assertEqual(ir.ACTION_LABELS[ir.ACTION_SUMMARY], "resumen")
 
 
+class DispatchPayloadTest(unittest.TestCase):
+    """El dispatch de un guion lleva la idea y el nº de escenas ya resueltos."""
+
+    def test_guion_lleva_payload(self) -> None:
+        orch = TaskOrchestrator(available=lambda: ("chat", "video"))
+        dispatch = orch.dispatch("hazme el guion de un video de 4 escenas sobre un bosque")
+        assert dispatch is not None
+        self.assertEqual(dispatch.task_id, "video")
+        self.assertEqual(dispatch.action, "plan_script")
+        self.assertEqual(dispatch.payload.get("scenes"), 4)
+        self.assertIn("bosque", dispatch.payload.get("idea", ""))
+
+    def test_sin_numero_no_incluye_scenes(self) -> None:
+        orch = TaskOrchestrator(available=lambda: ("chat", "video"))
+        dispatch = orch.dispatch("hazme el guion de un video sobre el mar")
+        assert dispatch is not None
+        self.assertNotIn("scenes", dispatch.payload)
+
+    def test_dispatch_normal_sin_payload(self) -> None:
+        orch = TaskOrchestrator(available=lambda: ("chat", "document"))
+        dispatch = orch.dispatch("resume este pdf")
+        assert dispatch is not None
+        self.assertEqual(dispatch.payload, {})
+
+
 class OrchestratorTest(unittest.TestCase):
     def test_sin_senal_devuelve_none(self) -> None:
         orch = TaskOrchestrator(available=lambda: ("chat", "document"))
@@ -249,6 +274,42 @@ class ChatRoutingTest(unittest.TestCase):
             self.assertEqual(recibidos, [])
         finally:
             widget.close()
+
+
+class GuionRoutingTest(unittest.TestCase):
+    """El chat también reconoce peticiones de **guion** (historia con escenas)."""
+
+    def test_guion_de_un_video(self) -> None:
+        intent = ir.route("hazme el guion de un vídeo sobre un faro")
+        self.assertEqual(intent.kind, ir.KIND_VIDEO)
+        self.assertEqual(intent.action, ir.ACTION_PLAN_SCRIPT)
+
+    def test_escribe_un_guion(self) -> None:
+        intent = ir.route("escribe un guion para un video de aventuras")
+        self.assertEqual(intent.kind, ir.KIND_VIDEO)
+        self.assertEqual(intent.action, ir.ACTION_PLAN_SCRIPT)
+
+    def test_video_con_escenas(self) -> None:
+        intent = ir.route("quiero un video con escenas sobre el mar")
+        self.assertEqual(intent.kind, ir.KIND_VIDEO)
+        self.assertEqual(intent.action, ir.ACTION_PLAN_SCRIPT)
+
+    def test_storyboard_con_video(self) -> None:
+        intent = ir.route("hazme el storyboard de un video corto")
+        self.assertEqual(intent.kind, ir.KIND_VIDEO)
+        self.assertEqual(intent.action, ir.ACTION_PLAN_SCRIPT)
+
+    def test_guion_solo_no_enruta(self) -> None:
+        """«guion» a secas puede ser una pregunta: no debe secuestrar el chat."""
+        self.assertFalse(ir.route("guion").is_routed)
+
+    def test_generar_video_sigue_siendo_generacion(self) -> None:
+        intent = ir.route("genera un vídeo de un gato")
+        self.assertEqual(intent.kind, ir.KIND_VIDEO)
+        self.assertEqual(intent.action, ir.ACTION_GENERATE)
+
+    def test_etiqueta_de_accion(self) -> None:
+        self.assertEqual(ir.ACTION_LABELS[ir.ACTION_PLAN_SCRIPT], "guion")
 
 
 if __name__ == "__main__":
