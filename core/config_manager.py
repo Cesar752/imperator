@@ -444,6 +444,10 @@ class ConfigManager:
         # Serializa las escrituras: hay varios widgets (y workers) guardando
         # preferencias en settings.json a la vez.
         self._lock = threading.RLock()
+        #: Caché de ``last_models``: (mtime_ns del settings.json, copia).
+        #: ``PrefsStore`` leía el fichero entero (parseo + validación) por
+        #: **cada** valor: construir una tarea costaba 11 lecturas.
+        self._last_models_cache: tuple[int, dict[str, str]] | None = None
 
     # ---- Motores -------------------------------------------------
 
@@ -472,6 +476,7 @@ class ConfigManager:
 
     def save_settings(self, settings: dict[str, Any]) -> None:
         self._save_json("settings.json", settings, SETTINGS_SCHEMA, is_list=False)
+        self._cachear_last_models(settings)
 
     def update_settings(self, changes: dict[str, Any]) -> dict[str, Any]:
         """Aplica ``changes`` sobre settings.json y devuelve el resultado.
@@ -487,14 +492,39 @@ class ConfigManager:
             self._save_json(
                 "settings.json", settings, SETTINGS_SCHEMA, is_list=False
             )
+            self._cachear_last_models(settings)
             return settings
 
     # ---- Último modelo seleccionado por tarea --------------------
 
     def load_last_models(self) -> dict[str, str]:
-        """Devuelve el mapa tarea -> último modelo seleccionado (settings.json)."""
-        settings = self.load_settings()
-        return dict(settings.get("last_models", {}))
+        """Devuelve el mapa tarea -> último modelo seleccionado (settings.json).
+
+        Se cachea hasta que cambie el ``mtime`` del fichero: así una edición
+        externa se ve igual de inmediato y construir una tarea no paga una
+        lectura (y su validación) por cada preferencia.
+        """
+        ruta = self._file_path("settings.json")
+        try:
+            momento = ruta.stat().st_mtime_ns
+        except OSError:
+            momento = 0
+        cache = self._last_models_cache
+        if cache is not None and cache[0] == momento:
+            return dict(cache[1])
+        modelos = dict(self.load_settings().get("last_models") or {})
+        self._last_models_cache = (momento, modelos)
+        return dict(modelos)
+
+    def _cachear_last_models(self, settings: dict[str, Any]) -> None:
+        """Refresca la caché con ``settings`` recién escrito (sin releer)."""
+        ruta = self._file_path("settings.json")
+        try:
+            momento = ruta.stat().st_mtime_ns
+        except OSError:
+            self._last_models_cache = None
+            return
+        self._last_models_cache = (momento, dict(settings.get("last_models") or {}))
 
     def save_last_model(self, task_id: str, model: str) -> None:
         """Guarda el último modelo seleccionado para una tarea (settings.json).
@@ -508,6 +538,7 @@ class ConfigManager:
             self._save_json(
                 "settings.json", settings, SETTINGS_SCHEMA, is_list=False
             )
+            self._cachear_last_models(settings)
 
     # ---- Resolución de clave de API ------------------------------
 
