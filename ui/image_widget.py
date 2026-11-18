@@ -3,6 +3,7 @@
 import logging
 import shutil
 
+from PyQt6 import sip
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
@@ -116,7 +117,8 @@ class ImageWidget(TaskWidget):
 
         self._steps = QSpinBox()
         self._steps.setRange(1, 150)
-        self._steps.setValue(20)
+        # Calidad por defecto: 30 pasos (más detalle que 20, sin dispararse).
+        self._steps.setValue(30)
 
         self._guidance = QDoubleSpinBox()
         self._guidance.setRange(0.0, 30.0)
@@ -237,10 +239,14 @@ class ImageWidget(TaskWidget):
         )
 
     def _on_credits_error(self, message: str) -> None:
+        if sip.isdeleted(self):
+            return
         logger.debug("No se pudieron consultar los créditos: %s", message)
         self._credits_label.setText("No disponible")
 
     def _on_credits(self, credits: object) -> None:
+        if sip.isdeleted(self):
+            return
         if credits is None:
             self._credits_label.setText("No disponible")
         else:
