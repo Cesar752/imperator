@@ -2,9 +2,10 @@
 
 import logging
 from copy import deepcopy
+from typing import Callable
 
 from core.config_manager import DEFAULT_ENGINES, ConfigError, ConfigManager
-from engines.base_engine import Engine
+from engines.base_engine import Engine, EngineError
 from engines.bfl import BFLApiEngine
 from engines.cli_tool import CliVideoEngine
 from engines.comfyui import ComfyUIEngine
@@ -141,6 +142,259 @@ _CLI_DEFAULTS: dict[str, dict] = {
 }
 
 
+
+def _params(entry: dict) -> dict:
+    """Parámetros del motor en ``engines.json`` (``{}`` si no hay)."""
+    return entry.get("parametros", {})
+
+
+def _build_ollama(engine_id: str, entry: dict) -> Engine:
+    params = _params(entry)
+    # ``num_ctx`` (y ``num_predict``) se pueden fijar por motor en engines.json;
+    # si no están, se usan los valores del propio motor, que son la única fuente
+    # de verdad. ``timeout`` permite dar más margen a los modelos que razonan.
+    return OllamaEngine(
+        base_url=entry.get("ruta", _OLLAMA_DEFAULT_BASE_URL),
+        default_model=params.get("model", _OLLAMA_DEFAULT_MODEL),
+        num_ctx=params.get("num_ctx", OllamaEngine._NUM_CTX),
+        num_predict=params.get("num_predict", OllamaEngine._NUM_PREDICT),
+        timeout=params.get("timeout"),
+        # ``think=False`` apaga el razonamiento de los modelos qwen3.x, que
+        # gastaban la ventana «pensando» (Cuaderno/Crónica salían vacíos).
+        think=params.get("think"),
+    )
+
+
+def _build_ollama_vision(engine_id: str, entry: dict) -> Engine:
+    params = _params(entry)
+    return OllamaVisionEngine(
+        base_url=entry.get("ruta", _OLLAMA_VISION_DEFAULT_BASE_URL),
+        default_model=params.get("model", _OLLAMA_VISION_DEFAULT_MODEL),
+        num_ctx=params.get("num_ctx", OllamaVisionEngine._NUM_CTX),
+        timeout=params.get("timeout"),
+        # Rendimiento: apagar el razonamiento (qwen3-vl gasta ~90 % de los tokens
+        # en «thinking») y acotar la salida. Ver README.
+        think=params.get("think"),
+        num_predict=params.get("num_predict"),
+    )
+
+
+def _build_openai_compatible(engine_id: str, entry: dict) -> Engine:
+    params = _params(entry)
+    base, model, models, need_key = _OPENAI_COMPATIBLE_DEFAULTS[engine_id]
+    return OpenAICompatibleChatEngine(
+        api_id=engine_id,
+        base_url=entry.get("ruta", base),
+        default_model=params.get("model", model),
+        nombre=entry.get("nombre", engine_id.replace("_", " ").title()),
+        models=params.get("models", models),
+        api_key_env=params.get("api_key_env"),
+        api_key_required=params.get("api_key_required", need_key),
+        timeout=params.get("timeout"),
+    )
+
+
+def _build_openai_vision(engine_id: str, entry: dict) -> Engine:
+    params = _params(entry)
+    # Comparte la clave del chat de OpenAI (OPENAI_API_KEY en .env) y acepta
+    # ``detail`` y ``max_tokens`` para acotar el coste por fotograma.
+    return OpenAICompatibleVisionEngine(
+        api_id=engine_id,
+        base_url=entry.get("ruta", _OPENAI_VISION_DEFAULT_BASE_URL),
+        default_model=params.get("model", _OPENAI_VISION_DEFAULT_MODEL),
+        nombre=entry.get("nombre", "OpenAI Vision"),
+        models=params.get("models", _OPENAI_VISION_DEFAULT_MODELS),
+        api_key_env=params.get("api_key_env", "OPENAI_API_KEY"),
+        api_key_required=params.get("api_key_required", True),
+        timeout=params.get("timeout"),
+        detail=params.get("detail", "auto"),
+        max_tokens=params.get("max_tokens"),
+    )
+
+
+def _build_comfyui(engine_id: str, entry: dict) -> Engine:
+    params = _params(entry)
+    return ComfyUIEngine(
+        base_url=entry.get("ruta", _COMFYUI_DEFAULT_BASE_URL),
+        workflows=params.get("workflows", {}),
+        default_model=params.get("default_model"),
+    )
+
+
+def _build_bfl(engine_id: str, entry: dict) -> Engine:
+    params = _params(entry)
+    return BFLApiEngine(
+        base_url=entry.get("ruta", _BFL_DEFAULT_BASE_URL),
+        models=params.get("models"),
+    )
+
+
+def _build_openai_image(engine_id: str, entry: dict) -> Engine:
+    params = _params(entry)
+    return OpenAIImageEngine(
+        base_url=entry.get("ruta", _OPENAI_IMAGE_DEFAULT_BASE_URL),
+        default_model=params.get("model", _OPENAI_IMAGE_DEFAULT_MODEL),
+        nombre=entry.get("nombre", "OpenAI Imagen"),
+        models=params.get("models", _OPENAI_IMAGE_DEFAULT_MODELS),
+        api_key_env=params.get("api_key_env", "OPENAI_API_KEY"),
+        output_dir=params.get("output_dir"),
+        size=params.get("size", _OPENAI_IMAGE_DEFAULT_SIZE),
+        timeout=params.get("timeout"),
+    )
+
+
+def _build_cli(engine_id: str, entry: dict) -> Engine:
+    params = _params(entry)
+    # CLI externa (subprocess). El ejecutable se toma de
+    # 'parametros.executable' o, si no, de 'ruta'; la plantilla de argumentos de
+    # 'parametros.args'. Si no está instalada, ``is_available()`` da False.
+    defaults = _CLI_DEFAULTS[engine_id]
+    return CliVideoEngine(
+        engine_id=engine_id,
+        nombre=entry.get("nombre", defaults["nombre"]),
+        executable=params.get("executable") or entry.get("ruta") or defaults["executable"],
+        args=params.get("args", defaults["args"]),
+        output_dir=params.get("output_dir"),
+        output_ext=params.get("output_ext", defaults["output_ext"]),
+        output_glob=params.get("output_glob"),
+        timeout=params.get("timeout"),
+        models=params.get("models"),
+        cwd=params.get("cwd"),
+    )
+
+
+def _build_wanvideo(engine_id: str, entry: dict) -> Engine:
+    params = _params(entry)
+    workflows = params.get("workflows")
+    if not workflows and params.get("workflow_path"):
+        # Backward-compat: formato antiguo con un solo workflow_path (T2V).
+        workflows = {"t2v": params["workflow_path"]}
+    return WanVideoEngine(
+        base_url=entry.get("ruta", _WANVIDEO_DEFAULT_BASE_URL),
+        workflows=workflows,
+        default_model=params.get("default_model", "t2v"),
+    )
+
+
+def _build_piper_tts(engine_id: str, entry: dict) -> Engine:
+    params = _params(entry)
+    return PiperTTSEngine(
+        voices_dir=params.get("voices_dir", entry.get("ruta", _PIPER_DEFAULT_VOICES_DIR)),
+        default_voice=params.get("default_voice"),
+    )
+
+
+def _build_whisper(engine_id: str, entry: dict) -> Engine:
+    params = _params(entry)
+    return WhisperEngine(
+        model_size=params.get("model", _WHISPER_DEFAULT_MODEL),
+        device=params.get("device", _WHISPER_DEFAULT_DEVICE),
+        compute_type=params.get("compute_type", _WHISPER_DEFAULT_COMPUTE_TYPE),
+    )
+
+
+def _build_voice_clone(engine_id: str, entry: dict) -> Engine:
+    params = _params(entry)
+    return VoiceCloneEngine(
+        model_name=params.get("model", _VOICE_CLONE_DEFAULT_MODEL),
+        language=params.get("language", _VOICE_CLONE_DEFAULT_LANGUAGE),
+        device=params.get("device", _VOICE_CLONE_DEFAULT_DEVICE),
+        voices_dir=params.get(
+            "voices_dir", entry.get("ruta", _VOICE_CLONE_DEFAULT_VOICES_DIR)
+        ),
+        output_dir=params.get("output_dir"),
+        backend=params.get("backend", _VOICE_CLONE_DEFAULT_BACKEND),
+        python=params.get("python", _VOICE_CLONE_DEFAULT_PYTHON),
+        worker=params.get("worker"),
+        timeout=params.get("timeout"),
+    )
+
+
+def _build_kokoro_tts(engine_id: str, entry: dict) -> Engine:
+    params = _params(entry)
+    return KokoroTTSEngine(
+        default_voice=params.get("default_voice", _KOKORO_DEFAULT_VOICE),
+    )
+
+
+def _build_musicgen(engine_id: str, entry: dict) -> Engine:
+    params = _params(entry)
+    return MusicGenEngine(
+        model_size=params.get("model", _MUSICGEN_DEFAULT_MODEL),
+        output_dir=params.get("output_dir"),
+        duration=params.get("duration", _MUSICGEN_DEFAULT_DURATION),
+    )
+
+
+def _build_yolo(engine_id: str, entry: dict) -> Engine:
+    params = _params(entry)
+    return YoloEngine(
+        model_path=params.get("model", _YOLO_DEFAULT_MODEL),
+        confidence=params.get("confidence", _YOLO_DEFAULT_CONFIDENCE),
+    )
+
+
+def _build_clip(engine_id: str, entry: dict) -> Engine:
+    params = _params(entry)
+    return ClipEngine(
+        model_name=params.get("model", _CLIP_DEFAULT_MODEL),
+        top_k=params.get("top_k", _CLIP_DEFAULT_TOP_K),
+    )
+
+
+def _build_paddle_ocr(engine_id: str, entry: dict) -> Engine:
+    params = _params(entry)
+    return PaddleOcrEngine(
+        lang=params.get("lang", _OCR_DEFAULT_LANG),
+        use_gpu=bool(params.get("use_gpu", False)),
+    )
+
+
+def _build_generico(engine_id: str, entry: dict) -> Engine:
+    """Genérico para futuros motores: los parametros se pasan tal cual."""
+    cls = ENGINE_FACTORY[engine_id]
+    try:
+        return cls(**_params(entry))
+    except TypeError as exc:
+        # Antes salía un ``TypeError`` crudo que la UI mostraba como «error
+        # inesperado»; el problema real es de la configuración del motor.
+        raise ConfigError(
+            f"El motor '{engine_id}' no acepta esos 'parametros' en "
+            f"engines.json ({exc})."
+        ) from exc
+
+
+#: Mapa id de motor -> función que lo construye. Añadir un motor nuevo es añadir
+#: una función aquí, no tocar la cadena de decisión del gestor.
+#:
+#: Los builders reciben ``(engine_id, entry)`` y no ``self`` porque ``_build`` es
+#: un ``@staticmethod`` que los tests llaman como ``EngineManager._build(id, cfg)``;
+#: convertirlos en métodos obligaría a tocar ``reload`` y diez llamadas de test.
+_BUILDERS: dict[str, Callable[[str, dict], Engine]] = {
+    "ollama": _build_ollama,
+    "ollama_vision": _build_ollama_vision,
+    "openai": _build_openai_compatible,
+    "deepseek": _build_openai_compatible,
+    "llama_cpp": _build_openai_compatible,
+    "lm_studio": _build_openai_compatible,
+    "openai_vision": _build_openai_vision,
+    "openai_image": _build_openai_image,
+    "comfyui": _build_comfyui,
+    "bfl": _build_bfl,
+    "bkingfilm": _build_cli,
+    "lapian_notes": _build_cli,
+    "wanvideo": _build_wanvideo,
+    "piper_tts": _build_piper_tts,
+    "whisper": _build_whisper,
+    "voice_clone": _build_voice_clone,
+    "kokoro_tts": _build_kokoro_tts,
+    "musicgen": _build_musicgen,
+    "yolo": _build_yolo,
+    "clip": _build_clip,
+    "paddle_ocr": _build_paddle_ocr,
+}
+
+
 class EngineManager:
     """Carga los motores desde ``config/engines.json`` y gestiona su ciclo de vida.
 
@@ -207,176 +461,13 @@ class EngineManager:
     @staticmethod
     def _build(engine_id: str, entry: dict) -> Engine:
         """Construye la instancia de un motor a partir de su configuración."""
-        params = entry.get("parametros", {})
         EngineManager._avisar_si_usa_localhost(engine_id, entry.get("ruta"))
-        # ``num_ctx`` (y ``num_predict`` en el chat) se pueden fijar por motor en
-        # engines.json; si no están, se usan los valores del propio motor, que son
-        # la única fuente de verdad.
-        if engine_id == "ollama":
-            # ``timeout`` permite dar más margen a los modelos que razonan (el
-            # guion de escenas moría a los 120 s con qwen3.6:35b); si no está,
-            # manda el valor del motor (``OllamaEngine._CHAT_TIMEOUT``).
-            return OllamaEngine(
-                base_url=entry.get("ruta", _OLLAMA_DEFAULT_BASE_URL),
-                default_model=params.get("model", _OLLAMA_DEFAULT_MODEL),
-                num_ctx=params.get("num_ctx", OllamaEngine._NUM_CTX),
-                num_predict=params.get("num_predict", OllamaEngine._NUM_PREDICT),
-                timeout=params.get("timeout"),
-                # ``think=False`` apaga el razonamiento de los modelos qwen3.x,
-                # que gastaban la ventana «pensando» (Cuaderno/Crónica salían
-                # vacíos: «se agotó el espacio de la respuesta»). Configurable.
-                think=params.get("think"),
-            )
-        if engine_id == "ollama_vision":
-            return OllamaVisionEngine(
-                base_url=entry.get("ruta", _OLLAMA_VISION_DEFAULT_BASE_URL),
-                default_model=params.get("model", _OLLAMA_VISION_DEFAULT_MODEL),
-                num_ctx=params.get("num_ctx", OllamaVisionEngine._NUM_CTX),
-                timeout=params.get("timeout"),
-                # Rendimiento: apagar el razonamiento (qwen3-vl gasta ~90 % de los
-                # tokens en «thinking») y acotar la salida. Ver README.
-                think=params.get("think"),
-                num_predict=params.get("num_predict"),
-            )
-        if engine_id in _OPENAI_COMPATIBLE_DEFAULTS:
-            base, model, models, need_key = _OPENAI_COMPATIBLE_DEFAULTS[engine_id]
-            return OpenAICompatibleChatEngine(
-                api_id=engine_id,
-                base_url=entry.get("ruta", base),
-                default_model=params.get("model", model),
-                nombre=entry.get("nombre", engine_id.replace("_", " ").title()),
-                models=params.get("models", models),
-                api_key_env=params.get("api_key_env"),
-                api_key_required=params.get("api_key_required", need_key),
-                timeout=params.get("timeout"),
-            )
-        if engine_id == "openai_vision":
-            # Visión de pago compatible con OpenAI (GPT-4o…). Comparte la clave del
-            # chat de OpenAI (OPENAI_API_KEY en .env) y acepta ''detail'' y
-            # ''max_tokens'' para acotar el coste por fotograma.
-            return OpenAICompatibleVisionEngine(
-                api_id=engine_id,
-                base_url=entry.get("ruta", _OPENAI_VISION_DEFAULT_BASE_URL),
-                default_model=params.get("model", _OPENAI_VISION_DEFAULT_MODEL),
-                nombre=entry.get("nombre", "OpenAI Vision"),
-                models=params.get("models", _OPENAI_VISION_DEFAULT_MODELS),
-                api_key_env=params.get("api_key_env", "OPENAI_API_KEY"),
-                api_key_required=params.get("api_key_required", True),
-                timeout=params.get("timeout"),
-                detail=params.get("detail", "auto"),
-                max_tokens=params.get("max_tokens"),
-            )
-        if engine_id == "comfyui":
-            return ComfyUIEngine(
-                base_url=entry.get("ruta", _COMFYUI_DEFAULT_BASE_URL),
-                workflows=params.get("workflows", {}),
-                default_model=params.get("default_model"),
-            )
-        if engine_id == "bfl":
-            return BFLApiEngine(
-                base_url=entry.get("ruta", _BFL_DEFAULT_BASE_URL),
-                models=params.get("models"),
-            )
-        if engine_id == "openai_image":
-            return OpenAIImageEngine(
-                base_url=entry.get("ruta", _OPENAI_IMAGE_DEFAULT_BASE_URL),
-                default_model=params.get("model", _OPENAI_IMAGE_DEFAULT_MODEL),
-                nombre=entry.get("nombre", "OpenAI Imagen"),
-                models=params.get("models", _OPENAI_IMAGE_DEFAULT_MODELS),
-                api_key_env=params.get("api_key_env", "OPENAI_API_KEY"),
-                output_dir=params.get("output_dir"),
-                size=params.get("size", _OPENAI_IMAGE_DEFAULT_SIZE),
-                timeout=params.get("timeout"),
-            )
-        if engine_id in ("bkingfilm", "lapian_notes"):
-            # CLI externa (subprocess). El ejecutable se toma de
-            # 'parametros.executable' o, si no, de 'ruta'; la plantilla de
-            # argumentos de 'parametros.args'. Si no está instalada, el motor
-            # aparece como no disponible (is_available() -> False).
-            defaults = _CLI_DEFAULTS[engine_id]
-            return CliVideoEngine(
-                engine_id=engine_id,
-                nombre=entry.get("nombre", defaults["nombre"]),
-                executable=params.get("executable") or entry.get("ruta") or defaults["executable"],
-                args=params.get("args", defaults["args"]),
-                output_dir=params.get("output_dir"),
-                output_ext=params.get("output_ext", defaults["output_ext"]),
-                output_glob=params.get("output_glob"),
-                timeout=params.get("timeout"),
-                models=params.get("models"),
-                cwd=params.get("cwd"),
-            )
-        if engine_id == "wanvideo":
-            workflows = params.get("workflows")
-            if not workflows and params.get("workflow_path"):
-                # Backward-compat: formato antiguo con un solo workflow_path (T2V).
-                workflows = {"t2v": params["workflow_path"]}
-            return WanVideoEngine(
-                base_url=entry.get("ruta", _WANVIDEO_DEFAULT_BASE_URL),
-                workflows=workflows,
-                default_model=params.get("default_model", "t2v"),
-            )
-        if engine_id == "piper_tts":
-            return PiperTTSEngine(
-                voices_dir=params.get("voices_dir", entry.get("ruta", _PIPER_DEFAULT_VOICES_DIR)),
-                default_voice=params.get("default_voice"),
-            )
-        if engine_id == "whisper":
-            return WhisperEngine(
-                model_size=params.get("model", _WHISPER_DEFAULT_MODEL),
-                device=params.get("device", _WHISPER_DEFAULT_DEVICE),
-                compute_type=params.get("compute_type", _WHISPER_DEFAULT_COMPUTE_TYPE),
-            )
-        if engine_id == "voice_clone":
-            return VoiceCloneEngine(
-                model_name=params.get("model", _VOICE_CLONE_DEFAULT_MODEL),
-                language=params.get("language", _VOICE_CLONE_DEFAULT_LANGUAGE),
-                device=params.get("device", _VOICE_CLONE_DEFAULT_DEVICE),
-                voices_dir=params.get(
-                    "voices_dir", entry.get("ruta", _VOICE_CLONE_DEFAULT_VOICES_DIR)
-                ),
-                output_dir=params.get("output_dir"),
-                backend=params.get("backend", _VOICE_CLONE_DEFAULT_BACKEND),
-                python=params.get("python", _VOICE_CLONE_DEFAULT_PYTHON),
-                worker=params.get("worker"),
-                timeout=params.get("timeout"),
-            )
-        if engine_id == "kokoro_tts":
-            return KokoroTTSEngine(
-                default_voice=params.get("default_voice", _KOKORO_DEFAULT_VOICE),
-            )
-        if engine_id == "musicgen":
-            return MusicGenEngine(
-                model_size=params.get("model", _MUSICGEN_DEFAULT_MODEL),
-                output_dir=params.get("output_dir"),
-                duration=params.get("duration", _MUSICGEN_DEFAULT_DURATION),
-            )
-        if engine_id == "yolo":
-            return YoloEngine(
-                model_path=params.get("model", _YOLO_DEFAULT_MODEL),
-                confidence=params.get("confidence", _YOLO_DEFAULT_CONFIDENCE),
-            )
-        if engine_id == "clip":
-            return ClipEngine(
-                model_name=params.get("model", _CLIP_DEFAULT_MODEL),
-                top_k=params.get("top_k", _CLIP_DEFAULT_TOP_K),
-            )
-        if engine_id == "paddle_ocr":
-            return PaddleOcrEngine(
-                lang=params.get("lang", _OCR_DEFAULT_LANG),
-                use_gpu=bool(params.get("use_gpu", False)),
-            )
-        # Genérico para futuros motores: los parametros se pasan tal cual.
-        cls = ENGINE_FACTORY[engine_id]
-        try:
-            return cls(**params)
-        except TypeError as exc:
-            # Antes salía un ``TypeError`` crudo que la UI mostraba como «error
-            # inesperado»; el problema real es de la configuración del motor.
-            raise ConfigError(
-                f"El motor '{engine_id}' no acepta esos 'parametros' en "
-                f"engines.json ({exc})."
-            ) from exc
+        builder = _BUILDERS.get(engine_id)
+        if builder is not None:
+            return builder(engine_id, entry)
+        if engine_id not in ENGINE_FACTORY:
+            raise EngineError(f"Motor desconocido: {engine_id}")
+        return _build_generico(engine_id, entry)
 
     # ---- Consultas ----------------------------------------------
 
