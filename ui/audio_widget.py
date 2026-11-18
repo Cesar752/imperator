@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from PyQt6 import sip
 from PyQt6.QtCore import QUrl
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -38,8 +39,9 @@ from core.subprocess_utils import no_window_kwargs
 from engines.base_engine import EngineError
 from services import audio_params as ap
 from services import preferences as prefs
+from ui.pool_callbacks import PoolCallbackReceiver
 from ui.task_widget import TaskWidget
-from ui.workers import ThreadWorker
+from ui.workers import ThreadWorker, run_pool_task
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +92,8 @@ class AudioWidget(TaskWidget):
         self._prefs = prefs.PrefsStore(config_manager)
         self._worker: AudioWorker | None = None
         self._last_path: str | None = None
+        #: Receptor de la conversión MP3 en curso (C5.4).
+        self._mp3_rx: PoolCallbackReceiver | None = None
         self._build_ui()
         self._setup_player()
         self._populate_motors()
@@ -299,15 +303,49 @@ class AudioWidget(TaskWidget):
         )
         if not target:
             return
+        if target.lower().endswith(".mp3"):
+            self._convert_in_background(self._last_path, target)
+            return
         try:
-            if target.lower().endswith(".mp3"):
-                self._convert_to_mp3(self._last_path, target)
-            else:
-                shutil.copyfile(self._last_path, target)
+            shutil.copyfile(self._last_path, target)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Error", f"No se pudo guardar el audio: {exc}")
             return
         self._set_status(f"Guardado en: {target}")
+
+    def _convert_in_background(self, wav_path: str, target: str) -> None:
+        """Convierte a MP3 en el pool: la ventana no se congela (C5.4).
+
+        La conversión es un ``subprocess.run`` de hasta ``_MP3_TIMEOUT`` segundos;
+        en el hilo de la UI dejaba la ventana muerta y sin indicador.
+        """
+        self._save_button.setEnabled(False)
+        self._set_status("Convirtiendo a MP3…")
+        rx = PoolCallbackReceiver(
+            self, self._on_mp3_done, self._on_mp3_error, context=target
+        )
+        self._mp3_rx = rx
+        rx.arm()
+        run_pool_task(
+            self._convert_to_mp3,
+            wav_path,
+            target,
+            on_result=rx.handle,
+            on_error=rx.handle_error,
+        )
+
+    def _on_mp3_done(self, target: str, _valor) -> None:
+        if sip.isdeleted(self):
+            return
+        self._save_button.setEnabled(True)
+        self._set_status(f"Guardado en: {target}")
+
+    def _on_mp3_error(self, target: str, mensaje: str) -> None:
+        if sip.isdeleted(self):
+            return
+        self._save_button.setEnabled(True)
+        logger.warning("No se pudo convertir a MP3 (%s): %s", target, mensaje)
+        QMessageBox.critical(self, "Error", f"No se pudo guardar el audio: {mensaje}")
 
     @staticmethod
     def _convert_to_mp3(wav_path: str, mp3_path: str) -> None:
