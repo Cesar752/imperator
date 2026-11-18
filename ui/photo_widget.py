@@ -19,7 +19,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6 import sip
+from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -39,8 +40,9 @@ from core.paths import PROJECT_ROOT
 from core.subprocess_utils import no_window_kwargs
 from engines.base_engine import EngineError
 from services import photo_params as pp
+from ui.pool_callbacks import PoolCallbackReceiver
 from ui.task_widget import TaskWidget
-from ui.workers import ThreadWorker
+from ui.workers import ThreadWorker, run_pool_task
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,9 @@ PHOTO_TIMEOUT = 1800
 
 #: Tamaño máximo de las vistas previas (px).
 PREVIEW_MAX = 320
+
+#: Espera tras el último cambio de un control antes de reprocesar (C5.5).
+ADJUST_DEBOUNCE_MS = 350
 
 
 class PhotoWorker(ThreadWorker):
@@ -138,6 +143,15 @@ class PhotoWidget(TaskWidget):
         self._original = None  # PIL.Image de la foto abierta
         self._result = None    # PIL.Image a guardar (ajustes y/o IA)
         self._source_path: Path | None = None
+        #: Token que descarta reprocesos de un ajuste anterior (C5.5).
+        self._generation = 0
+        #: Debounce: un solo reproceso cuando el usuario deja de mover el control.
+        self._adjust_timer = QTimer(self)
+        self._adjust_timer.setSingleShot(True)
+        self._adjust_timer.setInterval(ADJUST_DEBOUNCE_MS)
+        self._adjust_timer.timeout.connect(self._apply_adjustments)
+        #: Receptor del reproceso en curso.
+        self._adjust_rx: PoolCallbackReceiver | None = None
         self._build_ui()
         self._refresh_ai_availability()
 
@@ -298,13 +312,40 @@ class PhotoWidget(TaskWidget):
     def _on_adjust_changed(self) -> None:
         if self._original is None:
             return
-        self._result = pp.Adjustments(
-            brightness=self._spn_brightness.value(),
-            contrast=self._spn_contrast.value(),
-            color=self._spn_color.value(),
-            sharpness=self._spn_sharpness.value(),
-        ).apply(self._original)
+        # El reproceso a resolución completa tarda cientos de ms y se dispara con
+        # cada paso del control: se espera a que el usuario pare (C5.5). Mientras
+        # tanto se sigue viendo la última versión válida.
+        self._generation += 1
+        self._adjust_timer.start()
+
+    def _apply_adjustments(self) -> None:
+        """Reprocesa los ajustes en el pool y repinta al volver (C5.5)."""
+        if self._original is None:
+            return
+        ajustes = self._current_adjustments()
+        rx = PoolCallbackReceiver(
+            self, self._on_adjusted, self._on_adjust_error, context=ajustes
+        )
+        self._adjust_rx = rx
+        rx.arm()
+        run_pool_task(
+            ajustes.apply,
+            self._original,
+            on_result=rx.handle,
+            on_error=rx.handle_error,
+        )
+
+    def _on_adjusted(self, _ajustes, imagen) -> None:
+        """Recibe la imagen reprocesada (los ajustes viejos ya no llegan)."""
+        if sip.isdeleted(self):
+            return
+        self._result = imagen
         self._render_previews()
+
+    def _on_adjust_error(self, _ajustes, mensaje: str) -> None:
+        if sip.isdeleted(self):
+            return
+        logger.warning("No se pudieron aplicar los ajustes: %s", mensaje)
 
     def _reset_adjustments(self) -> None:
         for spn in (
