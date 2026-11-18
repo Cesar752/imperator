@@ -15,6 +15,7 @@ try:
 except ImportError:  # pragma: no cover - dependencia declarada en requirements.txt
     imageio_ffmpeg = None
 
+from PyQt6 import sip
 from PyQt6.QtCore import QSize, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QDesktopServices, QIcon, QPixmap
 from PyQt6.QtWidgets import (
@@ -52,6 +53,7 @@ from services import system_stats as stats
 from services import video_params as vp
 from services import video_project as vproject
 from services import video_script as vs
+from ui.pool_callbacks import PoolCallbackReceiver
 from ui.task_widget import TaskWidget
 from ui.workers import ThreadWorker, gpu_slot, own_model_loaded, run_pool_task
 
@@ -593,6 +595,11 @@ class VideoWidget(TaskWidget):
         self._script_worker = None
         self._extend_worker = None
         self._reordering = False
+        #: Token que descarta miniaturas de un proyecto anterior (C5.3).
+        self._generation = 0
+        #: Filas con miniatura en vuelo y su receptor del pool.
+        self._thumb_pending: set[int] = set()
+        self._thumb_rx: dict[int, PoolCallbackReceiver] = {}
         #: Guardia del recálculo de avisos: marcar una celda emite ``itemChanged``
         #: y sin esto la llamada se re-entraría hasta desbordar la pila.
         self._refreshing_warnings = False
@@ -937,6 +944,9 @@ class VideoWidget(TaskWidget):
         """Carga un guion (del chat o de un proyecto) en la tabla de escenas."""
         self._script = script
         self._project = project if isinstance(project, vproject.Project) else None
+        # Un proyecto nuevo invalida las miniaturas del anterior (C5.3).
+        self._generation += 1
+        self._thumb_pending.clear()
         self._clips = []
         self._sequence_path = None
         if self._project is not None:
@@ -1720,10 +1730,14 @@ class VideoWidget(TaskWidget):
         self._refresh_thumbnails()
 
     def _refresh_thumbnails(self) -> None:
-        """Pone como icono de cada escena el primer fotograma de su clip (si existe)."""
+        """Pone como icono de cada escena el primer fotograma de su clip (C5.3).
+
+        La extracción con ffmpeg va al pool: antes se hacía escena a escena en el
+        hilo de la UI y con 20 escenas la ventana se congelaba decenas de
+        segundos. Si la miniatura ya está en disco se pinta sin lanzar nada.
+        """
         if self._script is None or self._project is None:
             return
-        extractor = FrameExtractor(self._project.directory)
         for row in range(self._scene_table.rowCount()):
             item = self._scene_table.item(row, 0)
             if item is None:
@@ -1733,24 +1747,62 @@ class VideoWidget(TaskWidget):
                 item.setIcon(QIcon())
                 continue
             mini = self._project.directory / f"miniatura_{row:02d}.png"
-            if not mini.is_file():
-                try:
-                    extractor.extract_frame(clip, 0.1, mini)
-                except EngineError as exc:
-                    logger.debug("Sin miniatura para %s: %s", clip, exc)
-                    continue
-            pixmap = QPixmap(str(mini))
-            if not pixmap.isNull():
-                item.setIcon(
-                    QIcon(
-                        pixmap.scaled(
-                            48,
-                            27,
-                            Qt.AspectRatioMode.KeepAspectRatio,
-                            Qt.TransformationMode.SmoothTransformation,
-                        )
-                    )
+            if mini.is_file():
+                self._set_thumbnail(item, mini)
+            elif row not in self._thumb_pending:
+                # Placeholder hasta que el pool devuelva el fotograma.
+                item.setIcon(QIcon())
+                self._thumb_pending.add(row)
+                self._request_thumbnail(row, clip, mini)
+
+    def _request_thumbnail(self, row: int, clip: Path, mini: Path) -> None:
+        """Lanza la extracción del fotograma de ``row`` al pool (C5.3)."""
+        rx = PoolCallbackReceiver(
+            self, self._on_thumbnail, self._on_thumbnail_error, context=(row, str(mini))
+        )
+        self._thumb_rx[row] = rx
+        rx.arm()
+        extractor = FrameExtractor(self._project.directory)
+        run_pool_task(
+            extractor.extract_frame,
+            clip,
+            0.1,
+            mini,
+            on_result=rx.handle,
+            on_error=rx.handle_error,
+        )
+
+    def _set_thumbnail(self, item, mini: Path) -> None:
+        """Pinta ``mini`` como icono de la celda (solo Qt, sin ffmpeg)."""
+        pixmap = QPixmap(str(mini))
+        if pixmap.isNull():
+            return
+        item.setIcon(
+            QIcon(
+                pixmap.scaled(
+                    48,
+                    27,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
                 )
+            )
+        )
+
+    def _on_thumbnail(self, contexto, _valor) -> None:
+        """Rellena la miniatura cuando el pool termina la extracción."""
+        if sip.isdeleted(self):
+            return
+        row, mini = contexto
+        self._thumb_pending.discard(row)
+        item = self._scene_table.item(row, 0)
+        if item is not None:
+            self._set_thumbnail(item, Path(mini))
+
+    def _on_thumbnail_error(self, contexto, mensaje: str) -> None:
+        if sip.isdeleted(self):
+            return
+        self._thumb_pending.discard(contexto[0])
+        logger.debug("Sin miniatura para la escena %s: %s", contexto[0], mensaje)
 
     def _open_projects_dialog(self) -> None:
         """Abre la cola de proyectos y carga el elegido en la tabla."""
