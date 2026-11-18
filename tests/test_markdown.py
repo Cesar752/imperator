@@ -1,4 +1,4 @@
-"""Tests del markdown del chat: detección, acabado del código y renderizado.
+﻿"""Tests del markdown del chat: detección, acabado del código y renderizado.
 
 El motor devuelve markdown en crudo. El chat lo pinta con ``QTextDocument``
 (``ui.markdown``), pero Qt deja el código sin fondo ni monoespaciado: eso es lo
@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 from ui import chat_widget as cw  # noqa: E402
 from ui import markdown as md  # noqa: E402
+from ui import theme  # noqa: E402
 from ui.chat_widget import ChatWidget  # noqa: E402
 
 
@@ -171,7 +172,8 @@ class ChatMarkdownTest(_QtTestCase):
     def test_la_etiqueta_del_autor_sigue_resaltada(self) -> None:
         self.widget._append_turn("Motor", "cuerpo", cw._COLOR_MOTOR)
         self.assertEqual(
-            self._formato("Motor:").foreground().color().name(), cw._COLOR_MOTOR
+            self._formato("Motor:").foreground().color().name(),
+            theme.semantic(cw._COLOR_MOTOR).name(),
         )
 
 

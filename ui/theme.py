@@ -3,6 +3,49 @@
 from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import QApplication
 
+#: Tema vigente (lo fija :func:`apply_theme`).
+_CURRENT = {"name": "dark"}
+
+#: Colores con semántica por tema. La ``QPalette`` no los cubre (avisos, errores,
+#: autor del chat) y fijos rompían el contraste al cambiar de tema: el tema claro
+#: dejaba los avisos casi ilegibles sobre fondo claro.
+SEMANTIC: dict[str, dict[str, str]] = {
+    "dark": {
+        "chat_user": "#4a9eff",
+        "chat_engine": "#69c07a",
+        "chat_error": "#e06c75",
+        "chat_warning": "#d8a657",
+        "warning_fg": "#d8a657",
+        "warning_bg": "#4d3a12",
+        "ok_fg": "#69c07a",
+    },
+    "light": {
+        "chat_user": "#1a5fb4",
+        "chat_engine": "#1c7146",
+        "chat_error": "#a51d2d",
+        "chat_warning": "#8a5a00",
+        "warning_fg": "#8a5a00",
+        "warning_bg": "#fff0c2",
+        "ok_fg": "#1c7146",
+    },
+}
+
+
+def current_theme() -> str:
+    """Nombre del tema aplicado (``"dark"`` o ``"light"``)."""
+    return _CURRENT["name"]
+
+
+def semantic(role: str) -> QColor:
+    """Color con semántica (``warning_fg``, ``chat_user``…) del tema vigente.
+
+    Falla con ``KeyError`` si el rol no existe: es un error de programación, no
+    algo que deba degradarse en silencio a un color cualquiera.
+    """
+    return QColor(SEMANTIC[_CURRENT["name"]][role])
+
+
+
 
 def apply_dark_theme(app: QApplication) -> None:
     """Aplica el tema oscuro global.
@@ -57,5 +100,7 @@ def apply_theme(app: QApplication, theme: str) -> None:
     """Aplica el tema según el valor (``"dark"`` o ``"light"``)."""
     if theme == "light":
         apply_light_theme(app)
+        _CURRENT["name"] = "light"
     else:
         apply_dark_theme(app)
+        _CURRENT["name"] = "dark"

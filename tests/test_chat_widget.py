@@ -1,4 +1,4 @@
-"""Tests de ChatWidget: foco de la barra y formato de los turnos.
+﻿"""Tests de ChatWidget: foco de la barra y formato de los turnos.
 
 Cubre dos arreglos de usabilidad:
 - la barra recupera el foco al terminar el turno (bloquearla lo perdía);
@@ -21,6 +21,7 @@ from PyQt6.QtGui import QFont, QShowEvent  # noqa: E402
 
 from engines.base_engine import CANCEL_MESSAGE  # noqa: E402
 from ui import chat_widget as cw  # noqa: E402
+from ui import theme  # noqa: E402
 from ui.chat_widget import ChatWidget  # noqa: E402
 
 
@@ -195,8 +196,12 @@ class ChatFocusTest(unittest.TestCase):
         self._dos_turnos()
         usuario = self._formato_de("Tú:")
         motor = self._formato_de(f"{_MODELO}:")
-        self.assertEqual(usuario.foreground().color().name(), cw._COLOR_USUARIO)
-        self.assertEqual(motor.foreground().color().name(), cw._COLOR_MOTOR)
+        self.assertEqual(
+            usuario.foreground().color().name(), theme.semantic(cw._COLOR_USUARIO).name()
+        )
+        self.assertEqual(
+            motor.foreground().color().name(), theme.semantic(cw._COLOR_MOTOR).name()
+        )
         negrita = int(QFont.Weight.Bold)
         self.assertEqual(int(usuario.fontWeight()), negrita)
         self.assertEqual(int(motor.fontWeight()), negrita)
@@ -215,7 +220,8 @@ class ChatFocusTest(unittest.TestCase):
         texto = self.widget._conversation.toPlainText()
         self.assertIn("Error: se cayó Ollama", texto)
         self.assertEqual(
-            self._formato_de("Error:").foreground().color().name(), cw._COLOR_ERROR
+            self._formato_de("Error:").foreground().color().name(),
+            theme.semantic(cw._COLOR_ERROR).name(),
         )
 
     def test_una_respuesta_vacia_avisa_y_no_ensucia_el_historial(self) -> None:

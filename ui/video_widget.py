@@ -1,4 +1,4 @@
-"""Widget de generación de vídeo: prompt, parámetros, progreso y salida MP4."""
+﻿"""Widget de generación de vídeo: prompt, parámetros, progreso y salida MP4."""
 
 import logging
 import math
@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover - dependencia declarada en requirements.
 
 from PyQt6 import sip
 from PyQt6.QtCore import QSize, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QColor, QDesktopServices, QIcon, QPixmap
+from PyQt6.QtGui import QDesktopServices, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -55,6 +55,7 @@ from services import video_project as vproject
 from services import video_script as vs
 from ui.pool_callbacks import PoolCallbackReceiver
 from ui.task_widget import TaskWidget
+from ui.theme import semantic
 from ui.workers import ThreadWorker, gpu_slot, own_model_loaded, run_pool_task
 
 logger = logging.getLogger(__name__)
@@ -725,7 +726,7 @@ class VideoWidget(TaskWidget):
         self._warnings = QLabel()
         self._warnings.setWordWrap(True)
         self._warnings.setVisible(False)
-        self._warnings.setStyleSheet("color: #d8a657;")
+        self._warnings.setStyleSheet(f"color: {semantic('warning_fg').name()};")
         self._scene_table.itemChanged.connect(self._refresh_warnings)
 
         # Añadir escenas: una en blanco (a mano) o varias que continúen la historia
@@ -1512,7 +1513,7 @@ class VideoWidget(TaskWidget):
         for scene_number, messages in by_scene.items():
             item = self._scene_table.item(scene_number - 1, 0)
             if item is not None:
-                item.setBackground(QColor("#4d3a12"))
+                item.setBackground(semantic("warning_bg"))
                 item.setToolTip("\n".join(messages))
         if not warnings:
             label.setVisible(False)

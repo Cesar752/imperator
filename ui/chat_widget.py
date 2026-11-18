@@ -4,7 +4,7 @@ import logging
 
 from PyQt6 import sip
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
+from PyQt6.QtGui import QFont, QTextCharFormat, QTextCursor
 from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -21,17 +21,18 @@ from services import chat_params as cp
 from services import preferences as prefs
 from ui import markdown as md
 from ui.task_widget import TaskWidget
+from ui.theme import semantic
 from ui.pool_callbacks import PoolCallbackReceiver
 from ui.workers import ThreadWorker, gpu_slot, own_model_loaded, run_pool_task
 
 logger = logging.getLogger(__name__)
 
-# Colores de las etiquetas de autor. Son tonos medios, legibles tanto sobre el
-# tema oscuro de la app como sobre el claro.
-_COLOR_USUARIO = "#4a9eff"
-_COLOR_MOTOR = "#69c07a"
-_COLOR_ERROR = "#e06c75"
-_COLOR_AVISO = "#d8a657"
+# Roles semánticos de las etiquetas de autor: el color concreto lo pone el
+# tema (ui.theme.SEMANTIC); fijos quedaban ilegibles en uno de los dos.
+_COLOR_USUARIO = "chat_user"
+_COLOR_MOTOR = "chat_engine"
+_COLOR_ERROR = "chat_error"
+_COLOR_AVISO = "chat_warning"
 
 
 class ChatWorker(ThreadWorker):
@@ -433,7 +434,7 @@ class ChatWidget(TaskWidget):
             cursor.insertBlock()   # y deja una línea en blanco entre turnos
         etiqueta = QTextCharFormat()
         etiqueta.setFontWeight(QFont.Weight.Bold)
-        etiqueta.setForeground(QColor(color))
+        etiqueta.setForeground(semantic(color))
         cursor.setCharFormat(etiqueta)
         cursor.insertText(f"{autor}: ")
         cursor.setCharFormat(QTextCharFormat())   # el cuerpo, con el color del tema

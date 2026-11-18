@@ -58,6 +58,7 @@ from services import video_understanding as vu
 from services.video_understanding import VIDEO_FILTER_ALL, clip_labels_text, srt_to_text
 from ui import discipline
 from ui.task_widget import TaskWidget
+from ui.theme import semantic
 from ui.workers import ThreadWorker
 
 logger = logging.getLogger(__name__)
@@ -804,13 +805,13 @@ class NotesWidget(TaskWidget):
         # no correcciones): determinista, sin llamadas extra al modelo.
         self._lbl_contraste = QLabel("")
         self._lbl_contraste.setWordWrap(True)
-        self._lbl_contraste.setStyleSheet("color: #b58900;")
+        self._lbl_contraste.setStyleSheet(f"color: {semantic('warning_fg').name()};")
         root.addWidget(self._lbl_contraste)
 
         # Marcador real y goles leídos por OCR (vacío si el OCR no está activo).
         self._lbl_marcador = QLabel("")
         self._lbl_marcador.setWordWrap(True)
-        self._lbl_marcador.setStyleSheet("color: #4e9a06;")
+        self._lbl_marcador.setStyleSheet(f"color: {semantic('ok_fg').name()};")
         root.addWidget(self._lbl_marcador)
         # Barra de avance + reloj, como en las demás tareas (antes no había
         # forma de ver si un paquete o un análisis seguían vivos).
