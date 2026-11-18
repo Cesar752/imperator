@@ -103,12 +103,31 @@ class PoolTask(QRunnable):
 
     def run(self) -> None:
         try:
-            value = self._fn(*self._args, **self._kwargs)
-        except Exception as exc:  # noqa: BLE001 - red/timeout/JSON inesperados
-            logger.debug("Error en tarea de pool: %r", exc, exc_info=True)
-            self.signals.failed.emit(str(exc))
-            return
-        self.signals.result.emit(value)
+            try:
+                value = self._fn(*self._args, **self._kwargs)
+            except Exception as exc:  # noqa: BLE001 - red/timeout/JSON inesperados
+                logger.debug("Error en tarea de pool: %r", exc, exc_info=True)
+                self.signals.failed.emit(str(exc))
+                return
+            self.signals.result.emit(value)
+        finally:
+            _liberar(self)
+
+
+#: Tareas del pool que siguen vivas. La referencia se suelta al terminar
+#: ``run()``: sin ella, el GC podía llevarse el ``PoolTask`` (y con él su
+#: ``_PoolSignals``) mientras el hilo seguía, y la emisión reventaba con
+#: "wrapped C/C++ object of type _PoolSignals has been deleted" dentro de un
+#: hilo del pool, donde el ``excepthook`` de la aplicación no llega.
+_TAREAS_VIVAS: set["PoolTask"] = set()
+
+
+def _retener(task: "PoolTask") -> None:
+    _TAREAS_VIVAS.add(task)
+
+
+def _liberar(task: "PoolTask") -> None:
+    _TAREAS_VIVAS.discard(task)
 
 
 def _scheduler_busy(scheduler: object) -> bool:
@@ -227,5 +246,6 @@ def run_pool_task(
         task.signals.result.connect(on_result)
     if on_error is not None:
         task.signals.failed.connect(on_error)
+    _retener(task)
     QThreadPool.globalInstance().start(task)
     return task
