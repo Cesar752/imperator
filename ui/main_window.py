@@ -34,6 +34,7 @@ from services.output_cleanup import (
     cleanup_output,
 )
 from ui.engines_dialog import EnginesDialog
+from ui.pool_callbacks import PoolCallbackReceiver
 from ui.theme import apply_theme
 from ui.workers import run_pool_task
 
@@ -81,6 +82,10 @@ class MainWindow(QMainWindow):
         self._status_cache: dict[str, tuple[float, bool]] = {}
         #: Motor cuya comprobación de conexión está en vuelo (o ``None``).
         self._status_pending: str | None = None
+        #: Token que descarta respuestas del pool de una consulta anterior.
+        self._generation = 0
+        #: Receptor del pool atado a la vida del widget (C2).
+        self._gpu_rx = PoolCallbackReceiver(self, self._on_gpu_status, self._on_gpu_status_error)
         self._engines_dialog: EnginesDialog | None = None
         self._current_tab_index = 0
         self._unload_toggle = None
@@ -641,10 +646,16 @@ class MainWindow(QMainWindow):
         señal en el hilo de la UI. Así no se bloquea la ventana esperando al
         subproceso.
         """
-        run_pool_task(self._gpu_scheduler.describe, on_result=self._on_gpu_status)
+        self._generation += 1
+        self._gpu_rx.arm()
+        run_pool_task(
+            self._gpu_scheduler.describe,
+            on_result=self._gpu_rx.handle,
+            on_error=self._gpu_rx.handle_error,
+        )
 
-    def _on_gpu_status(self, texto: str) -> None:
-        if sip.isdeleted(self):
+    def _on_gpu_status(self, token: int, texto: str) -> None:
+        if sip.isdeleted(self) or token != self._generation:
             return
         QMessageBox.information(self, "Estado de la GPU", texto)
 
@@ -680,6 +691,11 @@ class MainWindow(QMainWindow):
         # La caché de fotogramas (cache/frames) también se poda: sin tope, analizar
         # varios vídeos deja miles de PNG. Tope holgado; se borra lo más antiguo.
         run_pool_task(FrameCache().prune, on_result=self._on_cache_pruned)
+
+    def _on_gpu_status_error(self, token: int, mensaje: str) -> None:
+        if sip.isdeleted(self) or token != self._generation:
+            return
+        logger.debug("No se pudo leer el estado de la GPU: %s", mensaje)
 
     def _on_cleanup_done(self, plan) -> None:
         """Deja constancia de lo borrado (la UI ya no muestra esos ficheros)."""
