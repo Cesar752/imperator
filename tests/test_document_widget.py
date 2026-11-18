@@ -47,22 +47,24 @@ class DocumentLanguageHintTest(unittest.TestCase):
         self.widget._mode.setCurrentIndex(self.widget._mode.findData(mode_id))
 
     def test_marca_en_el_tooltip_los_modelos_con_cobertura(self) -> None:
-        self.widget._on_models(["qwen3-vl:30b-a3b", "llava:13b"])
+        self.widget._on_models(
+            self.widget._generation, ["qwen3-vl:30b-a3b", "llava:13b"]
+        )
         self.assertIn("multilingüe", self._tooltip(0))
         self.assertIn("euskera", self._tooltip(1))
 
     def test_avisa_al_resumir_con_un_modelo_sin_cobertura(self) -> None:
-        self.widget._on_models(["llava:13b"])
+        self.widget._on_models(self.widget._generation, ["llava:13b"])
         self._modo("resumen")
         self.assertIn("euskera", self.widget._status.text())
 
     def test_no_avisa_con_un_modelo_multilingue(self) -> None:
-        self.widget._on_models(["qwen3-vl:30b-a3b"])
+        self.widget._on_models(self.widget._generation, ["qwen3-vl:30b-a3b"])
         self._modo("resumen")
         self.assertNotIn("euskera", self.widget._status.text())
 
     def test_en_ocr_no_avisa_aunque_el_modelo_no_cubra_el_idioma(self) -> None:
-        self.widget._on_models(["llava:13b"])
+        self.widget._on_models(self.widget._generation, ["llava:13b"])
         self._modo("resumen")
         self.assertIn("euskera", self.widget._status.text())
 
@@ -70,7 +72,7 @@ class DocumentLanguageHintTest(unittest.TestCase):
         self.assertEqual(self.widget._status.text(), "")
 
     def test_no_pisa_otros_mensajes_de_estado(self) -> None:
-        self.widget._on_models(["llava:13b"])
+        self.widget._on_models(self.widget._generation, ["llava:13b"])
         self._modo("resumen")
         self.widget._set_status("Error: se cayó Ollama")
 

@@ -37,6 +37,7 @@ from services import document_params as dp
 from services import document_pipeline as dpl
 from services import preferences as prefs
 from ui.task_widget import TaskWidget
+from ui.pool_callbacks import PoolCallbackReceiver
 from ui.workers import ThreadWorker, gpu_slot, own_model_loaded, run_pool_task
 
 logger = logging.getLogger(__name__)
@@ -563,6 +564,10 @@ class DocumentWidget(TaskWidget):
         self._prefs = prefs.PrefsStore(config_manager)
         self._worker: DocumentWorker | None = None
         self._model_task = None
+        #: Token que descarta respuestas del pool de un motor anterior.
+        self._generation = 0
+        #: Receptor del pool atado a la vida del widget (C2).
+        self._models_rx = PoolCallbackReceiver(self, self._on_models, self._on_models_error)
         self._file_path: Path | None = None
         self._result_text = ""
         #: Aviso de cobertura de idiomas que se está mostrando (o None).
@@ -737,18 +742,20 @@ class DocumentWidget(TaskWidget):
             return
         self._model.setEnabled(False)
         self._model.addItem("Cargando modelos…")
+        self._generation += 1
+        self._models_rx.arm()
         self._model_task = run_pool_task(
             self._engine.list_models,
-            on_result=self._on_models,
-            on_error=self._on_models_error,
+            on_result=self._models_rx.handle,
+            on_error=self._models_rx.handle_error,
         )
 
-    def _on_models_error(self, message: str) -> None:
-        if sip.isdeleted(self):
+    def _on_models_error(self, token: int, message: str) -> None:
+        if sip.isdeleted(self) or token != self._generation:
             return
         logger.warning("No se pudieron listar los modelos de visión: %s", message)
         self._set_status(f"Ollama Vision no disponible: {message}")
-        self._on_models([])
+        self._on_models(token, [])
 
     def _add_model(self, model_id: str) -> None:
         """Añade un modelo al combo con su aviso de cobertura de idiomas."""
@@ -762,9 +769,9 @@ class DocumentWidget(TaskWidget):
             self._model.count() - 1, aviso, Qt.ItemDataRole.ToolTipRole
         )
 
-    def _on_models(self, models: list) -> None:
+    def _on_models(self, token: int, models: list) -> None:
         """Rellena el selector con los modelos recibidos (o con el default)."""
-        if sip.isdeleted(self):
+        if sip.isdeleted(self) or token != self._generation:
             return
         models = list(models)
         if not models:
