@@ -2,6 +2,7 @@
 
 import logging
 
+from PyQt6 import sip
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
 from PyQt6.QtWidgets import (
@@ -15,12 +16,12 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from engines.base_engine import ChatEngine
+from engines.base_engine import ChatEngine, chat_engine_reply
 from services import chat_params as cp
 from services import preferences as prefs
 from ui import markdown as md
 from ui.task_widget import TaskWidget
-from ui.workers import ThreadWorker, gpu_slot, run_pool_task
+from ui.workers import ThreadWorker, gpu_slot, own_model_loaded, run_pool_task
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +53,28 @@ class ChatWorker(ThreadWorker):
         self._liberar_otros = liberar_otros
 
     def work(self) -> str:
-        with gpu_slot(self._scheduler, "chat", liberar_otros=self._liberar_otros):
-            return self._engine.chat(self._messages, model=self._model)
+        # ``already_loaded``: si el modelo ya está en la VRAM (turno anterior, sin
+        # descargar), la tarea no reserva memoria nueva y bloquearla por falta de
+        # hueco la dejaba muerta con su propio modelo llenando la GPU.
+        with gpu_slot(
+            self._scheduler,
+            "chat",
+            liberar_otros=self._liberar_otros,
+            already_loaded=lambda: own_model_loaded(self._engine, self._model),
+        ):
+            # ``chat_engine_reply`` usa streaming si el motor lo soporta: así hay
+            # avance real y Cancelar corta la generación en Ollama al instante.
+            return chat_engine_reply(
+                self._engine,
+                self._messages,
+                model=self._model,
+                on_token=self._on_token,
+                cancel_check=self.isInterruptionRequested,
+            )
+
+    def _on_token(self, _delta: str, total: int) -> None:
+        # Emitir desde otro hilo es seguro en PyQt (conexión encolada).
+        self.progress.emit(0, f"Recibiendo… {total} caracteres")
 
 
 class ChatWidget(TaskWidget):
@@ -76,12 +97,18 @@ class ChatWidget(TaskWidget):
         config_manager=None,
         parent=None,
         orchestrator=None,
+        *,
+        engine_manager=None,
     ) -> None:
         super().__init__(parent)
         self._engine: ChatEngine | None = engine
         self._config_manager = config_manager
         self._orchestrator = orchestrator
         self._prefs = prefs.PrefsStore(config_manager)
+        # Con el EngineManager se ofrece un selector de motor (Ollama, OpenAI,
+        # DeepSeek…). Sin él (tests, usos mínimos) el selector queda oculto y se
+        # usa el motor recibido.
+        self._engine_manager = engine_manager
         # Historial completo (lo que ve el usuario). Al motor solo se le envía
         # una ventana reciente: ver services.chat_params.MAX_HISTORY_MESSAGES.
         self._messages: list[dict] = []
@@ -91,9 +118,18 @@ class ChatWidget(TaskWidget):
         self._worker: ChatWorker | None = None
         self._model_task = None
         self._build_ui()
+        self._populate_engines()
         self._populate_models()
 
     def _build_ui(self) -> None:
+        self._engine_combo = QComboBox()
+        self._engine_combo.currentIndexChanged.connect(self._on_engine_changed)
+        self._engine_label = QLabel("Motor:")
+
+        engine_row = QHBoxLayout()
+        engine_row.addWidget(self._engine_label)
+        engine_row.addWidget(self._engine_combo, 1)
+
         self._model = QComboBox()
         self._model.currentIndexChanged.connect(self._on_model_changed)
 
@@ -121,6 +157,7 @@ class ChatWidget(TaskWidget):
         input_row.addWidget(self._send_button)
 
         layout = QVBoxLayout(self)
+        layout.addLayout(engine_row)
         layout.addLayout(model_row)
         layout.addWidget(self._conversation)
         layout.addWidget(self._thinking_label)
@@ -137,6 +174,51 @@ class ChatWidget(TaskWidget):
         self._conversation.clear()
         self._set_busy(False)
         self._populate_models()
+
+    def set_engine_manager(self, engine_manager) -> None:
+        """Relee los motores disponibles (tras cambiar la config) y los ofrece."""
+        self._engine_manager = engine_manager
+        self._populate_engines()
+        self._populate_models()
+
+    # ---- Motores ------------------------------------------------
+
+    def _populate_engines(self) -> None:
+        """Rellena el selector con los motores de chat disponibles."""
+        if self._engine_manager is None:
+            self._engine_combo.setVisible(False)
+            self._engine_label.setVisible(False)
+            return
+        self._engine_combo.blockSignals(True)
+        self._engine_combo.clear()
+        for config in self._engine_manager.list_configs():
+            motor = self._engine_manager.get_engine(config["id"])
+            if isinstance(motor, ChatEngine):
+                self._engine_combo.addItem(motor.nombre, config["id"])
+        self._engine_combo.setVisible(self._engine_combo.count() > 0)
+        self._engine_label.setVisible(self._engine_combo.count() > 0)
+
+        saved = self._prefs.get_str(prefs.CHAT_ENGINE)
+        objetivo = saved or getattr(self._engine, "id", None)
+        idx = self._engine_combo.findData(objetivo)
+        if idx < 0:
+            idx = 0
+        self._engine_combo.setCurrentIndex(idx)
+        self._engine_combo.blockSignals(False)
+
+        elegido = self._engine_combo.currentData()
+        actual = getattr(self._engine, "id", None)
+        if elegido and elegido != actual:
+            self._engine = self._engine_manager.get_engine(elegido)
+
+    def _on_engine_changed(self, *_args) -> None:
+        if self._engine_manager is None:
+            return
+        motor_id = self._engine_combo.currentData()
+        if not motor_id:
+            return
+        self._prefs.set(prefs.CHAT_ENGINE, motor_id)
+        self.set_engine(self._engine_manager.get_engine(motor_id))
 
     # ---- Modelos ------------------------------------------------
 
@@ -156,11 +238,15 @@ class ChatWidget(TaskWidget):
         )
 
     def _on_model_details_error(self, message: str) -> None:
+        if sip.isdeleted(self):
+            return
         logger.debug("No se pudieron listar los modelos de Ollama: %s", message)
         self._on_model_details([])
 
     def _on_model_details(self, details: list) -> None:
         """Rellena el selector con los modelos recibidos del worker."""
+        if sip.isdeleted(self):
+            return
         details = [dict(detail) for detail in details]
         names = [detail["name"] for detail in details]
         default = getattr(self._engine, "default_model", None)
@@ -248,6 +334,7 @@ class ChatWidget(TaskWidget):
         )
         self._worker.result.connect(self._on_reply)
         self._worker.failed.connect(self._on_error)
+        self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
         # El orquestador decide si el mensaje apunta a otra tarea. Se emite con
@@ -311,8 +398,13 @@ class ChatWidget(TaskWidget):
         self._append_turn("Error", message, _COLOR_ERROR)
         self._end_turn()
 
+    def _on_progress(self, _percent: int, message: str) -> None:
+        """Muestra el avance mientras el motor responde (con streaming)."""
+        self._thinking_label.setText(message or "Pensando...")
+
     def _end_turn(self) -> None:
         """Cierra el turno: oculta el indicador, libera la UI y devuelve el foco."""
+        self._thinking_label.setText("Pensando...")
         self._thinking_label.setVisible(False)
         self._set_busy(False)
         self._worker = None
