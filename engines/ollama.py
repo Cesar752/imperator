@@ -13,7 +13,13 @@ from typing import Callable
 import requests
 
 from engines.base_engine import CANCEL_MESSAGE, ChatEngine, EngineError
-from engines.ollama_api import DEFAULT_NUM_CTX, fetch_tags, http_error_message, is_loaded
+from engines.ollama_api import (
+    DEFAULT_NUM_CTX,
+    _OllamaCommon,
+    fetch_tags,
+    http_error_message,
+    is_loaded,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +33,7 @@ _DEFAULT_BASE_URL = "http://127.0.0.1:11434"
 _DEFAULT_MODEL = "qwen3.6:35b"
 
 
-class OllamaEngine(ChatEngine):
+class OllamaEngine(_OllamaCommon, ChatEngine):
     """Implementación de :class:`Engine` para un servidor local de Ollama."""
 
     #: Ventana de contexto que se pide al servidor. El valor por defecto de
@@ -133,17 +139,6 @@ class OllamaEngine(ChatEngine):
     def _is_embedding(name: str) -> bool:
         """Devuelve ``True`` para modelos de embeddings (no de chat)."""
         return name.startswith("nomic-embed-") or "-embed-" in name
-
-    def _apply_no_think(self, messages: list[dict]) -> list[dict]:
-        """Añade el marcador ``/no_think`` al último turno (sin duplicarlo)."""
-        if not messages:
-            return messages
-        copia = [dict(m) for m in messages]
-        ultimo = copia[-1]
-        contenido = str(ultimo.get("content") or "")
-        if self.NO_THINK_HINT not in contenido:
-            ultimo["content"] = f"{contenido} {self.NO_THINK_HINT}".strip()
-        return copia
 
     def chat(self, messages: list[dict], model: str | None = None) -> str:
         model = model or self._default_model
@@ -323,19 +318,6 @@ class OllamaEngine(ChatEngine):
             f"num_ctx={self._num_ctx}, num_predict={self._num_predict}) o usa un "
             f"modelo sin razonamiento."
         )
-
-    def is_loaded(self, model: str | None = None) -> bool:
-        """¿``model`` (o el del último turno) está ya cargado en la VRAM?
-
-        Lo pregunta el planificador de GPU antes de bloquear una tarea por falta
-        de hueco: si el modelo ya está cargado no se reserva memoria nueva, y
-        exigir hueco dejaba al chat muerto con su propio modelo llenando la GPU.
-        """
-        with self._lock:
-            target = model or self._last_used_model or self._default_model
-        if not target:
-            return False
-        return is_loaded(self._base_url, target, self._short_timeout)
 
     def unload_model(self) -> bool:
         """Descarga de la VRAM el modelo en uso (``keep_alive: 0``).

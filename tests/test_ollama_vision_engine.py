@@ -1,4 +1,4 @@
-"""Tests de engines.ollama_vision (imagen y texto) con ``requests`` mockeado."""
+﻿"""Tests de engines.ollama_vision (imagen y texto) con ``requests`` mockeado."""
 
 import json
 import sys
@@ -50,14 +50,14 @@ class ImageAnalysisTest(unittest.TestCase):
         self.assertEqual(self.engine.nombre, "Ollama Vision")
         self.assertIsInstance(self.engine, VisionEngine)
 
-    @mock.patch.object(ov, "is_loaded", return_value=True)
+    @mock.patch("engines.ollama_api.is_loaded", return_value=True)
     def test_is_loaded_delega_en_api_ps(self, check) -> None:
         # Lo pregunta el planificador de GPU: el modelo de visión sigue cargado
         # entre documentos y no debe bloquear el siguiente por falta de hueco.
         self.assertTrue(self.engine.is_loaded("qwen3-vl:8b"))
         self.assertEqual(check.call_args.args[1], "qwen3-vl:8b")
 
-    @mock.patch.object(ov, "is_loaded", return_value=False)
+    @mock.patch("engines.ollama_api.is_loaded", return_value=False)
     def test_is_loaded_sin_modelo_usa_el_ultimo_analisis(self, check) -> None:
         self.engine._last_used_model = "ultimo"
         self.assertFalse(self.engine.is_loaded())

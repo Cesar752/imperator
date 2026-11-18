@@ -1,4 +1,4 @@
-"""Tests de engines.ollama (chat, listado y descarga) con requests mockeado."""
+﻿"""Tests de engines.ollama (chat, listado y descarga) con requests mockeado."""
 
 import json
 import sys
@@ -97,14 +97,14 @@ class OllamaChatTest(unittest.TestCase):
         self.assertTrue(self.engine.unload_model())
         post.assert_not_called()
 
-    @mock.patch("engines.ollama.is_loaded", return_value=True)
+    @mock.patch("engines.ollama_api.is_loaded", return_value=True)
     def test_is_loaded_delega_en_api_ps(self, check) -> None:
         # Lo pregunta el planificador de GPU para no bloquear el chat por su
         # propio modelo ya cargado.
         self.assertTrue(self.engine.is_loaded("llama-test"))
         self.assertEqual(check.call_args.args[1], "llama-test")
 
-    @mock.patch("engines.ollama.is_loaded", return_value=False)
+    @mock.patch("engines.ollama_api.is_loaded", return_value=False)
     def test_is_loaded_sin_modelo_usa_el_ultimo_turno(self, check) -> None:
         self.engine._last_used_model = "ultimo"
         self.assertFalse(self.engine.is_loaded())

@@ -7,6 +7,7 @@ vez por página.
 
 import base64
 import logging
+import threading
 from pathlib import Path
 
 import requests
@@ -14,6 +15,7 @@ import requests
 from engines.base_engine import EngineError, VisionEngine
 from engines.ollama_api import (
     DEFAULT_VISION_NUM_CTX,
+    _OllamaCommon,
     fetch_tags,
     http_error_message,
     is_loaded,
@@ -47,7 +49,7 @@ VISION_MODEL_MARKERS = (
 )
 
 
-class OllamaVisionEngine(VisionEngine):
+class OllamaVisionEngine(_OllamaCommon, VisionEngine):
     """Motor multimodal de Ollama: analiza una imagen y devuelve texto.
 
     Expone ``analyze_image()``, que codifica la imagen en base64 y la envía a
@@ -99,6 +101,11 @@ class OllamaVisionEngine(VisionEngine):
         # Tope de tokens de salida, para acotar el coste del razonamiento.
         self._num_predict = int(num_predict) if num_predict is not None else None
         self._last_used_model: str | None = None
+        #: Lock común: ``is_loaded`` y ``unload_model`` del mixin lo toman
+        #: porque el motor es una instancia única compartida entre hilos.
+        self._lock = threading.Lock()
+        #: Timeout corto (``/api/tags``, ``/api/ps``) con el nombre del mixin.
+        self._short_timeout = self._SHORT_TIMEOUT
 
     @property
     def id(self) -> str:
@@ -268,28 +275,6 @@ class OllamaVisionEngine(VisionEngine):
 
     #: Marcador «soft switch» de Qwen3 para apagar el razonamiento en el prompt.
     NO_THINK_HINT = "/no_think"
-
-    def _apply_no_think(self, messages: list[dict]) -> list[dict]:
-        """Añade el marcador ``/no_think`` al último turno (sin duplicarlo)."""
-        if not messages:
-            return messages
-        copia = [dict(m) for m in messages]
-        ultimo = copia[-1]
-        contenido = str(ultimo.get("content") or "")
-        if self.NO_THINK_HINT not in contenido:
-            ultimo["content"] = f"{contenido} {self.NO_THINK_HINT}".strip()
-        return copia
-
-    def is_loaded(self, model: str | None = None) -> bool:
-        """¿``model`` (o el del último análisis) está ya cargado en la VRAM?
-
-        Mismo uso que en el chat: si el modelo de visión ya está cargado, la
-        tarea no reserva memoria nueva y no debe bloquearse por falta de hueco.
-        """
-        target = model or self._last_used_model or self._default_model
-        if not target:
-            return False
-        return is_loaded(self._base_url, target, self._SHORT_TIMEOUT)
 
     def unload_model(self) -> bool:
         """Descarga el modelo en uso de la VRAM de Ollama (``keep_alive: 0``).

@@ -128,3 +128,37 @@ def _error_detail(resp) -> str:
         if error is not None:
             return str(error)
     return ""
+
+
+class _OllamaCommon:
+    """Comportamiento compartido por los motores de chat y de visión de Ollama.
+
+    Espera de la clase que lo herede: ``_base_url``, ``_lock``,
+    ``_short_timeout``, ``_last_used_model``, ``_default_model`` y
+    ``NO_THINK_HINT``. Vive aquí, junto al resto de la ayuda de Ollama, para que
+    las dos clases no mantengan copias de lo mismo.
+    """
+
+    def _apply_no_think(self, messages: list[dict]) -> list[dict]:
+        """Añade el marcador ``/no_think`` al último turno (sin duplicarlo)."""
+        if not messages:
+            return messages
+        copia = [dict(m) for m in messages]
+        ultimo = copia[-1]
+        contenido = str(ultimo.get("content") or "")
+        if self.NO_THINK_HINT not in contenido:
+            ultimo["content"] = f"{contenido} {self.NO_THINK_HINT}".strip()
+        return copia
+
+    def is_loaded(self, model: str | None = None) -> bool:
+        """¿``model`` (o el del último turno) está ya cargado en la VRAM?
+
+        Lo pregunta el planificador de GPU antes de bloquear una tarea por falta
+        de hueco: si el modelo ya está cargado no se reserva memoria nueva, y
+        exigir hueco dejaba al chat muerto con su propio modelo llenando la GPU.
+        """
+        with self._lock:
+            target = model or self._last_used_model or self._default_model
+        if not target:
+            return False
+        return is_loaded(self._base_url, target, self._short_timeout)
