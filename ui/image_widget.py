@@ -27,6 +27,7 @@ from engines.base_engine import Engine
 from services import image_params as ip
 from services import preferences as prefs
 from ui.task_widget import TaskWidget
+from ui.pool_callbacks import PoolCallbackReceiver
 from ui.workers import ThreadWorker, gpu_slot, run_pool_task
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,10 @@ class ImageWidget(TaskWidget):
         self._prefs = prefs.PrefsStore(config_manager)
         self._worker: ImageWorker | None = None
         self._credits_task = None
+        #: Token que descarta respuestas del pool de un motor anterior.
+        self._generation = 0
+        #: Receptor del pool atado a la vida del widget (C2).
+        self._credits_rx = PoolCallbackReceiver(self, self._on_credits, self._on_credits_error)
         self._elapsed = 0
         self._last_path: str | None = None
         self._timer = QTimer(self)
@@ -234,18 +239,22 @@ class ImageWidget(TaskWidget):
             self._credits_label.setText("")
             return
         self._credits_label.setText("Consultando…")
+        self._generation += 1
+        self._credits_rx.arm()
         self._credits_task = run_pool_task(
-            get_credits, on_result=self._on_credits, on_error=self._on_credits_error
+            get_credits,
+            on_result=self._credits_rx.handle,
+            on_error=self._credits_rx.handle_error,
         )
 
-    def _on_credits_error(self, message: str) -> None:
-        if sip.isdeleted(self):
+    def _on_credits_error(self, token: int, message: str) -> None:
+        if sip.isdeleted(self) or token != self._generation:
             return
         logger.debug("No se pudieron consultar los créditos: %s", message)
         self._credits_label.setText("No disponible")
 
-    def _on_credits(self, credits: object) -> None:
-        if sip.isdeleted(self):
+    def _on_credits(self, token: int, credits: object) -> None:
+        if sip.isdeleted(self) or token != self._generation:
             return
         if credits is None:
             self._credits_label.setText("No disponible")
