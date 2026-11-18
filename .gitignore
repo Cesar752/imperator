@@ -3,6 +3,8 @@ venv/
 .venv/
 env/
 ENV/
+venv-tts/
+venv-photo/
 
 # Python
 __pycache__/
@@ -24,6 +26,12 @@ config/*.json
 
 # Salidas generadas (imágenes, etc.)
 output/
+
+# Caché de fotogramas extraídos de vídeo (core/frame_cache.py): artefactos, no código.
+cache/
+
+# Pesos de los modelos de IA local (Real-ESRGAN/GFPGAN…): se descargan solos.
+tools/models/
 
 # Proyectos de vídeo: carpetas autocontenidas con clips y guion de cada trabajo.
 # Viven fuera de output/ para que la retención no borre los intermedios, pero
@@ -48,3 +56,12 @@ voices/
 
 # Biblioteca de música de fondo (MP3 del usuario, no se versiona)
 music/
+
+# Manual en PDF: artefacto generado por tools/manual_a_pdf.py, no es código.
+MANUAL_IMPERATOR.pdf
+
+# Logs sueltos en cualquier carpeta (logs/ ya se ignora; esto cubre *.log sueltos).
+*.log
+
+# Cualquier entorno virtual, con cualquier nombre (venv, venv-photo, venv-tts...).
+*venv*/
