@@ -515,10 +515,6 @@ class AiUpscaleWorker(ThreadWorker):
         self._worker = worker
         self._model_dir = model_dir
 
-    def _check_cancel(self) -> None:
-        if self.isInterruptionRequested():
-            raise EngineError(CANCEL_MESSAGE)
-
     def work(self) -> Path:
         extractor = FrameExtractor()
         duracion = extractor.duration(self._video)

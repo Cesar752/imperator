@@ -1,4 +1,4 @@
-"""Widget de Comprensión de vídeo: analiza un vídeo y entrega un informe.
+﻿"""Widget de Comprensión de vídeo: analiza un vídeo y entrega un informe.
 
 El pipeline lo ejecuta :class:`UnderstandingWorker` (un ``QThread``) y consiste
 en: medir la duración → muestrear fotogramas (uno cada N segundos, no cada N ms)
@@ -36,7 +36,7 @@ from PyQt6.QtWidgets import (
 from core.frame_cache import FrameCache
 from core.frame_extractor import FrameExtractor
 from core.paths import PROJECT_ROOT
-from engines.base_engine import CANCEL_MESSAGE, EngineError, Perception
+from engines.base_engine import EngineError, Perception
 from services import chat_engine as ce
 from services import preferences as prefs
 from services import assembler_params as asp
@@ -371,10 +371,6 @@ class UnderstandingWorker(ThreadWorker):
             )
         except OSError as exc:
             logger.warning("Comprensión: no se pudo guardar la percepción: %s", exc)
-
-    def _check_cancel(self) -> None:
-        if self.isInterruptionRequested():
-            raise EngineError(CANCEL_MESSAGE)
 
 
 class UnderstandingWidget(TaskWidget):

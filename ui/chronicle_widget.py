@@ -1,4 +1,4 @@
-"""Pestaña **Crónica**: convierte un partido en un vídeo comentado por IA.
+﻿"""Pestaña **Crónica**: convierte un partido en un vídeo comentado por IA.
 
 Encadena lo que ya existía suelto en la app, sin inventar motores nuevos:
 
@@ -48,7 +48,7 @@ from core.frame_extractor import FrameExtractor
 from core.paths import OUTPUT, PROJECT_ROOT
 from core.subprocess_utils import no_window_kwargs
 from core.video_assembler import VideoAssembler
-from engines.base_engine import CANCEL_MESSAGE, EngineError
+from engines.base_engine import EngineError
 from services import acta_params as acp
 from services import assembler_params as asp
 from services import audio_params as ap
@@ -172,10 +172,6 @@ class ChronicleWorker(ThreadWorker):
         self._avisos: list[str] = []
 
     # ---- utilidades -------------------------------------------------
-
-    def _check_cancel(self) -> None:
-        if self.isInterruptionRequested():
-            raise EngineError(CANCEL_MESSAGE)
 
     def _require(self, engine, mensaje: str) -> None:
         if engine is None or not engine.is_available():
@@ -510,10 +506,6 @@ class ActaWorker(ThreadWorker):
         self._chat_model = chat_model if chat_model is not None else model
         self._scheduler = scheduler
         self._liberar_otros = liberar_otros
-
-    def _check_cancel(self) -> None:
-        if self.isInterruptionRequested():
-            raise EngineError(CANCEL_MESSAGE)
 
     def work(self) -> str:
         # Leer el acta usa visión (OCR de escaneos) y chat (estructurar): una sola
