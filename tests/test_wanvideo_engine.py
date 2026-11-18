@@ -384,6 +384,17 @@ class GenerateVideoTest(_WanVideoTest):
             self.engine.generate_video("p", model="i2v")
         self.assertIn("requiere image_path", str(ctx.exception))
 
+    def test_parametro_no_soportado_lanza_error_de_motor(self) -> None:
+        # La interfaz (``VideoEngine.generate_video``) declara ``**kwargs``, así
+        # que una clave de la UI como ``image_paths`` (varias fotos) salía como
+        # ``TypeError`` crudo y la UI la mostraba como «error inesperado:
+        # ... unexpected keyword argument 'image_paths'». Debe ser un error de
+        # motor que diga qué parámetro sobra, no un fallo inesperado.
+        with self.assertRaises(EngineError) as ctx:
+            self.engine.generate_video("p", image_paths=["a.png", "b.png"])
+        self.assertIn("image_paths", str(ctx.exception))
+        self.assertIn("no soportados", str(ctx.exception))
+
     def test_t2v_end_to_end_parchea_y_guarda(self) -> None:
         salida = self.dir / "out.mp4"
         with mock.patch.object(

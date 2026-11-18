@@ -11,6 +11,7 @@ tipos lo refleja.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 
 class EngineError(Exception):
@@ -94,6 +95,48 @@ class ChatEngine(Engine):
 
         ``model`` permite elegir el modelo sin reconstruir el motor.
         """
+
+    def chat_stream(
+        self,
+        messages: list[dict],
+        model: str | None = None,
+        *,
+        on_token: Callable[[str, int], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> str:
+        """Como :meth:`chat`, pero informando del avance y pudiendo cancelar.
+
+        ``on_token(delta, total_chars)`` recibe cada fragmento según llega y
+        ``cancel_check()`` se consulta mientras se espera: al devolver ``True`` se
+        corta la lectura (y el servidor detiene la generación).
+
+        Por defecto **no** hay streaming: se delega en :meth:`chat`, así que un
+        motor que no lo implemente —o un doble de test— sigue funcionando igual.
+        """
+        return self.chat(messages, model=model)
+
+
+def chat_engine_reply(
+    engine,
+    messages: list[dict],
+    *,
+    model: str | None = None,
+    on_token: Callable[[str, int], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> str:
+    """Respuesta de un motor de chat, con **streaming si el motor lo soporta**.
+
+    Es el punto único que usan los workers de chat y de guion: si el motor
+    implementa ``chat_stream`` (Ollama) se aprovechan el avance real y la
+    cancelación inmediata; si no (dobles de test, motores antiguos) se cae a
+    ``chat`` sin streaming, sin romper nada.
+    """
+    stream = getattr(engine, "chat_stream", None)
+    if callable(stream):
+        return stream(
+            messages, model=model, on_token=on_token, cancel_check=cancel_check
+        )
+    return engine.chat(messages, model=model)
 
 
 class VisionEngine(Engine):

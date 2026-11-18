@@ -10,11 +10,15 @@ from services.task_orchestrator import TaskOrchestrator
 from tasks.base_task import Task
 from tasks.assembler import AssemblerTask
 from tasks.chat import ChatTask
+from tasks.chronicle import ChronicleTask
 from tasks.document import DocumentTask
 from tasks.audio import AudioTask
 from tasks.image import ImageTask
+from tasks.notes import NotesTask
+from tasks.photo import PhotoTask
 from tasks.understanding import UnderstandingTask
 from tasks.video import VideoTask
+from tasks.video_enhance import VideoEnhanceTask
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +71,12 @@ TASK_FACTORY: dict[str, TaskFactory] = {
     "chat": _chat_factory,
     "document": _engine_only(DocumentTask),
     "image": _engine_only(ImageTask),
+    "photo": _engine_only(PhotoTask),
     "video": _engine_only(VideoTask),
+    "video_enhance": _engine_only(VideoEnhanceTask),
     "understanding": _engine_only(UnderstandingTask),
+    "notes": _engine_only(NotesTask),
+    "chronicle": _engine_only(ChronicleTask),
     "audio": _engine_only(AudioTask),
     "assembler": _engine_only(AssemblerTask),
 }

@@ -77,6 +77,51 @@ class ChatPayloadTest(unittest.TestCase):
         _, enviado = self._chat({"message": {"content": "hola"}})
         self.assertEqual(enviado["options"]["num_predict"], -1)
 
+    def test_por_defecto_no_manda_think(self) -> None:
+        # Sin configurar, se deja el comportamiento del modelo (no se envía nada).
+        _, enviado = self._chat({"message": {"content": "hola"}})
+        self.assertNotIn("think", enviado)
+        self.assertNotIn(
+            OllamaEngine.NO_THINK_HINT, enviado["messages"][-1]["content"]
+        )
+
+    def test_think_false_apaga_el_razonamiento(self) -> None:
+        # Los qwen3.x gastaban la ventana «pensando» y el Cuaderno/Crónica salían
+        # vacíos («se agotó el espacio de la respuesta»): con think=False se pide
+        # el campo y, además, se añade el marcador /no_think por si se ignora.
+        engine = OllamaEngine(think=False)
+        with mock.patch.object(
+            ollama_mod.requests,
+            "post",
+            return_value=_response({"message": {"content": "ok"}}),
+        ) as post:
+            engine.chat([{"role": "user", "content": "hola"}])
+        enviado = post.call_args.kwargs["json"]
+        self.assertIs(enviado["think"], False)
+        self.assertIn(OllamaEngine.NO_THINK_HINT, enviado["messages"][-1]["content"])
+
+    def test_think_false_no_duplica_el_marcador(self) -> None:
+        engine = OllamaEngine(think=False)
+        with mock.patch.object(
+            ollama_mod.requests,
+            "post",
+            return_value=_response({"message": {"content": "ok"}}),
+        ) as post:
+            engine.chat([{"role": "user", "content": f"hola {OllamaEngine.NO_THINK_HINT}"}])
+        contenido = post.call_args.kwargs["json"]["messages"][-1]["content"]
+        self.assertEqual(contenido.count(OllamaEngine.NO_THINK_HINT), 1)
+
+    def test_el_gestor_deja_configurar_think(self) -> None:
+        from core.engine_manager import EngineManager
+
+        self.assertIs(
+            EngineManager._build("ollama", {"parametros": {"think": False}})._think,
+            False,
+        )
+        self.assertIsNone(
+            EngineManager._build("ollama", {"parametros": {}})._think
+        )
+
     def test_respuesta_cortada_avisa_en_el_propio_texto(self) -> None:
         contenido, _ = self._chat(
             {"message": {"content": "texto a medias"}, "done_reason": "length"}

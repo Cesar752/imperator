@@ -266,5 +266,28 @@ class ChatFocusTest(unittest.TestCase):
         self.assertIn("Tú: hola", self.widget._conversation.toPlainText())
 
 
+class ChatWorkerStreamingTest(unittest.TestCase):
+    """El chat pide streaming al motor y lo refleja como avance."""
+
+    def test_usa_chat_stream_y_emite_avance(self) -> None:
+        from ui.chat_widget import ChatWorker
+
+        class _Streaming:
+            def chat(self, messages, model=None):  # pragma: no cover - no se usa
+                raise AssertionError("no debería usarse chat()")
+
+            def chat_stream(
+                self, messages, model=None, *, on_token=None, cancel_check=None
+            ):
+                on_token("ab", 2)
+                return "respuesta"
+
+        worker = ChatWorker(_Streaming(), [{"role": "user", "content": "hi"}], None)
+        avisos: list = []
+        worker.progress.connect(lambda _percent, message: avisos.append(message))
+        self.assertEqual(worker.work(), "respuesta")
+        self.assertIn("2 caracteres", avisos[0])
+
+
 if __name__ == "__main__":
     unittest.main()

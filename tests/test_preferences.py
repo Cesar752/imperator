@@ -41,6 +41,12 @@ class PrefsStoreTest(unittest.TestCase):
         self.assertEqual(self.store.get_int("num", 7), 7)
         self.assertEqual(self.store.get_float("num", 7.5), 7.5)
 
+    def test_disciplina_por_defecto(self) -> None:
+        from services.sport_params import DEFAULT_SPORT
+
+        self.assertEqual(DEFAULT_SPORT, "balonmano")
+        self.assertEqual(self.store.get_str(prefs.SPORT, DEFAULT_SPORT), "balonmano")
+
     def test_set_ignores_none(self) -> None:
         self.store.set("x", None)
         self.assertIsNone(self.store.get_str("x"))

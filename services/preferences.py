@@ -16,6 +16,7 @@ from dataclasses import dataclass
 # ---- Claves (evitan strings sueltos repartidos por los widgets) ----
 
 CHAT = "chat"
+CHAT_ENGINE = "chat_engine"
 DOCUMENT = "document"
 DOCUMENT_MODE = "document_mode"
 DOCUMENT_LANGUAGE = "document_language"
@@ -28,9 +29,12 @@ IMAGE = "image"
 VIDEO = "video"
 VIDEO_LAST_IMAGE = "video_last_image"
 VIDEO_TIMEOUT = "video_timeout"
+VIDEO_KEYFRAMES = "video_keyframes"
+VIDEO_IMAGE_MODEL = "video_image_model"
 AUDIO_ENGINE = "audio_engine"
 AUDIO_VOICE_PIPER = "audio_voice_piper"
 AUDIO_VOICE_KOKORO = "audio_voice_kokoro"
+AUDIO_VOICE_VOICE_CLONE = "audio_voice_voice_clone"
 ASSEMBLER = "assembler"
 ASSEMBLER_IDIOMA = "assembler_idioma"
 ASSEMBLER_FONTSIZE = "assembler_fontsize"
@@ -42,6 +46,23 @@ ASSEMBLER_VOZ_VOL = "assembler_voz_vol"
 ASSEMBLER_VOICE_OFFSET = "assembler_voice_offset"
 ASSEMBLER_MUSIC_OFFSET = "assembler_music_offset"
 ASSEMBLER_DUCKING = "assembler_ducking"
+#: Disciplina del vídeo (balonmano/genérico), **compartida** por Cuaderno,
+#: Crónica y Comprensión: así el flujo habla siempre del mismo deporte.
+SPORT = "sport_disciplina"
+#: Instrucciones del usuario para la IA (qué quiere que cuente y con qué
+#: prioridad), una por pestaña. Se inyectan en los prompts de cada una.
+UNDERSTANDING_INSTRUCTIONS = "understanding_instructions"
+NOTES_INSTRUCTIONS = "notes_instructions"
+CHRONICLE_INSTRUCTIONS = "chronicle_instructions"
+#: Crónica: motor de **visión** que mira los fotogramas (Ollama Vision o uno de
+#: pago con más visión, p. ej. OpenAI Vision) y el modelo elegido en él.
+CHRONICLE_VISION_ENGINE = "chronicle_vision_engine"
+CHRONICLE_VISION_MODEL = "chronicle_vision_model"
+#: Crónica: motor de **chat** que escribe el guion (Ollama, OpenAI, DeepSeek…) y
+#: el modelo elegido en él. Se guardan aparte del motor del Chat para que la
+#: Crónica pueda usar una IA mejor sin cambiar la del resto de la app.
+CHRONICLE_CHAT_ENGINE = "chronicle_chat_engine"
+CHRONICLE_CHAT_MODEL = "chronicle_chat_model"
 
 
 class PrefsStore:
@@ -95,11 +116,18 @@ class PrefsStore:
 
 @dataclass
 class VideoPrefs:
-    """Preferencias de la pestaña Vídeo."""
+    """Preferencias de la pestaña Vídeo.
+
+    ``keyframes`` es «Fotos primero»: generar una foto por escena (motor de
+    imagen) y usarla como primer fotograma del clip. ``image_model`` recuerda con
+    qué motor/modelo se hacen esas fotos.
+    """
 
     mode: str = "t2v"
     last_image: str | None = None
     timeout: int = 1800
+    keyframes: bool = False
+    image_model: str | None = None
 
     @classmethod
     def from_store(cls, store: PrefsStore) -> "VideoPrefs":
@@ -107,6 +135,8 @@ class VideoPrefs:
             mode=store.get_str(VIDEO, "t2v") or "t2v",
             last_image=store.get_str(VIDEO_LAST_IMAGE),
             timeout=store.get_int(VIDEO_TIMEOUT, 1800),
+            keyframes=store.get_bool(VIDEO_KEYFRAMES),
+            image_model=store.get_str(VIDEO_IMAGE_MODEL),
         )
 
 

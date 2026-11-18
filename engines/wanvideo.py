@@ -101,13 +101,30 @@ class WanVideoEngine(ComfyUIBaseEngine, VideoEngine):
         seed: int | None = None,
         progress_callback: Callable[[int, str], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        **kwargs,
     ) -> Path:
         """Genera un clip y devuelve la ruta del MP4 guardado en ``output/``.
 
         ``model`` es el modo (``t2v``/``i2v``); ``image_path`` activa el modo
         imagen-a-vídeo. ``progress_callback`` recibe ``(porcentaje, mensaje)``
         y se invoca desde el hilo que ejecuta esta llamada (el worker de la UI).
+
+        **Un clip = una imagen.** La secuencia de varias fotos (``image_paths``)
+        la orquesta el worker de la pestaña Vídeo: llama aquí una vez por foto y
+        concatena. Esas claves de la UI no deben llegar al motor.
         """
+        if kwargs:
+            # La interfaz (``VideoEngine.generate_video``) declara ``**kwargs``,
+            # así que una clave de más llegaba como ``TypeError`` crudo y la UI
+            # lo mostraba como «error inesperado: ... unexpected keyword
+            # argument 'image_paths'». Se corta aquí con un error de motor que
+            # dice qué sobra y por dónde se hace lo que se pretendía.
+            raise EngineError(
+                "WanVideo: parámetros no soportados: "
+                + ", ".join(sorted(kwargs))
+                + ". Un clip se genera por imagen; para varias imágenes usa "
+                "«Imagen a vídeo» con la lista de fotos en la pestaña Vídeo."
+            )
         if seed is None:
             seed = random.randint(0, 2**31 - 1)
 

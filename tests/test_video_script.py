@@ -213,6 +213,24 @@ class PromptTest(unittest.TestCase):
         self.assertIn('"scenes"', messages[1]["content"])
         self.assertIn(vs.DEFAULT_LANGUAGE, messages[1]["content"])
 
+    def test_el_prompt_obliga_a_seguir_la_idea_y_encadenar_las_escenas(self) -> None:
+        """Fija el fallo real: el modelo se inventaba cosas y las escenas no se
+        relacionaban entre sí (no seguían la historia)."""
+        messages = vs.script_generation_messages("una farera y una luz", scenes=4)
+        sistema = messages[0]["content"].lower()
+        usuario = messages[1]["content"].lower()
+        # La idea manda y no se inventa lo que no está en ella.
+        self.assertIn("idea del usuario es el contrato", sistema)
+        self.assertIn("no lo inventes", sistema)
+        # Cadena causa → efecto entre escenas (en el sistema y en el repaso previo).
+        self.assertIn("consecuencia directa de la anterior", sistema)
+        self.assertIn("consecuencia de la anterior", usuario)
+        # Lo que se narra es lo que se ve.
+        self.assertIn("mismo instante", sistema)
+        self.assertIn("mismo instante", usuario)
+        # Y el esquema pide la relación causal también en el campo «action».
+        self.assertIn("consecuencia de la anterior", messages[1]["content"])
+
     def test_with_system_prompt_antepone_y_reemplaza(self) -> None:
         base = [{"role": "user", "content": "hola"}]
         con_sistema = cp.with_system_prompt(base, "eres un guionista")
@@ -227,6 +245,183 @@ class PromptTest(unittest.TestCase):
     def test_with_system_prompt_vacio_no_cambia(self) -> None:
         base = [{"role": "user", "content": "hola"}]
         self.assertEqual(cp.with_system_prompt(base, ""), base)
+
+
+class AmpliacionTest(unittest.TestCase):
+    """Ampliar un guion: escenas nuevas que continúan lo ya escrito."""
+
+    def _guion(self) -> vs.Script:
+        return vs.Script.from_dict(
+            {
+                "title": "El faro",
+                "language": "es",
+                "style": "cine mudo en blanco y negro",
+                "characters": [
+                    {"id": "ana", "name": "Ana", "appearance": "melena negra"}
+                ],
+                "scenes": [
+                    {
+                        "heading": "ESC 1",
+                        "action": "Ana llega al faro",
+                        "visual_prompt": "se ve el faro",
+                        "narration": "Ana sube al faro.",
+                        "duration_s": 4,
+                    }
+                ],
+            }
+        )
+
+    def test_los_mensajes_llevan_el_guion_y_piden_las_nuevas(self) -> None:
+        original = self._guion()
+        messages = vs.extension_messages(original, 3)
+        self.assertIn("escenas nuevas", messages[0]["content"].lower())
+        usuario = messages[1]["content"]
+        # El modelo recibe el guion ya escrito (título, reparto y escenas).
+        self.assertIn(original.title, usuario)
+        self.assertIn("melena negra", usuario)
+        self.assertIn("ESC 1", usuario)
+        # Y se le piden 3 escenas más, solo las nuevas.
+        self.assertIn("3 escena", usuario)
+        self.assertIn("NUEVAS", usuario)
+
+    def test_parse_extension_devuelve_las_escenas_nuevas(self) -> None:
+        respuesta = (
+            '{"scenes": [{"heading": "ESC 2", "action": "algo", '
+            '"visual_prompt": "se ve algo", "narration": "texto", "duration_s": 4}]}'
+        )
+        scenes = vs.parse_extension(respuesta)
+        self.assertEqual(len(scenes), 1)
+        self.assertEqual(scenes[0].heading, "ESC 2")
+
+    def test_parse_extension_sin_escenas_lanza(self) -> None:
+        with self.assertRaises(vs.ScriptError):
+            vs.parse_extension('{"scenes": []}')
+
+    def test_extend_script_anade_al_final_sin_mutar_el_original(self) -> None:
+        original = self._guion()
+        nueva = vs.Scene(heading="ESC 2", action="x", visual_prompt="se ve")
+        ampliado = vs.extend_script(original, (nueva,))
+        self.assertEqual(len(ampliado.scenes), 2)
+        self.assertEqual(ampliado.scenes[-1].heading, "ESC 2")
+        self.assertEqual(len(original.scenes), 1)  # el modelo es inmutable
+
+
+class AvisosTest(unittest.TestCase):
+    """Validador ligero: avisos **deterministas** sobre el guion (sin modelo)."""
+
+    def _guion(self, scenes, characters=None):
+        return vs.Script.from_dict(
+            {
+                "title": "El faro",
+                "language": "es",
+                "style": "cine mudo",
+                "characters": characters
+                if characters is not None
+                else [{"id": "ana", "name": "Ana", "appearance": "melena negra"}],
+                "scenes": scenes,
+            }
+        )
+
+    def _escena(self, **extra):
+        base = {
+            "heading": "EXT. FARO - NOCHE",
+            "action": "Ana sube la escalera",
+            "visual_prompt": "se ve la escalera",
+            "narration": "Ana sube.",
+            "characters": ["ana"],
+            "duration_s": 4,
+        }
+        base.update(extra)
+        return base
+
+    def test_guion_limpio_no_da_avisos(self) -> None:
+        script = self._guion(
+            [
+                self._escena(
+                    heading="EXT. FARO - NOCHE",
+                    action="Ana llega al faro",
+                    narration="Ana llega al faro.",
+                ),
+                self._escena(
+                    heading="INT. FARO - NOCHE",
+                    action="Ana enciende la linterna",
+                    narration="Enciende la linterna.",
+                ),
+            ]
+        )
+        self.assertEqual(vs.script_warnings(script), ())
+
+    def test_detecta_lugar_y_accion_repetidos(self) -> None:
+        script = self._guion(
+            [self._escena(narration="Uno."), self._escena(narration="Dos.")]
+        )
+        codes = {w.code for w in vs.script_warnings(script)}
+        self.assertIn("lugar_repetido", codes)
+        self.assertIn("accion_repetida", codes)
+
+    def test_detecta_narracion_vacia_y_repetida(self) -> None:
+        script = self._guion(
+            [
+                self._escena(heading="A", action="ana sube", narration=""),
+                self._escena(heading="B", action="ana corre", narration="Misma frase."),
+                self._escena(heading="C", action="ana salta", narration="misma frase."),
+            ]
+        )
+        codes = [w.code for w in vs.script_warnings(script)]
+        self.assertIn("narracion_vacia", codes)
+        self.assertIn("narracion_repetida", codes)
+
+    def test_detecta_personaje_que_aparece_tarde(self) -> None:
+        script = self._guion(
+            [
+                self._escena(narration="Ana entra."),
+                self._escena(
+                    heading="INT. FARO - NOCHE",
+                    action="Luis grita en la puerta",
+                    narration="Luis grita.",
+                    characters=["luis"],
+                ),
+            ],
+            characters=[
+                {"id": "ana", "name": "Ana", "appearance": "melena negra"},
+                {"id": "luis", "name": "Luis", "appearance": "gorra azul"},
+            ],
+        )
+        avisos = [w for w in vs.script_warnings(script) if w.code == "personaje_nuevo"]
+        self.assertEqual(len(avisos), 1)
+        self.assertEqual(avisos[0].scene, 2)
+
+    def test_detecta_personaje_del_reparto_sin_escena(self) -> None:
+        script = self._guion(
+            [self._escena(narration="Solo Ana.")],
+            characters=[
+                {"id": "ana", "name": "Ana", "appearance": "melena negra"},
+                {"id": "luis", "name": "Luis", "appearance": "gorra azul"},
+            ],
+        )
+        avisos = [
+            w for w in vs.script_warnings(script) if w.code == "personaje_sin_escena"
+        ]
+        self.assertEqual(len(avisos), 1)
+        self.assertIsNone(avisos[0].scene)
+
+    def test_detecta_salto_de_manana_a_noche(self) -> None:
+        script = self._guion(
+            [
+                self._escena(
+                    heading="EXT. FARO - MAÑANA",
+                    action="Ana llega al acantilado",
+                    narration="Llega de día.",
+                ),
+                self._escena(
+                    heading="INT. FARO - NOCHE",
+                    action="Ana enciende la linterna",
+                    narration="Ya es de noche.",
+                ),
+            ]
+        )
+        codes = {w.code for w in vs.script_warnings(script)}
+        self.assertIn("salto_dia", codes)
 
 
 if __name__ == "__main__":

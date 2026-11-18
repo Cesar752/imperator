@@ -30,6 +30,7 @@ cerrado y configurable, no como descripción libre.
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import logging
 from pathlib import Path
 
@@ -339,11 +340,54 @@ class PaddleOcrEngine(PerceptionEngine):
             raise EngineError(
                 "paddleocr no está instalado. Instálalo con: pip install paddleocr"
             )
-        try:
-            self._ocr = _cargar_paddle()(lang=self._lang, use_angle_cls=True)
-        except Exception as exc:  # noqa: BLE001 - variantes de la API
-            raise EngineError(f"OCR local: no se pudo inicializar: {exc}") from exc
-        return self._ocr
+        clase = _cargar_paddle()
+        # Se prueban idiomas en orden: PaddleOCR 3.x no tiene modelo ``latin`` y
+        # cae a ``en`` (su modelo inglés lee igualmente el alfabeto latino:
+        # dorsales, marcador y nombres). El primer idioma válido se cachea.
+        ultimo: Exception | None = None
+        for lang in _langs_a_probar(self._lang):
+            try:
+                self._ocr = clase(**_ocr_kwargs(clase, lang))
+                return self._ocr
+            except Exception as exc:  # noqa: BLE001 - variantes de la API
+                ultimo = exc
+        raise EngineError(f"OCR local: no se pudo inicializar: {ultimo}") from ultimo
+
+
+def _ocr_kwargs(clase, lang: str) -> dict:
+    """Argumentos de ``PaddleOCR`` válidos para la versión instalada.
+
+    La 2.x usa ``use_angle_cls``; la 3.x lo renombró a ``use_textline_orientation``
+    y ya no acepta ``use_angle_cls``. Se construyen por **firma** para no depender
+    de la versión instalada (y se omiten los que no existan).
+    """
+    try:
+        params = inspect.signature(clase.__init__).parameters
+    except (TypeError, ValueError):
+        return {"lang": lang}
+    acepta_kwargs = any(p.kind == p.VAR_KEYWORD for p in params.values())
+    kwargs: dict = {}
+    if "lang" in params or acepta_kwargs:
+        kwargs["lang"] = lang
+    if "use_angle_cls" in params:  # PaddleOCR 2.x
+        kwargs["use_angle_cls"] = True
+    elif "use_textline_orientation" in params:  # PaddleOCR 3.x
+        kwargs["use_textline_orientation"] = True
+    if "enable_mkldnn" in params or acepta_kwargs:
+        # PaddlePaddle 3.3.x en CPU revienta en la ruta oneDNN del grafo estático
+        # («ConvertPirAttribute2RuntimeAttribute not support …»). Sin oneDNN el OCR
+        # funciona (algo más lento, pero correcto: aquí prima la exactitud).
+        kwargs["enable_mkldnn"] = False
+    return kwargs
+
+
+def _langs_a_probar(lang: str) -> list[str]:
+    """Idiomas del OCR a probar, en orden.
+
+    PaddleOCR 3.x **no** trae modelo ``latin``: se intenta el pedido y, si falla,
+    ``en`` (modelo inglés, que lee el alfabeto latino). Así funciona igual en 2.x.
+    """
+    return ["en"] if lang == "en" else [lang, "en"]
 
 
 def _run_ocr(ocr, image_path: str):

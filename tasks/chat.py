@@ -5,6 +5,7 @@ import logging
 from PyQt6.QtWidgets import QWidget
 
 from core.engine_manager import EngineManager
+from services import preferences as prefs
 from tasks.base_task import Task
 from ui.chat_widget import ChatWidget
 
@@ -38,21 +39,26 @@ class ChatTask(Task):
         return "Chat"
 
     def build_widget(self, parent: QWidget | None = None) -> QWidget:
-        engine = self._engine_manager.get_engine("ollama")
+        config_manager = self._engine_manager.config_manager
+        saved = prefs.PrefsStore(config_manager).get_str(prefs.CHAT_ENGINE) or "ollama"
+        engine = self._engine_manager.get_engine(saved) or self._engine_manager.get_engine(
+            "ollama"
+        )
         self._widget = ChatWidget(
             engine,
-            self._engine_manager.config_manager,
+            config_manager,
             parent,
             orchestrator=self._orchestrator,
+            engine_manager=self._engine_manager,
         )
         return self._widget
 
     def refresh_engine(self) -> None:
-        """Relee el motor Ollama y lo propaga al widget del chat.
+        """Relee los motores de chat y los propaga al widget.
 
         Método concreto de esta tarea (no forma parte de la interfaz
         :class:`Task`): se invoca cuando cambia la configuración de motores
-        para que el chat siga usando el motor correcto.
+        para que el chat siga usando un motor válido.
         """
         if self._widget is not None:
-            self._widget.set_engine(self._engine_manager.get_engine("ollama"))
+            self._widget.set_engine_manager(self._engine_manager)

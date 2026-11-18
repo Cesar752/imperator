@@ -70,7 +70,8 @@ class ProjectsDialog(QDialog):
 
     def _refresh(self) -> None:
         self._list.clear()
-        for folder in vproject.list_projects(self._root):
+        folders = vproject.list_projects(self._root)
+        for folder in folders:
             try:
                 project = vproject.load_project(folder)
             except vs.ScriptError as exc:
@@ -86,6 +87,10 @@ class ProjectsDialog(QDialog):
             if thumbnail is not None:
                 item.setIcon(QIcon(thumbnail))
             self._list.addItem(item)
+        # Preseleccionar el primero: sin una fila elegida, «Abrir» y «Borrar» no
+        # hacían nada y parecía que el borrado no existía.
+        if folders:
+            self._list.setCurrentRow(0)
 
     @staticmethod
     def _thumbnail(project: vproject.Project) -> str | None:
@@ -114,6 +119,9 @@ class ProjectsDialog(QDialog):
     def _open_selected(self) -> None:
         folder = self._current_folder()
         if folder is None:
+            QMessageBox.information(
+                self, "Abrir proyecto", "Selecciona un proyecto de la lista."
+            )
             return
         self.selected_project = folder
         self.accept()
@@ -121,6 +129,9 @@ class ProjectsDialog(QDialog):
     def _delete_selected(self) -> None:
         folder = self._current_folder()
         if folder is None:
+            QMessageBox.information(
+                self, "Borrar proyecto", "Selecciona un proyecto de la lista."
+            )
             return
         answer = QMessageBox.question(
             self,

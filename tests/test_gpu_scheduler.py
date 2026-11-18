@@ -238,6 +238,36 @@ class GpuSchedulerDecisionTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("máximo 1", motivo)
 
+    def test_modelo_ya_cargado_no_se_bloquea_por_vram(self) -> None:
+        # Caso real: el chat fallaba con «quedan 557 MB libres y se necesitan
+        # 1024 MB» mientras el modelo que iba a usar era el que llenaba la GPU.
+        # Si ya está cargado, la tarea no reserva memoria nueva.
+        sch = gs.GpuScheduler(probe=_FakeProbe(_healthy(free_mb=557, util=95)))
+        ok_sin, _ = sch.can_start(gs.JobPriority.INTERACTIVE)
+        self.assertFalse(ok_sin, "sin el modelo cargado sí se bloquea")
+        ok, motivo = sch.can_start(gs.JobPriority.INTERACTIVE, already_loaded=True)
+        self.assertTrue(ok)
+        self.assertIn("ya está cargado", motivo)
+
+    def test_acquire_propaga_el_modelo_ya_cargado(self) -> None:
+        # Sin propagarlo, ``can_start`` pasaba y ``acquire`` volvía a bloquear
+        # con el mismo motivo de VRAM y la tarea moría igual.
+        sch = gs.GpuScheduler(probe=_FakeProbe(_healthy(free_mb=557, util=95)))
+        self.assertTrue(sch.acquire("chat", already_loaded=True))
+        self.assertTrue(sch.is_active("chat"))
+
+    def test_modelo_ya_cargado_respeta_la_concurrencia(self) -> None:
+        # El atajo del modelo cargado no salta el techo de trabajos a la vez: no
+        # es una puerta abierta para meter dos modelos en la misma GPU.
+        sch = gs.GpuScheduler(
+            probe=_FakeProbe(_healthy(free_mb=557, util=95)),
+            config=gs.SchedulerConfig(max_concurrent=1),
+        )
+        self.assertTrue(sch.acquire("a", already_loaded=True))
+        ok, motivo = sch.can_start(gs.JobPriority.INTERACTIVE, already_loaded=True)
+        self.assertFalse(ok)
+        self.assertIn("máximo 1", motivo)
+
     def test_should_defer(self) -> None:
         sch = gs.GpuScheduler(probe=_FakeProbe(_healthy(free_mb=3000, util=90)))
         self.assertTrue(sch.should_defer(gs.JobPriority.BATCH))
@@ -264,6 +294,15 @@ class GpuSchedulerReserveTest(unittest.TestCase):
 
     def test_release_sin_reserva_no_falla(self) -> None:
         self.sch.release("inexistente")
+
+    def test_busy_refleja_las_reservas(self) -> None:
+        # Lo usa ``gpu_slot`` para no pedir a los demás motores que suelten su
+        # VRAM mientras hay un trabajo en marcha (le rompería el modelo).
+        self.assertFalse(self.sch.busy())
+        self.sch.acquire("document")
+        self.assertTrue(self.sch.busy())
+        self.sch.release("document")
+        self.assertFalse(self.sch.busy())
 
     def test_respeta_el_maximo(self) -> None:
         self.assertTrue(self.sch.acquire("a"))

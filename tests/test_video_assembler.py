@@ -56,10 +56,27 @@ class TimeHelpersTest(unittest.TestCase):
         # La comilla simple se escapa como '\'' para el demuxer concat.
         self.assertEqual(entry, "file 'C:/a/b'\\''c.mp4'")
 
-    def test_filter_path_escapes(self) -> None:
+    def test_concat_list_text(self) -> None:
+        """La lista del demuxer ``concat``: una entrada por fichero y salto final."""
+        texto = VideoAssembler.concat_list_text([Path("C:/a/00000.MTS"), Path("C:/a/00001.MTS")])
+        self.assertEqual(
+            texto,
+            "file 'C:/a/00000.MTS'\nfile 'C:/a/00001.MTS'\n",
+        )
+
         result = VideoAssembler._filter_path(Path("C:/a/b.ass"))
         self.assertTrue(result.endswith("a/b.ass"))
         self.assertIn("\\:", result)
+
+    def test_subtitles_filter_escapa_y_entrecomilla(self) -> None:
+        """Medido con ffmpeg 7.1: sin escape ni comillas el ``:`` rompe el filtro.
+
+        Con la ruta a secas («subtitles=C:/a/b.ass») ffmpeg falla con «Unable to
+        parse option value "..." as image size»; con sólo comillas, igual. Este
+        test fija la forma que sí funciona (la usan el Ensamblador y los rótulos).
+        """
+        filtro = VideoAssembler.subtitles_filter(Path("C:/a/b.ass"))
+        self.assertEqual(filtro, "subtitles='C\\:/a/b.ass'")
 
 
 class SrtParsingTest(unittest.TestCase):
@@ -155,6 +172,100 @@ class FfmpegTimeoutTest(unittest.TestCase):
             self.assembler.probe("v.mp4")
         self.assertEqual(run.call_args.kwargs["timeout"], 11)
 
+    def test_probe_detecta_si_el_video_trae_audio(self) -> None:
+        """Lo necesita Vídeo IA: al cambiar la velocidad el audio va con ``atempo``."""
+        con_audio = mock.Mock(
+            returncode=0,
+            stderr=(
+                "  Stream #0:0: Video: h264, yuv420p, 1280x720, 30 fps\n"
+                "  Stream #0:1: Audio: aac, 44100 Hz, mono, fltp\n"
+            ),
+        )
+        mudo = mock.Mock(
+            returncode=0,
+            stderr="  Stream #0:0: Video: h264, yuv420p, 1280x720, 30 fps\n",
+        )
+        with mock.patch.object(VideoAssembler, "_ffmpeg", return_value="ffmpeg"):
+            with mock.patch.object(vc.subprocess, "run", return_value=con_audio):
+                self.assertTrue(self.assembler.probe("v.mp4")["has_audio"])
+            with mock.patch.object(vc.subprocess, "run", return_value=mudo):
+                self.assertFalse(self.assembler.probe("v.mp4")["has_audio"])
+
+
+class KeepOriginalAudioTest(unittest.TestCase):
+    """``keep_original``: comentar una grabación sin perder su sonido ambiente."""
+
+    def setUp(self) -> None:
+        self.assembler = VideoAssembler()
+
+    def _comando(self, *, voice=True, burn=False, keep_original, music=None):
+        return self.assembler._build_command(
+            Path("v.mp4"),
+            Path("voz.wav") if voice else None,
+            Path("sub.ass") if burn else None,
+            Path("out.mp4"),
+            Path(music) if music else None,
+            0.3,   # music_volume
+            1.0,   # voice_volume
+            True,  # ducking
+            500,   # voice_offset_ms
+            0,     # music_offset_ms
+            keep_original,
+        )
+
+    def test_sin_keep_original_la_voz_sustituye_al_audio(self) -> None:
+        argv = self._comando(keep_original=False)
+        self.assertIn("-af", argv)
+        self.assertIn("1:a:0", argv)
+        self.assertNotIn("-filter_complex", argv)
+
+    def test_keep_original_mezcla_voz_y_audio_del_vídeo(self) -> None:
+        argv = self._comando(keep_original=True)
+        grafo = argv[argv.index("-filter_complex") + 1]
+        self.assertIn("[0:a]aresample=48000", grafo)
+        self.assertIn("[1:a]adelay=500|500", grafo)
+        self.assertIn("amix=inputs=2", grafo)
+        self.assertIn("normalize=0", grafo)
+        self.assertEqual(argv[argv.index("-map") + 1], "0:v:0")
+        self.assertIn("[aout]", argv)
+        # El vídeo se sigue copiando: no se recodifica por conservar el audio.
+        self.assertEqual(argv[argv.index("-c:v") + 1], "copy")
+
+    def test_keep_original_con_subtítulos_usa_un_solo_grafo(self) -> None:
+        """``-vf`` y ``-filter_complex`` no se pueden combinar."""
+        argv = self._comando(burn=True, keep_original=True)
+        self.assertNotIn("-vf", argv)
+        grafo = argv[argv.index("-filter_complex") + 1]
+        self.assertIn("subtitles=", grafo)
+        self.assertIn("[vout]", grafo)
+        self.assertIn("[aout]", grafo)
+
+    def test_keep_original_con_música_suma_una_rama(self) -> None:
+        sin = self.assembler._audio_filter_complex(True, 1, 2, 0.3, 1.0, True, 0, 0)
+        con = self.assembler._audio_filter_complex(
+            True, 1, 2, 0.3, 1.0, True, 0, 0, True
+        )
+        self.assertIn("amix=inputs=2", sin)
+        self.assertNotIn("[orig]", sin)
+        self.assertIn("amix=inputs=3", con)
+        self.assertIn("[orig]", con)
+        self.assertIn("[0:a]aresample=48000", con)
+
+    def test_keep_original_solo_con_música(self) -> None:
+        grafo = self.assembler._audio_filter_complex(
+            False, None, 1, 0.3, 1.0, True, 0, 0, True
+        )
+        self.assertIn("amix=inputs=2", grafo)
+        self.assertIn("[orig]", grafo)
+        self.assertIn("[music]", grafo)
+
+    def test_rama_de_mezcla(self) -> None:
+        grafo = VideoAssembler._original_voice_filter(1500, 0.8, 1.0)
+        self.assertIn("[0:a]aresample=48000", grafo)
+        self.assertIn("volume=0.800[orig]", grafo)
+        self.assertIn("[1:a]adelay=1500|1500", grafo)
+        self.assertTrue(grafo.endswith("apad[aout]"))
+
 
 class XfadeFilterTest(unittest.TestCase):
     """El grafo ``xfade`` se construye sin ejecutar ffmpeg (lógica pura)."""
@@ -167,6 +278,18 @@ class XfadeFilterTest(unittest.TestCase):
         self.assertIn("xfade=transition=fade:duration=0.500:offset=3.500", graph)
         self.assertIn("scale=832:480", graph)
         self.assertIn("fps=16", graph)
+
+    def test_setpts_antes_de_fps(self) -> None:
+        """``setpts`` debe ir **antes** de ``fps`` o ``xfade`` ve tasa 1/0.
+
+        Regresión real (ffmpeg 7.1): con ``fps`` y luego ``setpts``, el ensamblado
+        con transiciones fallaba con «The inputs needs to be a constant frame
+        rate» y caía a corte seco.
+        """
+        graph, _ = VideoAssembler.xfade_filter_complex(
+            [4.0, 4.0], transition_s=0.5, fps=16, width=832, height=480
+        )
+        self.assertLess(graph.index("setpts=PTS-STARTPTS"), graph.index("fps=16"))
 
     def test_tres_clips_offset_acumulado(self) -> None:
         graph, out = VideoAssembler.xfade_filter_complex(

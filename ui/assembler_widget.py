@@ -61,6 +61,9 @@ class AssemblerWorker(ThreadWorker):
         voice_offset,
         music_offset,
         parent=None,
+        *,
+        keep_original: bool = False,
+        original_volume: float = 1.0,
     ) -> None:
         super().__init__(parent)
         self._whisper = whisper_engine
@@ -77,6 +80,10 @@ class AssemblerWorker(ThreadWorker):
         self._ducking = ducking
         self._voice_offset = voice_offset
         self._music_offset = music_offset
+        #: Conservar el audio del propio vídeo (ambiente) bajo la voz elegida.
+        self._keep_original = keep_original
+        #: Volumen de ese audio del vídeo (1.0 = tal cual; menos, lo baja bajo la voz).
+        self._original_volume = original_volume
 
     def work(self) -> str:
         srt_path = None
@@ -106,6 +113,8 @@ class AssemblerWorker(ThreadWorker):
             ducking=self._ducking,
             voice_offset=self._voice_offset,
             music_offset=self._music_offset,
+            keep_original=self._keep_original,
+            original_volume=self._original_volume,
         )
         self.progress.emit(100, "Listo")
         return str(output)
@@ -131,6 +140,7 @@ class AssemblerWidget(TaskWidget):
         self._video_path: str | None = None
         self._audio_path: str | None = None
         self._video_duration: float | None = None
+        self._video_has_audio = False
         self._audio_duration: float | None = None
         self._build_ui()
         self._restore_preferences()
@@ -194,6 +204,15 @@ class AssemblerWidget(TaskWidget):
         self._voice_volume.setSuffix("%")
         self._voice_volume.valueChanged.connect(self._on_voice_volume_changed)
 
+        self._original_volume = QSpinBox()
+        self._original_volume.setRange(0, 100)
+        self._original_volume.setValue(100)
+        self._original_volume.setSuffix("%")
+        self._original_volume.setToolTip(
+            "Volumen del audio que trae el vídeo (p. ej. el ambiente de una crónica).\n"
+            "Bájalo si el sonido del vídeo tapa a la voz."
+        )
+
         self._ducking = QCheckBox("Ducking automático")
         self._ducking.setChecked(True)
         self._ducking.toggled.connect(self._on_ducking_toggled)
@@ -222,9 +241,17 @@ class AssemblerWidget(TaskWidget):
         music_form.addRow("Pista:", music_row)
         music_form.addRow("Vol. música:", self._music_volume)
         music_form.addRow("Vol. voz:", self._voice_volume)
+        music_form.addRow("Vol. vídeo:", self._original_volume)
         music_form.addRow("Inicio voz (s):", self._voice_offset)
         music_form.addRow("Inicio música (s):", self._music_offset)
         music_form.addRow("", self._ducking)
+
+        self._original_check = QCheckBox("Conservar el audio del vídeo")
+        self._original_check.setToolTip(
+            "Mezcla el sonido original de la grabación (público, silbato, balón) con\n"
+            "la voz en vez de sustituirlo. Sin voz ni música el audio se copia igual."
+        )
+        music_form.addRow("", self._original_check)
 
         music_group = QGroupBox("Música de fondo")
         music_group.setLayout(music_form)
@@ -345,13 +372,36 @@ class AssemblerWidget(TaskWidget):
             self._set_status(f"No se pudo inspeccionar el vídeo: {exc}")
             info = {}
         self._video_duration = info.get("duration")
+        self._video_has_audio = bool(info.get("has_audio"))
         parts = []
         if info.get("width") and info.get("height"):
             parts.append(f"Resolución: {info['width']}×{info['height']}")
         if self._video_duration is not None:
             parts.append(f"Duración: {self._video_duration:.1f} s")
+        # Se dice explícitamente: sin esto no se sabía si el vídeo traía audio (una
+        # crónica ya lo trae, con la narración mezclada).
+        parts.append("Audio: sí" if self._video_has_audio else "Audio: no")
         self._video_info.setText(" · ".join(parts))
+        self._sugerir_audio_original()
         self._check_duration_gap()
+
+    def _sugerir_audio_original(self) -> None:
+        """Marca «Conservar el audio del vídeo» según lo que traiga el vídeo.
+
+        Al enviar una crónica, su audio (narración + ambiente) **es** el que se quiere
+        oír: si se dejara sin marcar, añadir música o subtítulos lo tiraría. Y al
+        revés: si el vídeo no tiene audio, se desmarca, porque intentar conservarlo
+        haría fallar el ensamblado (no hay pista ``[0:a]`` que mezclar).
+        """
+        if not self._video_has_audio:
+            self._original_check.setChecked(False)
+            return
+        if self._audio_path is None:
+            self._original_check.setChecked(True)
+            self._set_status(
+                "El vídeo ya trae audio (narración/ambiente): se conservará. "
+                "Desmárcalo si le vas a poner otra voz."
+            )
 
     def _select_audio(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -406,9 +456,11 @@ class AssemblerWidget(TaskWidget):
         music_path = self._music_combo.currentData()
         music_volume = self._music_volume.value() / 100.0
         voice_volume = self._voice_volume.value() / 100.0
+        original_volume = self._original_volume.value() / 100.0
         ducking = self._ducking.isChecked()
         voice_offset = self._voice_offset.value()
         music_offset = self._music_offset.value()
+        keep_original = self._original_check.isChecked()
 
         video_duration = self._video_duration
         if video_duration is None and self._video_path:
@@ -455,6 +507,8 @@ class AssemblerWidget(TaskWidget):
             voice_offset,
             music_offset,
             self,
+            keep_original=keep_original,
+            original_volume=original_volume,
         )
         self._worker.progress.connect(self._on_progress)
         self._worker.result.connect(self._on_ready)
@@ -586,6 +640,7 @@ class AssemblerWidget(TaskWidget):
             self._fontsize,
             self._music_volume,
             self._voice_volume,
+            self._original_volume,
             self._voice_offset,
             self._music_offset,
         )
@@ -628,6 +683,7 @@ class AssemblerWidget(TaskWidget):
             self._music_refresh,
             self._music_volume,
             self._voice_volume,
+            self._original_volume,
             self._voice_offset,
             self._music_offset,
             self._ducking,

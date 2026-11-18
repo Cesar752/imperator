@@ -37,6 +37,8 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import Callable, Iterator
 
+from core.subprocess_utils import no_window_kwargs
+
 logger = logging.getLogger(__name__)
 
 #: Tiempo máximo (s) que se espera a ``nvidia-smi``. Si no responde, se asume
@@ -130,12 +132,15 @@ class GpuProbe:
         self._timeout = int(timeout)
 
     def _run(self, cmd: list[str], timeout: int) -> object:
+        # ``no_window_kwargs``: sin esto Windows abría una consola que parpadeaba
+        # en **cada** sondeo de VRAM (es decir, con solo enviar un mensaje en el chat).
         return subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
+            **no_window_kwargs(),
         )
 
     @staticmethod
@@ -293,20 +298,42 @@ class GpuScheduler:
         with self._lock:
             return name in self._active
 
+    def busy(self) -> bool:
+        """¿Hay algún trabajo con reserva ahora mismo?
+
+        Lo consulta ``ui.workers.gpu_slot`` antes de pedir a los demás motores
+        que suelten su VRAM: si hay un trabajo en marcha, esa memoria es la suya
+        y descargar su modelo lo rompería a mitad de faena.
+        """
+        with self._lock:
+            return bool(self._active)
+
     # ---- Decisión --------------------------------------------------
 
     def can_start(
-        self, priority: JobPriority, vram_mb: int = 0
+        self,
+        priority: JobPriority,
+        vram_mb: int = 0,
+        *,
+        already_loaded: bool = False,
     ) -> tuple[bool, str]:
         """¿Puede empezar un trabajo? Devuelve ``(sí/no, motivo)``.
 
         El motivo se usa tal cual en logs y avisos, así que es una frase. El
         sondeo de la GPU se hace **fuera** del lock: ``nvidia-smi`` puede tardar
         segundos y bloquearía al resto de workers que piden permiso.
+
+        ``already_loaded`` es ``True`` cuando el motor de la tarea **ya tiene su
+        modelo en la VRAM**: entonces no hay que reservar memoria nueva y exigir
+        hueco deja la tarea muerta con su propio modelo ocupando la GPU (el chat
+        fallaba con «quedan 557 MB libres y se necesitan 1024 MB» mientras el
+        modelo que iba a usar era justo el que llenaba la tarjeta).
         """
         with self._lock:
             active_count = len(self._active)
-        return self._decide(active_count, self.snapshot(), priority, vram_mb)
+        return self._decide(
+            active_count, self.snapshot(), priority, vram_mb, already_loaded
+        )
 
     def _decide(
         self,
@@ -314,6 +341,7 @@ class GpuScheduler:
         snapshot: GpuSnapshot,
         priority: JobPriority,
         vram_mb: int,
+        already_loaded: bool = False,
     ) -> tuple[bool, str]:
         """Regla de decisión pura: sin lock y sin I/O, todo se pasa por parámetro."""
         if not self._config.enabled:
@@ -324,6 +352,11 @@ class GpuScheduler:
                 f"ya hay {active_count} trabajos en la GPU "
                 f"(máximo {self._config.max_concurrent})"
             )
+
+        if already_loaded:
+            # El modelo ya está cargado: no se reserva nada nuevo. El chequeo de
+            # hueco sobra y bloquearía a la tarea con su propia memoria.
+            return True, "el modelo de la tarea ya está cargado"
 
         if not snapshot.available:
             # Sin medida fiable no se bloquea: fallo abierto.
@@ -363,11 +396,17 @@ class GpuScheduler:
         name: str,
         priority: JobPriority | None = None,
         vram_mb: int = 0,
+        *,
+        already_loaded: bool = False,
     ) -> bool:
         """Reserva GPU para ``name``. ``False`` si aún no puede empezar.
 
         Si ``name`` ya tiene una reserva, devuelve ``True`` sin duplicarla
         (idempotente): evita fugas cuando un widget reintenta.
+
+        ``already_loaded`` se propaga a la decisión (ver :meth:`can_start`): sin
+        esto, ``can_start`` pasaba por el modelo ya cargado y ``acquire`` volvía
+        a bloquear con el mismo motivo de VRAM.
         """
         priority = priority if priority is not None else priority_for(name)
         with self._lock:
@@ -375,7 +414,9 @@ class GpuScheduler:
                 return True
             active_count = len(self._active)
         # El sondeo de la GPU se hace fuera del lock (puede tardar segundos).
-        ok, reason = self._decide(active_count, self.snapshot(), priority, vram_mb)
+        ok, reason = self._decide(
+            active_count, self.snapshot(), priority, vram_mb, already_loaded
+        )
         if not ok:
             logger.info("GPU: '%s' aplazado — %s", name, reason)
             return False

@@ -60,6 +60,11 @@ def build_generate_params(
 
     En ``i2v`` con una sola foto se usa ``image_path``/``prompt``; con varias se
     pasan ``image_paths``/``prompts`` (una por foto, para generar y concatenar).
+
+    **Sin fotos** (``i2v`` del encadenado, donde el ``image_path`` se pone
+    después) no se añade ninguna de esas dos claves. Antes se ponían vacías y
+    llegaban al motor como parámetros que no entiende: era el «unexpected
+    keyword argument 'image_paths'» que tumbaba el encadenado entre escenas.
     """
     params: dict = {
         "negative_prompt": negative_prompt,
@@ -74,9 +79,12 @@ def build_generate_params(
         if len(photos) == 1:
             params["image_path"] = photos[0]["path"]
             params["prompt"] = photos[0]["prompt"]
-        else:
+        elif photos:
             params["image_paths"] = [p["path"] for p in photos]
             params["prompts"] = [p["prompt"] for p in photos]
+        else:
+            params["image_path"] = None
+            params["prompt"] = prompt
     else:
         params["image_path"] = None
         params["prompt"] = prompt
@@ -128,6 +136,8 @@ def scene_generate_params(
     mode: str = "t2v",
     negative_prompt: str = "",
     previous_frame: str | None = None,
+    width: int | None = None,
+    height: int | None = None,
 ) -> dict:
     """Parámetros de ``generate_video`` para la escena ``index`` del guion.
 
@@ -137,18 +147,21 @@ def scene_generate_params(
     - La semilla sale de ``base_seed`` (misma secuencia reproducible).
     - Con ``mode="i2v"`` y ``previous_frame``, ese fotograma entra como imagen de
       partida: es el encadenado que mantiene la continuidad entre escenas.
+    - ``width``/``height`` permiten respetar el preset elegido en la pestaña; si
+      no llegan, se usa el preset por defecto del formato del guion. Sin esto la
+      generación por escenas ignoraba el tamaño configurado en la UI.
     """
     scene = script.scenes[index]
     preset_key = preset_key or default_preset_for(script.aspect)
-    _label, width, height, _duration, _tip = PRESETS.get(
+    _label, preset_w, preset_h, _duration, _tip = PRESETS.get(
         preset_key, PRESETS["equilibrado"]
     )
     prompt = vscript.scene_visual_prompt(script, scene)
     params = build_generate_params(
         mode=mode,
         negative_prompt=negative_prompt,
-        width=width,
-        height=height,
+        width=int(width) if width else preset_w,
+        height=int(height) if height else preset_h,
         duration=scene.duration_s,
         fps=fps,
         prompt=prompt,
@@ -157,4 +170,62 @@ def scene_generate_params(
     if mode == "i2v" and previous_frame:
         params["image_path"] = str(previous_frame)
         params["prompt"] = prompt
+    return params
+
+
+# ---- Fotos de escena (imagen → vídeo) ---------------------------------------
+
+#: Steps y guidance por defecto de las fotos de escena (los mismos de Imagen).
+IMAGE_STEPS = 20
+IMAGE_GUIDANCE = 3.5
+
+
+def default_size(
+    script: vscript.Script, width: int | None = None, height: int | None = None
+) -> tuple[int, int]:
+    """Tamaño ``(ancho, alto)`` de la escena: el explícito o el preset del formato."""
+    _label, preset_w, preset_h, _duration, _tip = PRESETS.get(
+        default_preset_for(script.aspect), PRESETS["equilibrado"]
+    )
+    return (
+        int(width) if width else preset_w,
+        int(height) if height else preset_h,
+    )
+
+
+def scene_image_params(
+    script: vscript.Script,
+    index: int,
+    *,
+    model: str | None = None,
+    width: int | None = None,
+    height: int | None = None,
+    negative_prompt: str = "",
+    seed: int | None = None,
+    steps: int = IMAGE_STEPS,
+    guidance: float = IMAGE_GUIDANCE,
+) -> dict:
+    """Parámetros de ``generate_image`` para la **foto** de la escena ``index``.
+
+    Es lo que hace que cada escena tenga foto y prompt **a la vez**: la imagen se
+    genera con el mismo prompt visual que usará el clip
+    (:func:`services.video_script.scene_visual_prompt` = estilo + personajes +
+    plano) y con la semilla de la escena, así que la foto es reproducible y
+    coherente con el resto de la secuencia. El tamaño es el del vídeo para que
+    el encuadre no se deforme al entrar como primer fotograma (i2v).
+    """
+    scene = script.scenes[index]
+    scene_w, scene_h = default_size(script, width, height)
+    params: dict = {
+        "prompt": vscript.scene_visual_prompt(script, scene),
+        "negative_prompt": negative_prompt,
+        "width": scene_w,
+        "height": scene_h,
+        "steps": int(steps),
+        "guidance": float(guidance),
+    }
+    if model:
+        params["model"] = model
+    if seed is not None:
+        params["seed"] = seed
     return params

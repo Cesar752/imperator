@@ -430,19 +430,33 @@ SCRIPT_SYSTEM_PROMPT = """Eres un guionista cinematográfico y director de arte.
 Escribes guiones cortos para vídeos generados por IA (clips de 2 a 5 segundos).
 
 Reglas que cumples siempre:
-1. Cuentas UNA historia coherente con inicio, desarrollo y cierre; nada de escenas sueltas.
-2. Mantienes a los mismos personajes de principio a fin, con la MISMA apariencia
+1. Cuentas UNA historia con inicio, desarrollo y cierre; nada de escenas sueltas.
+2. **La idea del usuario es el contrato.** La historia sale de ahí: no la sustituyas
+   por otra y no añadas tramas, personajes, objetos, lugares ni datos (nombres,
+   cifras, marcas, parentescos) que no se deduzcan de ella. Si algo no está en la
+   idea ni es imprescindible para contarla, no lo inventes.
+3. **Cada escena es consecuencia directa de la anterior** (causa → efecto). Si una
+   escena se puede quitar sin que la historia cambie, no pertenece al guion. Nada de
+   escenas paralelas, de repetir la misma situación ni de reiniciar la historia.
+4. Progresión: la escena 1 plantea la situación, las intermedias la hacen avanzar
+   (un cambio real y visible en cada una) y la última la cierra.
+5. Mantienes a los mismos personajes de principio a fin, con la MISMA apariencia
    física descrita de forma idéntica en todas las escenas (color de pelo, ropa,
    edad, rasgos). Nunca cambias su aspecto ni su nombre.
-3. Defines un estilo visual único (época, luz, paleta, cámara) que se aplica a
+6. Defines un estilo visual único (época, luz, paleta, cámara) que se aplica a
    todas las escenas, para que el vídeo parezca del mismo rodaje.
-4. Cada escena se puede filmar en un solo plano de 2 a 5 segundos: describe lo
+7. **Continuidad**: lugar, momento del día y vestuario encadenan entre escenas; no
+   saltas de día a noche ni de un lugar a otro sin que la propia historia lo pida.
+8. Cada escena se puede filmar en un solo plano de 2 a 5 segundos: describe lo
    que se ve en un instante, no acciones largas.
-5. La narración es breve (una o dos frases por escena) y avanza la historia.
-6. Respetas el idioma, el número de escenas y el formato (horizontal o vertical)
-   que se te pidan.
-7. Respondes ÚNICAMENTE con un objeto JSON válido, sin explicaciones ni markdown
-   alrededor. Usa exactamente el esquema indicado."""
+9. **La narración y el `visual_prompt` describen el MISMO instante**: lo que cuenta
+   la narración es lo que se ve en el plano. La narración no resume la historia ni
+   suelta moralejas: dice lo que está pasando en ese plano.
+10. La narración es breve (una o dos frases por escena) y no repite lo ya dicho.
+11. Respetas el idioma, el número de escenas y el formato (horizontal o vertical)
+    que se te pidan.
+12. Respondes ÚNICAMENTE con un objeto JSON válido, sin explicaciones ni markdown
+    alrededor. Usa exactamente el esquema indicado."""
 
 
 #: Esquema JSON que se le pide al modelo (texto para el prompt, no codificación).
@@ -463,10 +477,10 @@ SCRIPT_JSON_SCHEMA = """{
   "scenes": [
     {
       "heading": "INT./EXT. LUGAR - MOMENTO",
-      "action": "qué ocurre en la escena en una frase",
-      "visual_prompt": "qué se ve exactamente en el plano (para el generador de vídeo)",
-      "narration": "texto que se narra en esta escena",
-      "characters": ["id-de-cada-personaje-que-aparece"],
+      "action": "qué ocurre en esta escena, en una frase, como consecuencia de la anterior",
+      "visual_prompt": "qué se ve EXACTAMENTE en el plano (lo mismo que narra la narración), para el generador de vídeo",
+      "narration": "texto que se narra en esta escena: lo que se ve en el plano, no un resumen",
+      "characters": ["id-de-cada-personaje-que-aparece (solo los ya presentados)"],
       "duration_s": 4,
       "transition": "cut|fade|dissolve|slide_left|slide_right|wipe_left|wipe_right|circle|zoom"
     }
@@ -493,13 +507,22 @@ def script_generation_messages(
     style_hint = f"\nEstilo visual pedido por el usuario: {style}." if style else ""
 
     user = (
-        f"Idea del vídeo: {_as_str(idea)}\n\n"
+        f"Idea del vídeo (es el contrato: no la cambies): {_as_str(idea)}\n\n"
         f"Escribe un guion de {scene_count} escenas en idioma «{language}», "
         f"en formato {aspect_label}.{style_hint}\n\n"
         f"Cada escena dura entre {CLIP_MIN_S} y {CLIP_MAX_S} segundos "
         f"(el vídeo será de unos {total}-{scene_count * CLIP_MAX_S} s en total).\n"
         "Mantén los mismos personajes con la misma apariencia en todas las escenas "
         "y un único estilo visual coherente.\n\n"
+        "Antes de escribir el JSON, repasa la historia escena a escena:\n"
+        "- ¿Es la historia de la idea de arriba y no otra?\n"
+        "- ¿Cada escena es consecuencia de la anterior (si quito una, la historia se "
+        "rompe)?\n"
+        "- ¿Cada escena aporta un cambio real, sin repetir la situación anterior?\n"
+        "- ¿He evitado inventar personajes, objetos, lugares o datos que la idea no "
+        "menciona?\n"
+        "- ¿La narración y el `visual_prompt` de cada escena describen el mismo "
+        "instante?\n\n"
         "Devuelve SOLO el JSON con este esquema exacto:\n"
         f"{SCRIPT_JSON_SCHEMA}"
     )
@@ -594,3 +617,264 @@ def try_parse_script(text: str) -> tuple[Script | None, str]:
 
 #: Nombres de campo obligatorios, para mensajes de ayuda en la UI.
 REQUIRED_SCENE_FIELDS: tuple[str, ...] = ("visual_prompt", "narration")
+
+
+# ---- Ampliar un guion existente ---------------------------------------------
+
+
+#: Prompt de sistema para pedir **solo escenas nuevas** que continúen un guion.
+#: A diferencia de :data:`SCRIPT_SYSTEM_PROMPT`, aquí no se reescribe la historia:
+#: se continúa, y el modelo no debe tocar lo ya escrito.
+EXTENSION_SYSTEM_PROMPT = """Eres un guionista cinematográfico y director de arte.
+Escribes **escenas nuevas** que continúan un guion ya empezado, sin reescribirlo.
+
+Reglas que cumples siempre:
+1. Las escenas nuevas continúan la historia **después de la última escena** que se te
+   da: no la repiten, no la reinician y no la resumen.
+2. Mantienes el mismo reparto con la **misma apariencia literal** y el mismo estilo
+   visual que el guion.
+3. No inventas personajes, objetos, lugares ni datos que el guion no haya presentado
+   (ni otros que no sean imprescindibles para continuar).
+4. Cada escena nueva es **consecuencia de la anterior** (incluida la última que se te
+   da) y aporta un cambio real; nada de repetir la misma situación.
+5. Cada escena se puede filmar en un solo plano de 2 a 5 segundos.
+6. La narración describe lo que se ve en el plano (sin resúmenes ni moralejas).
+7. Respondes ÚNICAMENTE con un objeto JSON válido con la forma {"scenes": [ ... ]},
+   sin explicaciones ni markdown alrededor."""
+
+
+def script_digest(script: Script) -> str:
+    """Resumen del guion para dar contexto al modelo (estilo, reparto y escenas)."""
+    lines = [
+        f"Título: {script.title}",
+        f"Logline: {script.logline}",
+        f"Formato: {script.aspect} · idioma: {script.language}",
+        f"Estilo: {script.style}",
+    ]
+    if script.characters:
+        lines.append("Reparto:")
+        for character in script.characters:
+            lines.append(f"- {character.id}: {character.name} ({character.appearance})")
+    lines.append("Escenas ya escritas:")
+    for position, scene in enumerate(script.scenes, start=1):
+        lines.append(
+            f"{position}. {scene.heading} | acción: {scene.action} | "
+            f"narración: {scene.narration}"
+        )
+    return "\n".join(lines)
+
+
+def extension_messages(script: Script, extra: int) -> list[dict]:
+    """Mensajes (sistema + usuario) para pedir ``extra`` escenas que continúen.
+
+    El modelo recibe el guion ya escrito y devuelve **solo las escenas nuevas**; así
+    no se reescriben las existentes (que ya pueden estar generadas).
+    """
+    extra = max(1, int(extra))
+    idioma = script.language or DEFAULT_LANGUAGE
+    user = (
+        "Guion ya escrito:\n"
+        f"{script_digest(script)}\n\n"
+        f"Añade {extra} escena(s) MÁS que continúen esta historia después de la "
+        f"última, en idioma «{idioma}». Mantén el mismo reparto (con su apariencia "
+        "literal) y el mismo estilo visual.\n\n"
+        "Devuelve SOLO el JSON con las escenas NUEVAS (no incluyas las ya escritas), "
+        "con este esquema exacto:\n"
+        "{\n"
+        '  "scenes": [\n'
+        "    {\n"
+        '      "heading": "INT./EXT. LUGAR - MOMENTO",\n'
+        '      "action": "qué ocurre, como consecuencia de la escena anterior",\n'
+        '      "visual_prompt": "qué se ve exactamente en el plano",\n'
+        '      "narration": "texto que se narra en esta escena",\n'
+        '      "characters": ["id-de-cada-personaje-que-aparece"],\n'
+        '      "duration_s": 4,\n'
+        '      "transition": "cut|fade|dissolve|slide_left|slide_right|wipe_left|'
+        'wipe_right|circle|zoom"\n'
+        "    }\n"
+        "  ]\n"
+        "}"
+    )
+    return [
+        {"role": "system", "content": EXTENSION_SYSTEM_PROMPT},
+        {"role": "user", "content": user},
+    ]
+
+
+def parse_extension(text: str) -> tuple[Scene, ...]:
+    """Escenas nuevas a partir de la respuesta del modelo (``{"scenes": [...]}``)."""
+    data = _extract_json(text)
+    if not isinstance(data, dict):
+        raise ScriptError("La ampliación del guion debe ser un objeto JSON.")
+    raw = data.get("scenes")
+    if not isinstance(raw, list) or not raw:
+        raise ScriptError("La ampliación del guion no trae escenas nuevas.")
+    return tuple(Scene.from_dict(item) for item in raw)
+
+
+def extend_script(script: Script, scenes: tuple[Scene, ...]) -> Script:
+    """Guion nuevo con ``scenes`` añadidas al final (valida el resultado)."""
+    if not scenes:
+        return script
+    updated = replace(script, scenes=(*script.scenes, *scenes))
+    updated.validate()
+    return updated
+
+
+# ---- Avisos deterministas (validador ligero, sin modelo) ---------------------
+
+
+@dataclass(frozen=True)
+class ScriptWarning:
+    """Aviso sobre un guion: ``scene`` es 1-based (``None`` = de todo el guion)."""
+
+    scene: int | None
+    code: str
+    message: str
+
+
+def _norm(text: str) -> str:
+    """Texto normalizado para comparar (minúsculas y espacios colapsados)."""
+    return re.sub(r"\s+", " ", str(text or "").strip().lower())
+
+
+def _tokens(text: str) -> set[str]:
+    """Palabras significativas (>=3 letras) de un texto, para medir parecido."""
+    return {
+        token
+        for token in re.findall(r"[0-9a-záéíóúüñ]+", _norm(text))
+        if len(token) >= 3
+    }
+
+
+#: Momento del día que se reconoce en el ``heading``/``action`` de una escena.
+_DAY_MOMENTS: dict[str, str] = {
+    "amanecer": "mañana",
+    "mañana": "mañana",
+    "manana": "mañana",
+    "mediodía": "día",
+    "mediodia": "día",
+    "día": "día",
+    "dia": "día",
+    "tarde": "tarde",
+    "atardecer": "tarde",
+    "crepúsculo": "tarde",
+    "crepusculo": "tarde",
+    "noche": "noche",
+    "medianoche": "noche",
+}
+
+#: Pares de momentos cuya alternancia es un salto brusco sin explicación.
+_DAY_JUMPS: frozenset[tuple[str, str]] = frozenset(
+    {("mañana", "noche"), ("noche", "mañana")}
+)
+
+#: Umbral de parecido (Jaccard) entre las acciones de dos escenas seguidas.
+ACTION_SIMILARITY = 0.8
+
+
+def _day_moment(scene: Scene) -> str | None:
+    text = _norm(f"{scene.heading} {scene.action}")
+    for word, moment in _DAY_MOMENTS.items():
+        if word in text:
+            return moment
+    return None
+
+
+def script_warnings(script: Script) -> tuple[ScriptWarning, ...]:
+    """Avisos **deterministas** sobre un guion; no bloquean, orientan.
+
+    Detecta lo que un revisor mira primero y es medible sin modelo: escenas que
+    repiten lugar o acción, narración vacía o repetida, personajes que aparecen de
+    la nada (o que nunca salen) y saltos bruscos de momento del día. **No** juzga
+    si la historia «tiene sentido»: eso necesita un modelo o una persona.
+    """
+    warnings: list[ScriptWarning] = []
+    scenes = script.scenes
+    if not scenes:
+        return ()
+
+    # Narración vacía o repetida (lo primero que se nota al narrar el vídeo).
+    seen_narration: dict[str, int] = {}
+    for index, scene in enumerate(scenes, start=1):
+        narracion = _norm(scene.narration)
+        if not narracion:
+            warnings.append(
+                ScriptWarning(
+                    index, "narracion_vacia", f"La escena {index} no tiene narración."
+                )
+            )
+        elif narracion in seen_narration:
+            warnings.append(
+                ScriptWarning(
+                    index,
+                    "narracion_repetida",
+                    f"La escena {index} repite la narración de la "
+                    f"{seen_narration[narracion]}.",
+                )
+            )
+        else:
+            seen_narration[narracion] = index
+
+    # Repeticiones y saltos entre escenas consecutivas.
+    for index in range(1, len(scenes)):
+        previous, current = scenes[index - 1], scenes[index]
+        prev_heading, cur_heading = _norm(previous.heading), _norm(current.heading)
+        if prev_heading and prev_heading == cur_heading:
+            warnings.append(
+                ScriptWarning(
+                    index + 1,
+                    "lugar_repetido",
+                    f"La escena {index + 1} repite el lugar de la {index} "
+                    "(mismo heading).",
+                )
+            )
+        prev_tokens, cur_tokens = _tokens(previous.action), _tokens(current.action)
+        if prev_tokens and cur_tokens:
+            union = prev_tokens | cur_tokens
+            similarity = len(prev_tokens & cur_tokens) / len(union)
+            if similarity >= ACTION_SIMILARITY:
+                warnings.append(
+                    ScriptWarning(
+                        index + 1,
+                        "accion_repetida",
+                        f"La escena {index + 1} hace casi lo mismo que la {index}.",
+                    )
+                )
+        prev_moment, cur_moment = _day_moment(previous), _day_moment(current)
+        if (prev_moment, cur_moment) in _DAY_JUMPS:
+            warnings.append(
+                ScriptWarning(
+                    index + 1,
+                    "salto_dia",
+                    f"La escena {index + 1} salta de {prev_moment} a {cur_moment} "
+                    "sin que la acción lo explique.",
+                )
+            )
+
+    # Personajes: los que aparecen de la nada y los que nunca salen.
+    appeared: set[str] = set()
+    for index, scene in enumerate(scenes, start=1):
+        for character_id in scene.characters:
+            key = _slug(character_id)
+            if key and key not in appeared and index > 1:
+                warnings.append(
+                    ScriptWarning(
+                        index,
+                        "personaje_nuevo",
+                        f"El personaje «{character_id}» aparece por primera vez en "
+                        f"la escena {index}: preséntalo antes o quítalo.",
+                    )
+                )
+            appeared.add(key)
+    for character in script.characters:
+        if character.id not in appeared:
+            warnings.append(
+                ScriptWarning(
+                    None,
+                    "personaje_sin_escena",
+                    f"El personaje «{character.name or character.id}» está en el "
+                    "reparto pero no aparece en ninguna escena.",
+                )
+            )
+    return tuple(warnings)

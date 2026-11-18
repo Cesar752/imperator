@@ -11,6 +11,7 @@ try:
 except ImportError:  # pragma: no cover - dependencia declarada en requirements.txt
     imageio_ffmpeg = None
 
+from core.subprocess_utils import no_window_kwargs
 from engines.base_engine import EngineError
 
 logger = logging.getLogger(__name__)
@@ -90,10 +91,12 @@ class VideoAssembler:
         return imageio_ffmpeg.get_ffmpeg_exe()
 
     def probe(self, path: str | Path) -> dict:
-        """Devuelve ``{duration, width, height}`` del fichero (None si no se detecta).
+        """Devuelve ``{duration, width, height, fps, has_audio}`` (None si no se detecta).
 
         Se apoya en la salida stderr de ``ffmpeg -i`` (imageio-ffmpeg no incluye
-        ffprobe), para no añadir dependencias nuevas.
+        ffprobe), para no añadir dependencias nuevas. ``has_audio`` lo necesita la
+        pestaña Vídeo IA: al cambiar la velocidad hay que reajustar el audio con
+        ``atempo``, y pedir un filtro de audio en un vídeo mudo hace fallar ffmpeg.
         """
         ffmpeg = self._ffmpeg()
         try:
@@ -102,6 +105,7 @@ class VideoAssembler:
                 capture_output=True,
                 text=True,
                 timeout=PROBE_TIMEOUT,
+                **no_window_kwargs(),
             )
         except subprocess.TimeoutExpired as exc:
             raise EngineError(
@@ -111,7 +115,13 @@ class VideoAssembler:
             raise EngineError(f"No se pudo ejecutar ffmpeg para inspeccionar: {exc}") from exc
 
         stderr = proc.stderr or ""
-        info: dict = {"duration": None, "width": None, "height": None, "fps": None}
+        info: dict = {
+            "duration": None,
+            "width": None,
+            "height": None,
+            "fps": None,
+            "has_audio": bool(re.search(r"Stream #\d+:\d+.*: Audio:", stderr)),
+        }
 
         match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", stderr)
         if match:
@@ -144,6 +154,8 @@ class VideoAssembler:
         ducking: bool = True,
         voice_offset: float = 0.0,
         music_offset: float = 0.0,
+        keep_original: bool = False,
+        original_volume: float = 1.0,
     ) -> Path:
         """Ensambla el MP4 final y devuelve su ruta.
 
@@ -156,6 +168,11 @@ class VideoAssembler:
         ``voice_offset`` y ``music_offset`` desplazan (en segundos) la entrada de
         cada pista. El vídeo actúa como maestro: el audio se rellena con silencio
         (``apad``) y ``-shortest`` corta lo que sobrepase la duración del vídeo.
+
+        ``keep_original=True`` **conserva el audio del propio vídeo** y lo mezcla
+        con la voz (y la música) en vez de sustituirlo: es lo que hace falta para
+        comentar una grabación sin perder el ambiente (público, silbato, balón).
+        Sin voz ni música el audio se copia tal cual, así que ahí no cambia nada.
         """
         video_path = Path(video_path)
         if not video_path.is_file():
@@ -176,9 +193,15 @@ class VideoAssembler:
         self._output_dir.mkdir(parents=True, exist_ok=True)
         output_path = self._output_dir / self._output_name()
 
+        # La duración se usa para **acotar el relleno de silencio** (``apad=whole_dur``).
+        # Sin acotarlo, ffmpeg 7.1 se queda generando silencio para siempre cuando el
+        # vídeo se copia (``-c:v copy``): ``-shortest`` no llega a cortar y el
+        # ensamblado se cuelga (medido: más de 10 min; con ``whole_dur``, 0,1 s).
+        info = self.probe(video_path)
+        duration = info.get("duration")
+
         ass_path: Path | None = None
         if srt_path is not None:
-            info = self.probe(video_path)
             ass_path = self._build_ass(
                 srt_path,
                 subtitle_style,
@@ -200,6 +223,9 @@ class VideoAssembler:
             ducking,
             voice_offset_ms,
             music_offset_ms,
+            keep_original,
+            original_volume,
+            duration,
         )
         try:
             self._run(cmd, self._encode_timeout(video_path))
@@ -357,7 +383,11 @@ class VideoAssembler:
 
         parts: list[str] = []
         for index in range(count):
-            chain = f"fps={int(fps)},format=yuv420p,setpts=PTS-STARTPTS"
+            # ``setpts`` va **antes** de ``fps`` a propósito: en ffmpeg 7.x un
+            # ``setpts`` posterior al filtro ``fps`` deja la tasa de fotogramas en
+            # 1/0 y ``xfade`` la rechaza («The inputs needs to be a constant frame
+            # rate»). Con este orden cada entrada sale a ``fps`` constante.
+            chain = f"setpts=PTS-STARTPTS,fps={int(fps)},format=yuv420p"
             if width and height:
                 chain = (
                     f"scale={int(width)}:{int(height)}:"
@@ -397,6 +427,15 @@ class VideoAssembler:
         escaped = str(path).replace("\\", "/").replace("'", "'\\''")
         return f"file '{escaped}'"
 
+    @classmethod
+    def concat_list_text(cls, paths) -> str:
+        """Contenido del fichero de lista del demuxer ``concat``.
+
+        Lo usan el encadenado de clips del guion y la unión de grabaciones
+        troceadas (los ``.MTS`` de una cámara, por ejemplo).
+        """
+        return "\n".join(cls._concat_entry(Path(p)) for p in paths) + "\n"
+
     def _build_command(
         self,
         video_path: Path,
@@ -409,6 +448,9 @@ class VideoAssembler:
         ducking: bool,
         voice_offset_ms: int,
         music_offset_ms: int,
+        keep_original: bool = False,
+        original_volume: float = 1.0,
+        duration: float | None = None,
     ) -> list[str]:
         """Construye el comando ffmpeg según el caso (1-8)."""
         if music_path is not None:
@@ -423,7 +465,11 @@ class VideoAssembler:
                 ducking,
                 voice_offset_ms,
                 music_offset_ms,
+                keep_original,
+                original_volume,
+                duration,
             )
+        relleno = self._pad_filter(duration)
 
         # Sin música: casos 1-4.
         ffmpeg = self._ffmpeg()
@@ -441,30 +487,97 @@ class VideoAssembler:
             # Caso 2: vídeo + voz -> muxing (vídeo copiado, audio AAC).
             # adelay desplaza la voz y apad rellena con silencio para que
             # -shortest corte al vídeo (master).
-            cmd += [
-                "-map", "0:v:0", "-map", "1:a:0",
-                "-c:v", "copy", "-c:a", "aac",
-                "-af", f"adelay={voice_offset_ms}|{voice_offset_ms},apad",
-                "-shortest",
-            ]
-        elif burn:
-            # Caso 3/4: re-codificar vídeo y quemar subtítulos.
-            cmd += [
-                "-vf", f"subtitles='{self._filter_path(ass_path)}'",
-                "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-            ]
-            if has_voice:
+            if keep_original:
+                # Con el audio del vídeo conservado hay que mezclar: -af no llega
+                # (solo procesa una entrada), así que va por -filter_complex.
                 cmd += [
-                    "-map", "0:v:0", "-map", "1:a:0", "-c:a", "aac",
-                    "-af", f"adelay={voice_offset_ms}|{voice_offset_ms},apad",
-                    "-shortest",
+                    "-filter_complex",
+                    self._original_voice_filter(
+                        voice_offset_ms, original_volume, voice_volume, duration
+                    ),
+                    "-map", "0:v:0", "-map", "[aout]",
+                    "-c:v", "copy", "-c:a", "aac", "-shortest",
                 ]
             else:
-                cmd += ["-c:a", "copy"]
+                cmd += [
+                    "-map", "0:v:0", "-map", "1:a:0",
+                    "-c:v", "copy", "-c:a", "aac",
+                    "-af", f"adelay={voice_offset_ms}|{voice_offset_ms},{relleno}",
+                    "-shortest",
+                ]
+        elif burn:
+            # Caso 3/4: re-codificar vídeo y quemar subtítulos.
+            if keep_original and has_voice:
+                # -vf y -filter_complex no se pueden combinar: los subtítulos
+                # entran en el mismo grafo que la mezcla de audio.
+                cmd += [
+                    "-filter_complex",
+                    f"[0:v]{self.subtitles_filter(ass_path)}[vout];"
+                    + self._original_voice_filter(
+                        voice_offset_ms, original_volume, voice_volume, duration
+                    ),
+                    "-map", "[vout]", "-map", "[aout]",
+                    "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-shortest",
+                ]
+            else:
+                cmd += [
+                    "-vf", self.subtitles_filter(ass_path),
+                    "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                ]
+                if has_voice:
+                    cmd += [
+                        "-map", "0:v:0", "-map", "1:a:0", "-c:a", "aac",
+                        "-af", f"adelay={voice_offset_ms}|{voice_offset_ms},{relleno}",
+                        "-shortest",
+                    ]
+                else:
+                    cmd += ["-c:a", "copy"]
 
         cmd += ["-movflags", "+faststart"]
         cmd.append(str(output_path))
         return cmd
+
+    @staticmethod
+    def _pad_filter(duration: float | None) -> str:
+        """Relleno de silencio **acotado** a la duración del vídeo.
+
+        ``apad`` a secas no termina nunca. Con ``-c:v copy`` y ``-shortest``, ffmpeg
+        7.1 se queda generando silencio y el ensamblado se cuelga (medido: más de
+        10 minutos frente a 0,1 s con ``whole_dur``). El vídeo es el maestro, así que
+        el silencio dura exactamente lo que él.
+        """
+        if duration and float(duration) > 0:
+            return f"apad=whole_dur={float(duration):.3f}"
+        return "apad"
+
+    @staticmethod
+    def _original_voice_filter(
+        voice_offset_ms: int,
+        original_volume: float = 1.0,
+        voice_volume: float = 1.0,
+        whole_dur: float | None = None,
+    ) -> str:
+        """Grafo que mezcla el **audio del propio vídeo** con la voz (``[aout]``).
+
+        El original no se desplaza: es el sonido de la grabación y va en su sitio.
+        La voz entra con ``adelay`` y el silencio se rellena acotado al vídeo.
+        """
+        relleno = VideoAssembler._pad_filter(whole_dur)
+        original = (
+            "[0:a]aresample=48000,aformat=channel_layouts=stereo,"
+            f"volume={float(original_volume):.3f}[orig]"
+        )
+        voz = (
+            f"[1:a]adelay={voice_offset_ms}|{voice_offset_ms},aresample=48000,"
+            f"aformat=channel_layouts=stereo,volume={float(voice_volume):.3f},"
+            f"{relleno}[voz]"
+        )
+        mezcla = (
+            "[orig][voz]amix=inputs=2:duration=longest:dropout_transition=3:"
+            f"normalize=0,{relleno}[aout]"
+        )
+        return ";".join([original, voz, mezcla])
 
     def _build_music_command(
         self,
@@ -478,6 +591,9 @@ class VideoAssembler:
         ducking: bool,
         voice_offset_ms: int,
         music_offset_ms: int,
+        keep_original: bool = False,
+        original_volume: float = 1.0,
+        duration: float | None = None,
     ) -> list[str]:
         """Casos 5-8: música de fondo (ducking opcional) vía ``-filter_complex``.
 
@@ -499,12 +615,12 @@ class VideoAssembler:
 
         filter_parts: list[str] = []
         if burn:
-            vf = f"subtitles='{self._filter_path(ass_path)}'"
-            filter_parts.append(f"[0:v]{vf}[vout]")
+            filter_parts.append(f"[0:v]{self.subtitles_filter(ass_path)}[vout]")
         filter_parts.append(
             self._audio_filter_complex(
                 has_voice, voice_idx, music_idx, music_volume, voice_volume,
                 ducking, voice_offset_ms, music_offset_ms,
+                keep_original, original_volume, duration,
             )
         )
         cmd += ["-filter_complex", ";".join(filter_parts)]
@@ -530,25 +646,50 @@ class VideoAssembler:
         ducking: bool,
         voice_offset_ms: int,
         music_offset_ms: int,
+        keep_original: bool = False,
+        original_volume: float = 1.0,
+        whole_dur: float | None = None,
     ) -> str:
         """Devuelve la rama de audio del ``-filter_complex`` (produce ``[mix]``).
 
         Todas las ramas normalizan formato con ``aresample=48000`` y
         ``aformat=channel_layouts=stereo`` (incluye el upmix mono->estéreo).
         ``adelay`` desplaza la entrada de cada rama y ``apad`` rellena con
-        silencio para que ``-shortest`` corte al vídeo (master).
+        silencio para que ``-shortest`` corte al vídeo (master). Con
+        ``keep_original`` se suma una rama más con el audio del propio vídeo.
         """
         mv = f"{music_volume:.3f}"
         vv = f"{voice_volume:.3f}"
+        ov = f"{float(original_volume):.3f}"
+        relleno = VideoAssembler._pad_filter(whole_dur)
         adelay_voice = f"adelay={voice_offset_ms}|{voice_offset_ms},"
         adelay_music = f"adelay={music_offset_ms}|{music_offset_ms},"
+        original_chain = (
+            f"[0:a]aresample=48000,aformat=channel_layouts=stereo,"
+            f"volume={ov}[orig]"
+            if keep_original
+            else ""
+        )
+        extra = "[orig]" if keep_original else ""
+        extra_n = 1 if keep_original else 0
 
         if not has_voice:
             # Caso 7/8: solo música de fondo.
-            return (
+            if not keep_original:
+                return (
+                    f"[{music_idx}:a]{adelay_music}aresample=48000,"
+                    f"aformat=channel_layouts=stereo,volume={mv},{relleno}[mix]"
+                )
+            # Música + audio del vídeo: se suman y el original mantiene su volumen.
+            music_chain = (
                 f"[{music_idx}:a]{adelay_music}aresample=48000,"
-                f"aformat=channel_layouts=stereo,volume={mv},apad[mix]"
+                f"aformat=channel_layouts=stereo,volume={mv}[music]"
             )
+            mezcla = (
+                f"[music]{extra}amix=inputs={1 + extra_n}:duration=longest:"
+                f"dropout_transition=3:normalize=0,{relleno}[mix]"
+            )
+            return ";".join([music_chain, original_chain, mezcla])
 
         # Caso 5/6: voz + música (ducking opcional).
         if ducking:
@@ -576,11 +717,13 @@ class VideoAssembler:
             mix_in = "[music]"
 
         amix = (
-            f"{mix_in}[v1]amix=inputs=2:duration=longest:dropout_transition=3:"
-            f"normalize=0,apad[mix]"
+            f"{mix_in}[v1]{extra}amix=inputs={2 + extra_n}:duration=longest:"
+            f"dropout_transition=3:normalize=0,{relleno}[mix]"
         )
 
         parts = [voice_chain, music_chain]
+        if original_chain:
+            parts.append(original_chain)
         if mid:
             parts.append(mid)
         parts.append(amix)
@@ -605,7 +748,13 @@ class VideoAssembler:
         un ffmpeg atascado no deja el worker colgado indefinidamente.
         """
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                **no_window_kwargs(),
+            )
         except subprocess.TimeoutExpired as exc:
             raise EngineError(
                 f"ffmpeg superó el tiempo máximo ({timeout:.0f} s) y se canceló."
@@ -720,3 +869,17 @@ class VideoAssembler:
     def _filter_path(path: Path) -> str:
         """Escapa una ruta de Windows para usarla dentro de un filtergraph."""
         return str(path).replace("\\", "/").replace(":", "\\:")
+
+    @classmethod
+    def subtitles_filter(cls, path: Path) -> str:
+        """Filtro ``subtitles=`` con la ruta escapada **y** entrecomillada.
+
+        Medido con el ffmpeg 7.1 de ``imageio-ffmpeg`` en Windows: la ruta debe ir
+        escapada (``C\\:/...``) y entre comillas simples. Sin escapar, el ``:`` de
+        la unidad se lee como otro parámetro del filtro y ffmpeg aborta con
+        «Unable to parse option value "/..." as image size» (el ``original_size``
+        que hereda ``subtitles``); sólo con comillas pasa lo mismo, y con dobles
+        barras invertidas busca un fichero que no existe. Lo usan el Ensamblador y
+        los rótulos de Vídeo IA.
+        """
+        return f"subtitles='{cls._filter_path(Path(path))}'"

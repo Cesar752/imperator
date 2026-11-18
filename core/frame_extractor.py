@@ -26,6 +26,8 @@ try:
 except ImportError:  # pragma: no cover - dependencia declarada en requirements.txt
     imageio_ffmpeg = None
 
+from core.frame_cache import FrameCache
+from core.subprocess_utils import no_window_kwargs
 from core.video_assembler import VideoAssembler
 from engines.base_engine import EngineError
 
@@ -44,12 +46,23 @@ AUDIO_SAMPLE_RATE = 16000
 class FrameExtractor:
     """Extrae fotogramas y audio de un vídeo usando el ffmpeg de imageio."""
 
-    def __init__(self, work_dir: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        work_dir: str | Path | None = None,
+        cache: FrameCache | None = None,
+    ) -> None:
         self._work_dir = Path(work_dir) if work_dir is not None else None
+        # Caché opcional de fotogramas (ver :class:`core.frame_cache.FrameCache`):
+        # con ella, ``cached_frame`` reutiliza lo ya extraído del mismo vídeo.
+        self._cache = cache
 
     @property
     def work_dir(self) -> Path | None:
         return self._work_dir
+
+    @property
+    def cache(self) -> FrameCache | None:
+        return self._cache
 
     # ---- Consultas -------------------------------------------------
 
@@ -114,6 +127,68 @@ class FrameExtractor:
         logger.debug("Fotograma de t=%gs guardado en '%s'.", instante, destino)
         return destino
 
+    def extract_cropped_frame(
+        self,
+        video_path: str | Path,
+        timestamp: float,
+        output_path: str | Path,
+        crop: str = "crop=in_w:in_h*0.30:0:0",
+    ) -> Path:
+        """Fotograma recortado (por defecto, la franja superior donde está el marcador).
+
+        Se usa para leer el marcador por OCR con muestreo denso: recortar reduce el
+        área (y acelera el OCR) y evita que el texto del marcador se confunda con el
+        resto de la escena. ``crop`` es un filtro ``crop=...`` de ffmpeg.
+        """
+        video = self._require_file(video_path)
+        destino = Path(output_path)
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        instante = max(0.0, float(timestamp))
+
+        self._run(
+            [
+                "-ss",
+                f"{instante:.3f}",
+                "-i",
+                str(video),
+                "-frames:v",
+                "1",
+                "-vf",
+                crop,
+                "-y",
+                str(destino),
+            ],
+            timeout=FRAME_TIMEOUT,
+            what="extraer el fotograma recortado",
+        )
+        if not destino.exists() or destino.stat().st_size == 0:
+            raise EngineError(
+                f"ffmpeg no generó el fotograma recortado de t={instante:g}s "
+                f"en '{destino.name}'."
+            )
+        return destino
+
+    def cached_frame(
+        self, video_path: str | Path, timestamp: float, suffix: str = ".png"
+    ) -> Path:
+        """Fotograma de ``(video, timestamp)``, reutilizando la caché si existe.
+
+        En el primer uso extrae con ffmpeg a la ruta de la caché; en los
+        siguientes devuelve el mismo fichero sin volver a decodificar. Requiere
+        que el extractor se haya construido con ``cache``.
+        """
+        if self._cache is None:
+            raise EngineError(
+                "FrameExtractor: 'cached_frame' necesita una caché "
+                "(construye el extractor con cache=FrameCache())."
+            )
+        hit = self._cache.get(video_path, timestamp, suffix)
+        if hit is not None:
+            logger.debug("Fotograma cacheado t=%gs → %s", timestamp, hit.name)
+            return hit
+        destino = self._cache.path_for(video_path, timestamp, suffix)
+        return self.extract_frame(video_path, timestamp, destino)
+
     def extract_audio(
         self, video_path: str | Path, output_path: str | Path
     ) -> Path:
@@ -158,7 +233,12 @@ class FrameExtractor:
         comando = [ffmpeg, "-hide_banner", "-loglevel", "error", *args]
         try:
             subprocess.run(
-                comando, capture_output=True, text=True, timeout=timeout, check=False
+                comando,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+                **no_window_kwargs(),
             )
         except subprocess.TimeoutExpired as exc:
             raise EngineError(

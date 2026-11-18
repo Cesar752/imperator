@@ -27,6 +27,9 @@ COLORS: list[tuple[str, str]] = [
 # Grosor del contorno del subtítulo (px), fijo por ahora (no expuesto en la UI).
 DEFAULT_OUTLINE = 2
 
+#: Tamaño de letra por defecto de los subtítulos (px, con la resolución del vídeo).
+DEFAULT_FONTSIZE = 34
+
 # Diferencia de duración (s) a partir de la cual se avisa al usuario.
 DURATION_GAP_WARNING = 2.0
 

@@ -6,13 +6,18 @@ from copy import deepcopy
 from core.config_manager import DEFAULT_ENGINES, ConfigError, ConfigManager
 from engines.base_engine import Engine
 from engines.bfl import BFLApiEngine
+from engines.cli_tool import CliVideoEngine
 from engines.comfyui import ComfyUIEngine
 from engines.kokoro_tts import KokoroTTSEngine
 from engines.musicgen import MusicGenEngine
 from engines.ollama import OllamaEngine
 from engines.ollama_vision import OllamaVisionEngine
+from engines.openai_compatible import OpenAICompatibleChatEngine
+from engines.openai_image import OpenAIImageEngine
+from engines.openai_vision import OpenAICompatibleVisionEngine
 from engines.perception import ClipEngine, PaddleOcrEngine, YoloEngine
 from engines.piper_tts import PiperTTSEngine
+from engines.voice_clone import VoiceCloneEngine
 from engines.wanvideo import WanVideoEngine
 from engines.whisper_engine import WhisperEngine
 
@@ -23,13 +28,33 @@ logger = logging.getLogger(__name__)
 ENGINE_FACTORY: dict[str, type[Engine]] = {
     "ollama": OllamaEngine,
     "ollama_vision": OllamaVisionEngine,
+    # Chat compatible con OpenAI: nube (openai/deepseek, clave en .env) y
+    # servidores locales (llama.cpp/llama-server y LM Studio, sin clave).
+    "openai": OpenAICompatibleChatEngine,
+    "deepseek": OpenAICompatibleChatEngine,
+    "llama_cpp": OpenAICompatibleChatEngine,
+    "lm_studio": OpenAICompatibleChatEngine,
+    # Visión de pago / con «más ojos» (GPT-4o, Gemini-compat, xAI…): mira los
+    # fotogramas de verdad. Es la alternativa a Ollama Vision para la Crónica,
+    # donde la calidad de la descripción por fotograma decide la crónica entera.
+    "openai_vision": OpenAICompatibleVisionEngine,
+    # Imagen externa (API de imágenes de OpenAI, p. ej. gpt-image-1).
+    "openai_image": OpenAIImageEngine,
     "comfyui": ComfyUIEngine,
     "bfl": BFLApiEngine,
+    # Herramientas externas de línea de comandos: se invocan por subprocess
+    # (ver engines/cli_tool.py y core/cli_runner.py). El ejecutable lo fija
+    # 'parametros.executable' (o 'ruta') en engines.json.
+    "bkingfilm": CliVideoEngine,
+    "lapian_notes": CliVideoEngine,
     "kokoro_tts": KokoroTTSEngine,
     "musicgen": MusicGenEngine,
     "wanvideo": WanVideoEngine,
     "piper_tts": PiperTTSEngine,
     "whisper": WhisperEngine,
+    # Clonado de voz (XTTS-v2). Opcional: sin coqui-tts/torch queda como no
+    # disponible, igual que musicgen sin audiocraft.
+    "voice_clone": VoiceCloneEngine,
     # Percepción estructurada (opcional; sin sus dependencias quedan como no
     # disponibles, igual que musicgen sin audiocraft).
     "yolo": YoloEngine,
@@ -45,10 +70,37 @@ ENGINE_FACTORY: dict[str, type[Engine]] = {
 _OLLAMA_DEFAULT_BASE_URL = "http://127.0.0.1:11434"
 _OLLAMA_DEFAULT_MODEL = "qwen3.6:35b"
 _OLLAMA_VISION_DEFAULT_BASE_URL = "http://127.0.0.1:11434"
-_OLLAMA_VISION_DEFAULT_MODEL = "qwen3-vl:8b"
+_OLLAMA_VISION_DEFAULT_MODEL = "qwen2.5vl:7b"
 _COMFYUI_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
 _WANVIDEO_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
 _BFL_DEFAULT_BASE_URL = "https://api.bfl.ai"
+_OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
+_OPENAI_DEFAULT_MODEL = "gpt-4o-mini"
+_OPENAI_DEFAULT_MODELS = ["gpt-4o-mini", "gpt-4o"]
+_DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
+_DEEPSEEK_DEFAULT_MODEL = "deepseek-chat"
+_DEEPSEEK_DEFAULT_MODELS = ["deepseek-chat", "deepseek-reasoner"]
+_OPENAI_IMAGE_DEFAULT_BASE_URL = "https://api.openai.com/v1"
+_OPENAI_IMAGE_DEFAULT_MODEL = "gpt-image-1"
+_OPENAI_IMAGE_DEFAULT_MODELS = ["gpt-image-1", "dall-e-3"]
+_OPENAI_IMAGE_DEFAULT_SIZE = "1024x1024"
+# Visión de pago compatible con OpenAI (GPT-4o). Misma clave que el chat de
+# OpenAI (OPENAI_API_KEY en .env). Se usa, sobre todo, en la Crónica.
+_OPENAI_VISION_DEFAULT_BASE_URL = "https://api.openai.com/v1"
+_OPENAI_VISION_DEFAULT_MODEL = "gpt-4o-mini"
+_OPENAI_VISION_DEFAULT_MODELS = ["gpt-4o-mini", "gpt-4o"]
+# Servidores locales compatibles (llama.cpp `llama-server` y LM Studio): no piden
+# clave. Son opcionales y vienen deshabilitados.
+_LLAMACPP_DEFAULT_BASE_URL = "http://127.0.0.1:8080/v1"
+_LMSTUDIO_DEFAULT_BASE_URL = "http://127.0.0.1:1234/v1"
+
+#: (base_url, modelo por defecto, modelos ofrecidos, ¿clave obligatoria?).
+_OPENAI_COMPATIBLE_DEFAULTS: dict[str, tuple] = {
+    "openai": (_OPENAI_DEFAULT_BASE_URL, _OPENAI_DEFAULT_MODEL, _OPENAI_DEFAULT_MODELS, True),
+    "deepseek": (_DEEPSEEK_DEFAULT_BASE_URL, _DEEPSEEK_DEFAULT_MODEL, _DEEPSEEK_DEFAULT_MODELS, True),
+    "llama_cpp": (_LLAMACPP_DEFAULT_BASE_URL, "local-model", [], False),
+    "lm_studio": (_LMSTUDIO_DEFAULT_BASE_URL, "local-model", [], False),
+}
 _PIPER_DEFAULT_VOICES_DIR = "voices"
 _KOKORO_DEFAULT_VOICE = "ef_dora"
 _MUSICGEN_DEFAULT_MODEL = "small"
@@ -61,6 +113,32 @@ _OCR_DEFAULT_LANG = "latin"
 _WHISPER_DEFAULT_MODEL = "small"
 _WHISPER_DEFAULT_DEVICE = "cpu"
 _WHISPER_DEFAULT_COMPUTE_TYPE = "int8"
+_VOICE_CLONE_DEFAULT_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
+_VOICE_CLONE_DEFAULT_LANGUAGE = "es"
+_VOICE_CLONE_DEFAULT_DEVICE = "cuda"
+_VOICE_CLONE_DEFAULT_VOICES_DIR = "voices/clones"
+# Coqui no soporta Python 3.12 (el de la app): por defecto la síntesis se hace en
+# el venv de Python 3.11 vía subprocess (tools/xtts_worker.py).
+_VOICE_CLONE_DEFAULT_BACKEND = "subprocess"
+_VOICE_CLONE_DEFAULT_PYTHON = "venv-tts/Scripts/python.exe"
+
+# Herramientas externas de línea de comandos (engines/cli_tool.py). Los valores
+# por defecto son solo un punto de partida: se ajustan en engines.json. Se
+# marcan deshabilitadas por defecto en DEFAULT_ENGINES (no están instaladas).
+_CLI_DEFAULTS: dict[str, dict] = {
+    "bkingfilm": {
+        "nombre": "BkingFilm (CLI)",
+        "executable": "bkingfilm",
+        "args": ["--input", "{input}", "--prompt", "{prompt}", "--output", "{output}"],
+        "output_ext": ".mp4",
+    },
+    "lapian_notes": {
+        "nombre": "Lapian Notes (CLI)",
+        "executable": "lapian-notes",
+        "args": ["--video", "{input}", "--package", "{output}"],
+        "output_ext": ".zip",
+    },
+}
 
 
 class EngineManager:
@@ -135,11 +213,19 @@ class EngineManager:
         # engines.json; si no están, se usan los valores del propio motor, que son
         # la única fuente de verdad.
         if engine_id == "ollama":
+            # ``timeout`` permite dar más margen a los modelos que razonan (el
+            # guion de escenas moría a los 120 s con qwen3.6:35b); si no está,
+            # manda el valor del motor (``OllamaEngine._CHAT_TIMEOUT``).
             return OllamaEngine(
                 base_url=entry.get("ruta", _OLLAMA_DEFAULT_BASE_URL),
                 default_model=params.get("model", _OLLAMA_DEFAULT_MODEL),
                 num_ctx=params.get("num_ctx", OllamaEngine._NUM_CTX),
                 num_predict=params.get("num_predict", OllamaEngine._NUM_PREDICT),
+                timeout=params.get("timeout"),
+                # ``think=False`` apaga el razonamiento de los modelos qwen3.x,
+                # que gastaban la ventana «pensando» (Cuaderno/Crónica salían
+                # vacíos: «se agotó el espacio de la respuesta»). Configurable.
+                think=params.get("think"),
             )
         if engine_id == "ollama_vision":
             return OllamaVisionEngine(
@@ -147,6 +233,38 @@ class EngineManager:
                 default_model=params.get("model", _OLLAMA_VISION_DEFAULT_MODEL),
                 num_ctx=params.get("num_ctx", OllamaVisionEngine._NUM_CTX),
                 timeout=params.get("timeout"),
+                # Rendimiento: apagar el razonamiento (qwen3-vl gasta ~90 % de los
+                # tokens en «thinking») y acotar la salida. Ver README.
+                think=params.get("think"),
+                num_predict=params.get("num_predict"),
+            )
+        if engine_id in _OPENAI_COMPATIBLE_DEFAULTS:
+            base, model, models, need_key = _OPENAI_COMPATIBLE_DEFAULTS[engine_id]
+            return OpenAICompatibleChatEngine(
+                api_id=engine_id,
+                base_url=entry.get("ruta", base),
+                default_model=params.get("model", model),
+                nombre=entry.get("nombre", engine_id.replace("_", " ").title()),
+                models=params.get("models", models),
+                api_key_env=params.get("api_key_env"),
+                api_key_required=params.get("api_key_required", need_key),
+                timeout=params.get("timeout"),
+            )
+        if engine_id == "openai_vision":
+            # Visión de pago compatible con OpenAI (GPT-4o…). Comparte la clave del
+            # chat de OpenAI (OPENAI_API_KEY en .env) y acepta ''detail'' y
+            # ''max_tokens'' para acotar el coste por fotograma.
+            return OpenAICompatibleVisionEngine(
+                api_id=engine_id,
+                base_url=entry.get("ruta", _OPENAI_VISION_DEFAULT_BASE_URL),
+                default_model=params.get("model", _OPENAI_VISION_DEFAULT_MODEL),
+                nombre=entry.get("nombre", "OpenAI Vision"),
+                models=params.get("models", _OPENAI_VISION_DEFAULT_MODELS),
+                api_key_env=params.get("api_key_env", "OPENAI_API_KEY"),
+                api_key_required=params.get("api_key_required", True),
+                timeout=params.get("timeout"),
+                detail=params.get("detail", "auto"),
+                max_tokens=params.get("max_tokens"),
             )
         if engine_id == "comfyui":
             return ComfyUIEngine(
@@ -158,6 +276,35 @@ class EngineManager:
             return BFLApiEngine(
                 base_url=entry.get("ruta", _BFL_DEFAULT_BASE_URL),
                 models=params.get("models"),
+            )
+        if engine_id == "openai_image":
+            return OpenAIImageEngine(
+                base_url=entry.get("ruta", _OPENAI_IMAGE_DEFAULT_BASE_URL),
+                default_model=params.get("model", _OPENAI_IMAGE_DEFAULT_MODEL),
+                nombre=entry.get("nombre", "OpenAI Imagen"),
+                models=params.get("models", _OPENAI_IMAGE_DEFAULT_MODELS),
+                api_key_env=params.get("api_key_env", "OPENAI_API_KEY"),
+                output_dir=params.get("output_dir"),
+                size=params.get("size", _OPENAI_IMAGE_DEFAULT_SIZE),
+                timeout=params.get("timeout"),
+            )
+        if engine_id in ("bkingfilm", "lapian_notes"):
+            # CLI externa (subprocess). El ejecutable se toma de
+            # 'parametros.executable' o, si no, de 'ruta'; la plantilla de
+            # argumentos de 'parametros.args'. Si no está instalada, el motor
+            # aparece como no disponible (is_available() -> False).
+            defaults = _CLI_DEFAULTS[engine_id]
+            return CliVideoEngine(
+                engine_id=engine_id,
+                nombre=entry.get("nombre", defaults["nombre"]),
+                executable=params.get("executable") or entry.get("ruta") or defaults["executable"],
+                args=params.get("args", defaults["args"]),
+                output_dir=params.get("output_dir"),
+                output_ext=params.get("output_ext", defaults["output_ext"]),
+                output_glob=params.get("output_glob"),
+                timeout=params.get("timeout"),
+                models=params.get("models"),
+                cwd=params.get("cwd"),
             )
         if engine_id == "wanvideo":
             workflows = params.get("workflows")
@@ -179,6 +326,20 @@ class EngineManager:
                 model_size=params.get("model", _WHISPER_DEFAULT_MODEL),
                 device=params.get("device", _WHISPER_DEFAULT_DEVICE),
                 compute_type=params.get("compute_type", _WHISPER_DEFAULT_COMPUTE_TYPE),
+            )
+        if engine_id == "voice_clone":
+            return VoiceCloneEngine(
+                model_name=params.get("model", _VOICE_CLONE_DEFAULT_MODEL),
+                language=params.get("language", _VOICE_CLONE_DEFAULT_LANGUAGE),
+                device=params.get("device", _VOICE_CLONE_DEFAULT_DEVICE),
+                voices_dir=params.get(
+                    "voices_dir", entry.get("ruta", _VOICE_CLONE_DEFAULT_VOICES_DIR)
+                ),
+                output_dir=params.get("output_dir"),
+                backend=params.get("backend", _VOICE_CLONE_DEFAULT_BACKEND),
+                python=params.get("python", _VOICE_CLONE_DEFAULT_PYTHON),
+                worker=params.get("worker"),
+                timeout=params.get("timeout"),
             )
         if engine_id == "kokoro_tts":
             return KokoroTTSEngine(

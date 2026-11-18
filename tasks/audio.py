@@ -33,8 +33,13 @@ class AudioTask(Task):
     def build_widget(self, parent: QWidget | None = None) -> QWidget:
         piper = self._engine_manager.get_engine("piper_tts")
         kokoro = self._engine_manager.get_engine("kokoro_tts")
+        clone = self._engine_manager.get_engine("voice_clone")
         self._widget = AudioWidget(
-            piper, kokoro, self._engine_manager.config_manager, parent
+            piper,
+            kokoro,
+            self._engine_manager.config_manager,
+            parent,
+            clone_engine=clone,
         )
         return self._widget
 
@@ -44,5 +49,6 @@ class AudioTask(Task):
             self._widget.set_engines(
                 self._engine_manager.get_engine("piper_tts"),
                 self._engine_manager.get_engine("kokoro_tts"),
+                self._engine_manager.get_engine("voice_clone"),
             )
 

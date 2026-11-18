@@ -77,6 +77,24 @@ class VideoParamsTest(unittest.TestCase):
         self.assertEqual(params["image_paths"], ["a", "b"])
         self.assertEqual(params["prompts"], ["p1", "p2"])
 
+    def test_build_params_i2v_sin_fotos_no_lleva_claves_de_secuencia(self) -> None:
+        # El encadenado entre escenas pide i2v **sin** fotos (el image_path se
+        # pone después, con el último fotograma del clip anterior). Antes se
+        # colaban ``image_paths``/``prompts`` vacíos y el motor moría con
+        # «unexpected keyword argument 'image_paths'».
+        params = vp.build_generate_params(
+            mode="i2v",
+            negative_prompt="",
+            width=480,
+            height=832,
+            duration=2,
+            fps=16,
+        )
+        self.assertNotIn("image_paths", params)
+        self.assertNotIn("prompts", params)
+        self.assertIsNone(params["image_path"])
+        self.assertEqual(params["prompt"], "")
+
     def test_mode_labels_present(self) -> None:
         self.assertIn("t2v", vp.MODE_LABELS)
         self.assertIn("i2v", vp.MODE_LABELS)
@@ -192,6 +210,26 @@ class AudioParamsTest(unittest.TestCase):
     def test_resolve_voice_none_without_voices(self) -> None:
         self.assertIsNone(audio.resolve_voice("piper", None, []))
         self.assertIsNone(audio.resolve_voice(None, None, []))
+
+    def test_voice_locale(self) -> None:
+        self.assertEqual(audio.voice_locale("es_ES-davefx-medium"), "es_ES")
+        self.assertEqual(audio.voice_locale("es_AR-daniela-high"), "es_AR")
+        self.assertEqual(audio.voice_locale("ef_dora"), "")
+
+    def test_voice_label_dice_de_donde_es(self) -> None:
+        self.assertEqual(
+            audio.voice_label("es_ES-davefx-medium"), "es_ES-davefx-medium · castellano (España)"
+        )
+        self.assertIn("Argentina", audio.voice_label("es_AR-daniela-high"))
+        # Kokoro no lleva el idioma en el nombre: se anuncia aparte.
+        self.assertIn("Kokoro", audio.voice_label("ef_dora", "kokoro"))
+
+    def test_sort_voices_pone_castellano_primero(self) -> None:
+        voces = ["es_AR-daniela-high", "eu_ES-antton-medium", "es_ES-davefx-medium"]
+        self.assertEqual(
+            audio.sort_voices(voces),
+            ["es_ES-davefx-medium", "es_AR-daniela-high", "eu_ES-antton-medium"],
+        )
 
 
 class DocumentParamsTest(unittest.TestCase):

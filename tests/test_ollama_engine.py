@@ -1,5 +1,6 @@
 """Tests de engines.ollama (chat, listado y descarga) con requests mockeado."""
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -9,7 +10,11 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from engines.base_engine import EngineError  # noqa: E402
+from engines.base_engine import (  # noqa: E402
+    CANCEL_MESSAGE,
+    EngineError,
+    chat_engine_reply,
+)
 from engines.ollama import OllamaEngine  # noqa: E402
 
 
@@ -53,6 +58,22 @@ class OllamaChatTest(unittest.TestCase):
             self.engine.chat([])
 
     @mock.patch("requests.post")
+    def test_chat_usa_un_timeout_generoso_por_defecto(self, post) -> None:
+        # Los modelos que razonan tardan minutos: con 120 s el guion de escenas
+        # moría a mitad (medido: 6709 tokens generados a ~100 t/s y cortado).
+        post.return_value = _response({"message": {"content": "x"}})
+        self.engine.chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(post.call_args.kwargs["timeout"], OllamaEngine._CHAT_TIMEOUT)
+        self.assertGreater(OllamaEngine._CHAT_TIMEOUT, 120.0)
+
+    @mock.patch("requests.post")
+    def test_chat_timeout_configurable(self, post) -> None:
+        post.return_value = _response({"message": {"content": "x"}})
+        engine = OllamaEngine(base_url="http://127.0.0.1:1", timeout=45.0)
+        engine.chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(post.call_args.kwargs["timeout"], 45.0)
+
+    @mock.patch("requests.post")
     def test_chat_invalid_json(self, post) -> None:
         resp = _response()
         resp.json.side_effect = ValueError("no json")
@@ -76,6 +97,19 @@ class OllamaChatTest(unittest.TestCase):
         self.assertTrue(self.engine.unload_model())
         post.assert_not_called()
 
+    @mock.patch("engines.ollama.is_loaded", return_value=True)
+    def test_is_loaded_delega_en_api_ps(self, check) -> None:
+        # Lo pregunta el planificador de GPU para no bloquear el chat por su
+        # propio modelo ya cargado.
+        self.assertTrue(self.engine.is_loaded("llama-test"))
+        self.assertEqual(check.call_args.args[1], "llama-test")
+
+    @mock.patch("engines.ollama.is_loaded", return_value=False)
+    def test_is_loaded_sin_modelo_usa_el_ultimo_turno(self, check) -> None:
+        self.engine._last_used_model = "ultimo"
+        self.assertFalse(self.engine.is_loaded())
+        self.assertEqual(check.call_args.args[1], "ultimo")
+
 
 class OllamaModelsTest(unittest.TestCase):
     @mock.patch("engines.ollama.fetch_tags")
@@ -92,6 +126,111 @@ class OllamaModelsTest(unittest.TestCase):
         self.assertEqual(
             engine.list_model_details(), [{"name": "llama3:8b", "size": 1}]
         )
+
+
+class _StreamResponse:
+    """Respuesta de ``requests`` con ``iter_lines`` (streaming NDJSON de Ollama)."""
+
+    def __init__(self, lines, status_code=200):
+        self._lines = list(lines)
+        self.status_code = status_code
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(response=self)
+
+    def iter_lines(self, decode_unicode=False):
+        yield from self._lines
+
+
+def _ndjson(*items) -> list[str]:
+    return [json.dumps(item) for item in items]
+
+
+class OllamaStreamTest(unittest.TestCase):
+    """``chat_stream``: avance real y cancelación inmediata."""
+
+    def setUp(self) -> None:
+        self.engine = OllamaEngine(
+            base_url="http://127.0.0.1:1", default_model="llama-test"
+        )
+
+    @mock.patch("requests.post")
+    def test_acumula_los_fragmentos_y_avisa(self, post) -> None:
+        post.return_value = _StreamResponse(
+            _ndjson(
+                {"message": {"content": "Ho"}, "done": False},
+                {"message": {"content": "la"}, "done": False},
+                {"message": {"content": ""}, "done": True, "done_reason": "stop"},
+            )
+        )
+        vistos: list = []
+        reply = self.engine.chat_stream(
+            [{"role": "user", "content": "hi"}],
+            on_token=lambda delta, total: vistos.append((delta, total)),
+        )
+        self.assertEqual(reply, "Hola")
+        self.assertEqual(vistos, [("Ho", 2), ("la", 4)])
+        self.assertTrue(post.call_args.kwargs["json"]["stream"])
+        self.assertTrue(post.call_args.kwargs["stream"])
+
+    @mock.patch("requests.post")
+    def test_cancela_al_instante(self, post) -> None:
+        post.return_value = _StreamResponse(
+            _ndjson(*[{"message": {"content": "x"}, "done": False}] * 3)
+        )
+        with self.assertRaises(EngineError) as ctx:
+            self.engine.chat_stream([], cancel_check=lambda: True)
+        self.assertEqual(str(ctx.exception), CANCEL_MESSAGE)
+
+    @mock.patch("requests.post")
+    def test_marca_la_respuesta_cortada(self, post) -> None:
+        post.return_value = _StreamResponse(
+            _ndjson(
+                {"message": {"content": "cort"}, "done": False},
+                {"message": {"content": ""}, "done": True, "done_reason": "length"},
+            )
+        )
+        reply = self.engine.chat_stream([])
+        self.assertIn("cort", reply)
+        self.assertIn("límite de tokens", reply)
+
+    @mock.patch("requests.post")
+    def test_respuesta_vacia_es_error(self, post) -> None:
+        post.return_value = _StreamResponse(
+            _ndjson({"message": {"content": ""}, "done": True, "done_reason": "stop"})
+        )
+        with self.assertRaises(EngineError):
+            self.engine.chat_stream([])
+
+
+class ChatEngineReplyTest(unittest.TestCase):
+    """El helper usa ``chat_stream`` si está y, si no, cae a ``chat``."""
+
+    def test_cae_a_chat_si_no_hay_streaming(self) -> None:
+        class _SinStream:
+            def chat(self, messages, model=None):
+                return "respuesta"
+
+        self.assertEqual(chat_engine_reply(_SinStream(), [], model=None), "respuesta")
+
+    def test_usa_chat_stream_si_esta(self) -> None:
+        class _ConStream:
+            def chat(self, messages, model=None):  # pragma: no cover - no debe usarse
+                raise AssertionError("no debería usarse chat()")
+
+            def chat_stream(
+                self, messages, model=None, *, on_token=None, cancel_check=None
+            ):
+                return "stream"
+
+        self.assertEqual(chat_engine_reply(_ConStream(), []), "stream")
 
 
 if __name__ == "__main__":

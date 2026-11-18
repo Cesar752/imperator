@@ -170,6 +170,19 @@ class OllamaContextTest(unittest.TestCase):
             OllamaVisionEngine._ANALYZE_TIMEOUT,
         )
 
+    def test_el_chat_admite_un_timeout_configurado(self) -> None:
+        # El guion de escenas moría a los 120 s con qwen3.6:35b (que razona):
+        # el chat necesita el mismo camino configurable que la visión.
+        from core.engine_manager import EngineManager
+
+        engine = EngineManager._build("ollama", {"parametros": {"timeout": 900}})
+        self.assertIsInstance(engine, OllamaEngine)
+        self.assertEqual(engine._chat_timeout, 900)
+        self.assertEqual(
+            EngineManager._build("ollama", {"parametros": {}})._chat_timeout,
+            OllamaEngine._CHAT_TIMEOUT,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

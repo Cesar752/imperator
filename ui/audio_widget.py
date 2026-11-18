@@ -34,6 +34,7 @@ try:
 except ImportError:  # pragma: no cover - dependencia declarada en requirements.txt
     imageio_ffmpeg = None
 
+from core.subprocess_utils import no_window_kwargs
 from engines.base_engine import EngineError
 from services import audio_params as ap
 from services import preferences as prefs
@@ -69,10 +70,20 @@ class AudioWidget(TaskWidget):
     """Formulario de texto a voz (Piper/Kokoro) con reproductor y guardado."""
 
     def __init__(
-        self, piper_engine=None, kokoro_engine=None, config_manager=None, parent=None
+        self,
+        piper_engine=None,
+        kokoro_engine=None,
+        config_manager=None,
+        parent=None,
+        *,
+        clone_engine=None,
     ) -> None:
         super().__init__(parent)
-        self._engines = {"piper": piper_engine, "kokoro": kokoro_engine}
+        self._engines = {
+            "piper": piper_engine,
+            "kokoro": kokoro_engine,
+            "voice_clone": clone_engine,
+        }
         self._engine = None
         self._current_motor = None
         self._config_manager = config_manager
@@ -199,8 +210,10 @@ class AudioWidget(TaskWidget):
                 logger.warning("No se pudieron listar las voces: %s", exc)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Error listando voces: %r", exc, exc_info=True)
-        for voice_name in voices:
-            self._voice.addItem(voice_name, voice_name)
+        for voice_name in ap.sort_voices(voices):
+            self._voice.addItem(
+                ap.voice_label(voice_name, self._current_motor), voice_name
+            )
         key = ap.voice_key(self._current_motor)
         saved = self._prefs.get_str(key) if key else None
         selected = ap.resolve_voice(self._current_motor, saved, voices)
@@ -312,6 +325,7 @@ class AudioWidget(TaskWidget):
             check=True,
             capture_output=True,
             timeout=_MP3_TIMEOUT,
+            **no_window_kwargs(),
         )
 
     # ---- Utilidades ----------------------------------------------
@@ -329,8 +343,12 @@ class AudioWidget(TaskWidget):
         """El área de texto es el control que debe recuperar el foco."""
         return self._text_area
 
-    def set_engines(self, piper_engine=None, kokoro_engine=None) -> None:
-        self._engines = {"piper": piper_engine, "kokoro": kokoro_engine}
+    def set_engines(self, piper_engine=None, kokoro_engine=None, clone_engine=None) -> None:
+        self._engines = {
+            "piper": piper_engine,
+            "kokoro": kokoro_engine,
+            "voice_clone": clone_engine,
+        }
         if self._current_motor:
             self._engine = self._engines.get(self._current_motor)
             self._populate_voices()

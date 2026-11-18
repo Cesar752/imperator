@@ -19,25 +19,31 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from core.gpu_scheduler import JobPriority  # noqa: E402
 from engines.base_engine import EngineError  # noqa: E402
 from ui.image_widget import ImageWorker  # noqa: E402
-from ui.workers import gpu_slot  # noqa: E402
+from ui.workers import gpu_slot, own_model_loaded  # noqa: E402
 
 
 class SchedulerFalso:
     """Doble del planificador: responde lo que diga la lista y apunta las llamadas."""
 
-    def __init__(self, respuestas=((True, "hay hueco"),)) -> None:
+    def __init__(self, respuestas=((True, "hay hueco"),), ocupado=False) -> None:
         self.respuestas = list(respuestas)
         self.preguntas: list[JobPriority] = []
         self.adquiridos: list[str] = []
         self.liberados: list[str] = []
+        self.cargado: list[bool] = []
+        self.ocupado = ocupado
 
-    def can_start(self, priority, vram_mb=0):
+    def can_start(self, priority, vram_mb=0, *, already_loaded=False):
         self.preguntas.append(priority)
+        self.cargado.append(already_loaded)
+        if already_loaded:
+            # El planificador real perdona el chequeo de hueco en ese caso.
+            return True, "el modelo de la tarea ya está cargado"
         if len(self.respuestas) > 1:
             return self.respuestas.pop(0)
         return self.respuestas[0]
 
-    def acquire(self, name, priority=None, vram_mb=0) -> bool:
+    def acquire(self, name, priority=None, vram_mb=0, *, already_loaded=False) -> bool:
         self.adquiridos.append(name)
         return True
 
@@ -46,6 +52,9 @@ class SchedulerFalso:
 
     def is_active(self, name) -> bool:
         return name in self.adquiridos and name not in self.liberados
+
+    def busy(self) -> bool:
+        return self.ocupado
 
 
 class GpuSlotTest(unittest.TestCase):
@@ -98,6 +107,35 @@ class GpuSlotTest(unittest.TestCase):
                 self.fail("no debería entrar en el bloque")
         self.assertEqual(liberados, [True])
 
+    def test_modelo_ya_cargado_entra_aunque_no_quepa(self) -> None:
+        # El chat moría con «quedan 557 MB libres y se necesitan 1024 MB» mientras
+        # el modelo que iba a usar era el que llenaba la GPU. Si ya está cargado
+        # no reserva memoria nueva: no se bloquea ni se pide soltar nada a nadie.
+        scheduler = SchedulerFalso(
+            respuestas=((False, "quedan 557 MB libres y se necesitan 1024 MB"),)
+        )
+        liberados: list[bool] = []
+        with gpu_slot(
+            scheduler,
+            "chat",
+            liberar_otros=lambda: liberados.append(True),
+            already_loaded=lambda: True,
+        ):
+            self.assertEqual(scheduler.adquiridos, ["chat"])
+        self.assertEqual(scheduler.cargado, [True])
+        self.assertEqual(len(scheduler.preguntas), 1)
+        self.assertEqual(liberados, [], "no hay que soltar la VRAM de nadie")
+
+    def test_no_libera_motores_si_hay_un_trabajo_en_marcha(self) -> None:
+        # La VRAM que sobra es la del trabajo en marcha: descargarle el modelo lo
+        # rompería a mitad de faena, así que no se toca.
+        scheduler = SchedulerFalso(respuestas=((False, "sigue lleno"),), ocupado=True)
+        liberados: list[bool] = []
+        with self.assertRaises(EngineError):
+            with gpu_slot(scheduler, "chat", liberar_otros=lambda: liberados.append(True)):
+                self.fail("no debería entrar en el bloque")
+        self.assertEqual(liberados, [])
+
     def test_usa_la_prioridad_de_cada_tarea(self) -> None:
         lote = SchedulerFalso()
         with gpu_slot(lote, "video"):
@@ -149,6 +187,29 @@ class ImageWorkerTest(unittest.TestCase):
         worker = ImageWorker(motor, {"prompt": "x"})
         self.assertTrue(worker.work().endswith(".png"))
         self.assertEqual(motor.llamadas, 1)
+
+
+class OwnModelLoadedTest(unittest.TestCase):
+    """``own_model_loaded``: preguntar al motor si su modelo ya está en la VRAM."""
+
+    def test_motor_que_sabe_responder(self) -> None:
+        class _Motor:
+            def is_loaded(self, model=None) -> bool:
+                return model == "cargado"
+
+        self.assertTrue(own_model_loaded(_Motor(), "cargado"))
+        self.assertFalse(own_model_loaded(_Motor(), "otro"))
+
+    def test_sin_metodo_o_con_fallo_no_bloquea(self) -> None:
+        class _SinMetodo:
+            pass
+
+        class _QueFalla:
+            def is_loaded(self, model=None) -> bool:
+                raise RuntimeError("sin conexión con Ollama")
+
+        self.assertFalse(own_model_loaded(_SinMetodo()))
+        self.assertFalse(own_model_loaded(_QueFalla(), "cargado"))
 
 
 if __name__ == "__main__":  # pragma: no cover

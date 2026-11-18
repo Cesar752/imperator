@@ -57,12 +57,16 @@ C:\Imperator\
 │   ├── task_manager.py     # Registro de tareas (TASK_FACTORY) + orquestador
 │   ├── gpu_scheduler.py    # Cola con prioridad + sondeo de VRAM (nvidia-smi)
 │   ├── frame_extractor.py  # Fotogramas y audio de un vídeo (ffmpeg)
+│   ├── frame_cache.py      # Caché de fotogramas extraídos (cache/)
 │   ├── paths.py            # Rutas compartidas (PROJECT_ROOT, ASSETS)
+│   ├── cli_runner.py       # Invocación de herramientas CLI externas (subprocess)
 │   └── video_assembler.py  # Ensamblado de vídeo con ffmpeg (no es un Engine)
 ├── engines/                # Un motor por fichero
 │   ├── base_engine.py      # Contrato Engine + EngineError
 │   ├── ollama.py           # Chat LLM
 │   ├── ollama_vision.py    # Visión (OCR/resumen/tablas)
+│   ├── openai_compatible.py# Chat compatible con OpenAI (OpenAI/DeepSeek/llama.cpp/LM Studio)
+│   ├── openai_image.py     # Imagen externa (API de imágenes de OpenAI)
 │   ├── comfyui.py          # Generación de imagen (Flux / Kontext)
 │   ├── bfl.py              # Generación de imagen (Black Forest Labs, API de pago)
 │   ├── wanvideo.py         # Generación de vídeo (Wan 2.2)
@@ -70,6 +74,8 @@ C:\Imperator\
 │   ├── kokoro_tts.py       # TTS de calidad (CPU)
 │   ├── whisper_engine.py   # Transcripción a SRT
 │   ├── musicgen.py         # Música a partir de texto (opcional: audiocraft)
+│   ├── voice_clone.py      # Clonado de voz (opcional: coqui-tts XTTS-v2)
+│   ├── cli_tool.py         # Envuelve CLIs externas (bkingfilm, lapian_notes)
 │   └── perception.py       # YOLO (detección), CLIP (etiquetas) y OCR (opcional)
 ├── tasks/                  # Una tarea por fichero
 │   ├── base_task.py        # Contrato Task
@@ -77,7 +83,11 @@ C:\Imperator\
 │   ├── document.py         # Documentos
 │   ├── image.py            # Imagen
 │   ├── video.py            # Vídeo
+│   ├── video_enhance.py    # Vídeo IA (reescalado, color, fotogramas, velocidad)
 │   ├── understanding.py    # Comprensión de vídeo (fotogramas + audio + resumen)
+│   ├── notes.py            # Cuaderno (análisis cinematográfico local)
+│   ├── chronicle.py        # Crónica (vídeo comentado: mira, cuenta, locuta, monta)
+│   ├── photo.py            # Retoque de fotos (ajustes, IA, formato)
 │   ├── audio.py            # Audio (Piper + Kokoro)
 │   └── assembler.py        # Ensamblador
 ├── ui/                     # Un widget por tarea
@@ -85,18 +95,24 @@ C:\Imperator\
 │   ├── engines_dialog.py   # Gestión CRUD de motores
 │   ├── task_widget.py      # Base común: estado y ciclo de vida del worker
 │   ├── workers.py          # ThreadWorker / PoolTask (QThread, QThreadPool)
+│   ├── discipline.py       # Disciplina compartida (bus) Cuaderno/Crónica/Comprensión
 │   ├── markdown.py         # Markdown del chat (tema claro/oscuro)
 │   ├── chat_widget.py
 │   ├── document_widget.py
 │   ├── image_widget.py
 │   ├── video_widget.py
+│   ├── video_enhance_widget.py
 │   ├── understanding_widget.py
+│   ├── notes_widget.py
+│   ├── chronicle_widget.py
+│   ├── photo_widget.py
 │   ├── audio_widget.py
 │   └── assembler_widget.py
 ├── services/               # Lógica pura sin Qt, extraída de los widgets
 │   ├── assembler_params.py # Presets y estilos del Ensamblador
 │   ├── audio_params.py     # Motores TTS, rango de velocidad y voces
 │   ├── chat_params.py      # Ventana de historial + with_system_prompt()
+│   ├── chat_engine.py      # Motor de chat preferido (compartido por las tareas)
 │   ├── document_params.py  # Formatos, prompts y helpers de documentos
 │   ├── document_pipeline.py# Plan por fases del procesado de documentos
 │   ├── image_params.py     # Presets y parámetros de imagen
@@ -108,7 +124,14 @@ C:\Imperator\
 │   ├── video_params.py     # Presets + continuidad (semilla/encadenado)
 │   ├── video_project.py    # Proyecto persistente por trabajo (projects/)
 │   ├── video_script.py     # Guion: modelo, validación y prompts
-│   └── video_understanding.py # Muestreo de fotogramas, prompts e informe
+│   ├── video_understanding.py # Muestreo de fotogramas, prompts e informe
+│   ├── sport_params.py     # Reglas/vocabulario por disciplina (fuente única)
+│   ├── scoreboard.py       # Marcador y goles a partir del texto del OCR
+│   ├── notes_params.py     # Cuaderno: muestreo, esquema, paquete ZIP y Markdown
+│   ├── chronicle_params.py # Crónica: prompt, tiempos, SRT y mezcla de la voz
+│   ├── photo_params.py     # Retoque: ajustes de color y conversión de formato
+│   └── video_enhance_params.py # Vídeo IA: filtros ffmpeg (color/denoise/FPS/
+│                              #   velocidad/zoom) y grafos de replay y rampa
 ├── config/                 # Config real (gitignored) + plantillas (versionadas)
 │   ├── engines.json        # Motores (real)
 │   ├── apis.json           # APIs externas (aún sin usar)
@@ -116,14 +139,18 @@ C:\Imperator\
 │   ├── engines.example.json
 │   ├── apis.example.json
 │   └── settings.example.json
-├── voices/                 # Voces ONNX de Piper (gitignored)
+├── voices/                 # Voces ONNX de Piper y muestras de clonado (voices/clones/) (gitignored)
 ├── music/                  # Música de fondo para el ensamblador (gitignored)
+├── cache/                  # Caché de fotogramas extraídos (gitignored)
 ├── output/                 # Imágenes, vídeos y audios generados (gitignored)
 │                           #   Con retención al arrancar: services/output_cleanup.py
 ├── projects/               # Proyectos de vídeo persistentes (gitignored)
 │                           #   guion.json + escena_NN.mp4 + narración + montaje
 ├── tools/                  # Scripts auxiliares
 │   ├── generar_narracion_basajaun.py  # Narración con Piper
+│   ├── xtts_worker.py      # Clonado XTTS-v2 en su venv (lo lanza voice_clone)
+│   ├── photo_worker.py     # Mejora de fotos (Real-ESRGAN/GFPGAN) en venv-photo
+│   ├── video_upscale_worker.py # Escalado IA de vídeo por fotogramas (venv-photo)
 │   └── make_icon.py        # Regenera el icono (requiere Pillow; ver uso)
 ├── tests/                  # Tests (stdlib unittest; sin deps de runtime)
 ├── .github/workflows/      # CI: compileall + unittest
@@ -166,12 +193,19 @@ inválida).
 ENGINE_FACTORY = {
     "ollama": OllamaEngine,
     "ollama_vision": OllamaVisionEngine,
+    "openai": OpenAICompatibleChatEngine,
+    "deepseek": OpenAICompatibleChatEngine,
+    "llama_cpp": OpenAICompatibleChatEngine,
+    "lm_studio": OpenAICompatibleChatEngine,
     "comfyui": ComfyUIEngine,
     "bfl": BFLApiEngine,
+    "bkingfilm": CliVideoEngine,
+    "lapian_notes": CliVideoEngine,
     "wanvideo": WanVideoEngine,
     "piper_tts": PiperTTSEngine,
     "kokoro_tts": KokoroTTSEngine,
     "whisper": WhisperEngine,
+    "voice_clone": VoiceCloneEngine,
     "musicgen": MusicGenEngine,
     "yolo": YoloEngine,
     "clip": ClipEngine,
@@ -187,13 +221,21 @@ ENGINE_FACTORY = {
 | Motor | Responsabilidad | Backend / modelos |
 | ------- | ----------------- | ------------------- |
 | `ollama` | Chat | Ollama (qwen3.6:35b por defecto, deepseek-r1, …) |
-| `ollama_vision` | OCR / resumen / tablas | Ollama (qwen2.5vl:7b) |
+| `ollama_vision` | OCR / resumen / tablas | Ollama (qwen2.5vl:7b, sin razonamiento) |
+| `openai` | Chat (nube) | API OpenAI (gpt-4o-mini/…); clave `OPENAI_API_KEY` en `.env` |
+| `deepseek` | Chat (nube) | API DeepSeek (deepseek-chat/reasoner); clave `DEEPSEEK_API_KEY` en `.env` |
+| `llama_cpp` | Chat (local) | llama.cpp `llama-server` (`127.0.0.1:8080/v1`); sin clave |
+| `lm_studio` | Chat (local) | LM Studio (`127.0.0.1:1234/v1`); sin clave |
+| `openai_image` | Imagen (nube) | API de imágenes de OpenAI (gpt-image-1/dall-e-3); `OPENAI_API_KEY` |
 | `comfyui` | Imágenes | ComfyUI (Flux Dev / Schnell / Z-Image / Kontext) |
 | `bfl` | Imágenes | Black Forest Labs API de pago (FLUX.1 Kontext Pro/Max, FLUX.2 Pro) |
+| `bkingfilm` | Vídeo (CLI) | Programa externo por subprocess (plantilla `{input}`/`{prompt}`/`{output}`) |
+| `lapian_notes` | Vídeo (CLI) | Cuaderno de análisis cinematográfico externo; produce el paquete de análisis |
 | `wanvideo` | Vídeo T2V/I2V | ComfyUI (Wan 2.2 + Lightx2v) |
 | `piper_tts` | TTS rápido | ONNX (6 voces ES/EU) |
 | `kokoro_tts` | TTS de calidad | PyTorch CPU (ef_dora, em_alex, em_santa) |
 | `whisper` | Transcripción a SRT | faster-whisper (CTranslate2) |
+| `voice_clone` | Clonado de voz (TTS) | coqui-tts XTTS-v2 (zero-shot; opcional, Python 3.11) |
 | `musicgen` | Música a partir de texto | audiocraft / Meta MusicGen (small/medium/large; opcional) |
 | `yolo` | Detección de objetos | ultralytics (`yolov8*.pt` o un motor `.engine`/`.plan`) |
 | `clip` | Etiquetado zero-shot | transformers + torch (vocabulario cerrado) |
@@ -228,8 +270,11 @@ TASK_FACTORY: dict[str, TaskFactory] = {
     "chat": _chat_factory,            # recibe además el orquestador
     "document": _engine_only(DocumentTask),
     "image": _engine_only(ImageTask),
+    "photo": _engine_only(PhotoTask),
     "video": _engine_only(VideoTask),
+    "video_enhance": _engine_only(VideoEnhanceTask),
     "understanding": _engine_only(UnderstandingTask),
+    "notes": _engine_only(NotesTask),
     "audio": _engine_only(AudioTask),
     "assembler": _engine_only(AssemblerTask),
 }
@@ -256,8 +301,9 @@ de `config/`:
 
 - `engines.json` → lista de motores.
 - `apis.json` → APIs externas (aún sin usar).
-- `settings.json` → `log_level`, `last_models` (persistencia de UI),
-  `unload_on_tab_change`, `gpu_scheduler` (ver §9) y `output_limpieza`
+- `settings.json` → `log_level`, `last_models` (persistencia de UI, incluida la
+  disciplina compartida `sport_disciplina`), `unload_on_tab_change`,
+  `gpu_scheduler` (ver §9) y `output_limpieza`
   (retención de `output/`: 500 ficheros, 90 días, 8 GB y 24 h de gracia por
   defecto; `MainWindow._cleanup_output` lo aplica al arrancar, en el pool y sólo
   sobre extensiones que escribe la app).
@@ -316,7 +362,8 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
 
 ## 8. Estado actual
 
-- 7 pestañas: Chat, Documentos, Imagen, Vídeo, Comprensión, Audio, Ensamblador.
+- 11 pestañas: Chat, Documentos, Imagen, Retoque, Vídeo, Vídeo IA, Comprensión,
+  Cuaderno, Crónica, Audio, Ensamblador.
 - 21 tags (de v0.1-skeleton a v0.14-kokoro).
 - Sin refactor de configuración: se mantiene la arquitectura legacy
   (`config/*.json`) y se descartó el intento de config unificada
@@ -361,6 +408,14 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   escribir la respuesta). Sin pedirla, Ollama usaba 4096 y el análisis de un
   documento fallaba con HTTP 400 ("exceeds the available context size"); ese 400
   ahora se traduce a un mensaje que dice qué hacer (`ollama_api.http_error_message`).
+- El chat y el guion piden la respuesta **en streaming**
+  (`OllamaEngine.chat_stream`): `stream: true`, NDJSON leído línea a línea, con
+  `on_token(delta, total_chars)` para el avance y `cancel_check` para abortar. Al
+  cerrarse la conexión, Ollama **detiene la generación**, así que Cancelar es
+  inmediato (antes había que esperar al timeout o a que terminara). El contrato
+  `ChatEngine.chat_stream` tiene implementación por defecto que delega en `chat()` y
+  los workers entran por `base_engine.chat_engine_reply`, así que un motor sin
+  streaming (o un doble de test) sigue funcionando igual.
 - El análisis de documentos tiene timeout propio (600 s por defecto,
   `parametros.timeout`) porque los modelos de visión con razonamiento gastan ~90%
   de los tokens en `thinking` (medido con `qwen3-vl:8b`: 4143 tokens generados
@@ -470,6 +525,18 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   ficheros, 90 días, 8 GB y 24 h de gracia; configurable en `settings.json` →
   `output_limpieza`) y se aplica al arrancar en el pool. Sólo mira extensiones que
   escribe la app, así que lo que no sea un producto de Imperator se respeta.
+- **Vídeo por escenas: reanudable y con liberación de memoria.** Cada escena se
+  guarda al terminar en `projects/<slug>/escena_NN.mp4` y el proyecto persiste el
+  guion y su **semilla común** (`base_seed` en `proyecto.json`). La pestaña Vídeo
+  reanuda por defecto: `Project.resume_index()` salta el prefijo contiguo de
+  escenas ya hechas (un hueco invalida lo posterior) y `SequenceWorker` continúa
+  desde la primera que falta, reconstruyendo el encadenado i2v desde el último
+  fotograma guardado y reutilizando la misma semilla. Entre escena y escena se
+  libera la memoria retenida: `unload_model()` del motor, borrado del fotograma
+  de encadenado ya consumido y `core.memory.release_memory()` (`gc.collect()` +
+  recorte del working set en Windows), que es lo que evita el peta por RAM en
+  secuencias largas. El tamaño del clip es el elegido en el widget
+  (`scene_generate_params(width, height)`).
 - **Resumen global medido con un PDF real de 10 páginas** (30/09/2026,
   `qwen3-vl:8b` a 16 384, alcance automático ⇒ global): 16 003 caracteres de
   documento → **2 bloques** (el tope por llamada es `MAX_GLOBAL_CHARS`, 16 000) →
@@ -500,8 +567,9 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   pesadas van con import protegido: sin ellas la app arranca igual y el motor
   aparece como no disponible (mismo criterio que `musicgen`). Vienen
   **deshabilitados** por defecto en `engines.json`.
-  Aviso de idioma: no hay modelo de euskera propio en PaddleOCR (se usa `latin`)
-  ni CLIP describe en abierto (puntúa un vocabulario cerrado).
+  Aviso de idioma: CLIP no describe en abierto (puntúa un vocabulario cerrado) y
+  PaddleOCR 3.x no trae modelo `latin`, así que el motor cae a `en` (lee igualmente
+  el alfabeto latino) y desactiva oneDNN en CPU (bug de PaddlePaddle 3.3.x).
 - `tasks/understanding.py` + `ui/understanding_widget.py` añaden la pestaña
   **Comprensión**: muestrea fotogramas del vídeo (uno cada N segundos **en el
   centro** de cada intervalo, con tope de fotogramas — «cada N ms» es inviable),
@@ -510,6 +578,18 @@ corrupto cae a los valores por defecto en lugar de impedir el arranque.
   formato viven en `services/video_understanding.py` (puro) y el ejecutor es
   `UnderstandingWorker`, igual que Documentos. Si falta un motor, el informe lo
   **avisa** en vez de rellenar el hueco inventando.
+- **Flujo Comprensión → Cuaderno → Crónica.** La **disciplina** (balonmano/genérico)
+  es **una sola preferencia** (`settings.json`, clave `sport_disciplina`) compartida
+  por las tres pestañas mediante un bus de señal (`ui/discipline.py`): cambiarla en
+  una la cambia en las demás, así el flujo habla siempre del mismo deporte. Las
+  reglas viven en `services/sport_params.py` (fuente única). Comprensión deja su
+  percepción estructurada (`projects/comprension/<vídeo>_<fecha>/comprension.json`) y
+  el Cuaderno la reutiliza («Usar percepción de Comprensión…») sin repetir motores;
+  el Cuaderno deja `informe.json` —con el marcador y los goles que
+  `services/scoreboard.py` deriva del texto del OCR— y la Crónica lo usa («Usar
+  informe del Cuaderno…»). El contexto del usuario se reserva para **componer** (no
+  se inyecta por fotograma, para no contaminar las descripciones) y el Cuaderno avisa
+  de incoherencias con `contrast_context`.
 - **Auditoría externa del 30/09/2026** (`AUDITORIA-2026-09-30.md`): revisión
   independiente de código, configuración, tests y seguridad. Dejó la suite en
   **631 tests** (2 skips) y cerró, además de lo anterior, los hallazgos de

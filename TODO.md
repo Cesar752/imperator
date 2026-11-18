@@ -2,6 +2,45 @@
 
 Notas pendientes (revisar al retomar el proyecto).
 
+## 0. RESUELTO (02/10/2026): error `image_paths`, chat bloqueado y «Fotos primero»
+
+**1. El «error inesperado: ... unexpected keyword argument 'image_paths'»** tenía
+una raíz que no era el motor: `video_params.build_generate_params()` metía
+`image_paths`/`prompts` **vacíos** cuando se pedía `i2v` sin fotos, que es justo
+lo que hace el **encadenado entre escenas** (el `image_path` se pone después, con
+el último fotograma). El motor no entiende esas claves y moría en la escena 2.
+Corregido en los tres bordes:
+
+- `build_generate_params`: sin fotos **no** se añaden esas claves (test-guarda en
+  `tests/test_services.py`).
+- `VideoWorker` (pestaña Vídeo): traduce `image_paths`/`prompts` (varias fotos) a
+  un `image_path` por llamada; una sola foto también (antes solo se manejaba con
+  más de una).
+- `WanVideoEngine.generate_video`: acepta `**kwargs` (como manda la interfaz
+  `VideoEngine`) y, si llega una clave que no soporta, lanza **error de motor**
+  con el nombre del parámetro en vez de un `TypeError` crudo.
+
+**2. El chat se bloqueaba a sí mismo** («quedan 557 MB libres y se necesitan
+1024 MB»): el planificador de GPU exigía hueco de VRAM a una tarea cuyo **propio
+modelo ya estaba cargado** (`qwen3.6:35b` residente ⇒ 557 MB libres). Arreglado
+con `already_loaded` en `GpuScheduler.can_start/acquire` y `gpu_slot`, que lo
+resuelve con `engines.ollama.is_loaded()` (vía `/api/ps`) en Chat, Documentos y
+el guionista. Además, `gpu_slot` ya **no** pide a los demás motores que suelten
+su VRAM si hay un trabajo en marcha (`GpuScheduler.busy`): le rompería el modelo
+a mitad de faena. El bloque `gpu_scheduler` de `settings.json` queda explícito
+(antes eran defaults implícitos) para poder ajustarlo; con `max_concurrent: 1`
+los trabajos van en serie (avisa en vez de encolar).
+
+**3. «Fotos primero (imagen → vídeo)»** en la pestaña Vídeo: casilla + selector de
+motor/modelo de imagen (ComfyUI `flux_dev`/`flux_schnell`… o BFL). Por cada escena
+se genera su **foto** con su prompt visual y su semilla (`scene_image_params`) y
+esa foto entra como primer fotograma del clip **i2v**. Las fotos viven en el
+proyecto (`foto_NN.png`) y se reutilizan si ya existen; sin fotos no queda
+dependencia del clip anterior. Documentado en `VIDEO-GUION.md` §4.9.
+
+**Estado de la suite en esta sesión:** **796 tests en verde** (2 skips) y
+`ruff check .` limpio.
+
 ## 0. RESUELTO (30/09/2026): el paralelismo de páginas no compensa
 
 **Decisión:** `ui/document_widget.MAX_PARALLEL_PAGES = 1` y contexto de vuelta a
@@ -917,3 +956,446 @@ llamada `requests` sin `timeout` y todas las descargas acotadas por
 **Pendiente por decisión del autor:** rotar/verificar la credencial `BFL_API_KEY`
 de `.env` (hallazgo 3.1 del informe) y, opcionalmente, moverla a Credential
 Manager; `ConfigManager.resolve_api_key` es el punto único donde cambiarlo.
+
+## 9. Sesión (2026-10-02): el vídeo por escenas petaba por memoria
+
+**Síntoma:** generar un guion de varias escenas moría tras la primera. Evidencia
+en disco: `projects/el-secreto-del-trigo-dorado/` tenía 6 escenas en el guion
+pero **solo `escena_00.mp4`** (más el `ultimo_00.png` de encadenado). Al reintentar
+se rehacía desde la escena 1 y volvía a caer en el mismo punto, porque no había
+reanudación.
+
+**Diagnóstico:** ComfyUI ya libera su VRAM tras cada clip (`POST /free` dentro de
+`generate_video`), pero **el proceso de Python no devolvía al SO la memoria que
+dejaba de usar** (MP4 descargado de cada escena + arenas de `pymalloc`). En una
+secuencia larga el proceso crecía escena a escena hasta que Windows lo mataba.
+
+**Arreglo (3 piezas):**
+
+- `core/memory.py` (nuevo): `release_memory()` = `gc.collect()` + recorte del
+  *working set* en Windows (`EmptyWorkingSet` / `SetProcessWorkingSetSize(-1,-1)`).
+  Best-effort, nunca lanza y con la parte del SO inyectable para tests
+  (`tests/test_memory.py`).
+- **Reanudación por escena.** `Project.base_seed` y `find_project()` en
+  `services/video_project.py`; `Project.resume_index()` salta el **prefijo
+  contiguo** ya generado (un hueco invalida lo posterior por el encadenado i2v).
+  `SequenceWorker` continúa desde la primera que falta, reconstruye el i2v desde
+  el último fotograma guardado y reutiliza la **misma semilla común** para no
+  perder la coherencia. Casilla «Reanudar proyecto» (encendida por defecto).
+- **Liberación entre escenas.** Tras guardar cada `escena_NN.mp4`, el worker pide
+  al motor que suelte su VRAM, borra el fotograma de encadenado ya consumido y
+  llama a `release_memory()`. Así el proceso no acumula nada de una escena a la
+  siguiente.
+- **Bonus de coherencia de configuración:** `scene_generate_params(width, height)`
+  ahora respeta el preset/tamaño elegidos en la pestaña (antes la generación por
+  escenas usaba solo el preset por defecto del formato e ignoraba esos controles).
+
+**Resuelto (04/10/2026):** probado en caliente — ver §16. La secuencia del
+03/10 completó 1/6 → 6/6 y dejó `secuencia.mp4` **sin cortes**, así que la
+liberación de memoria entre escenas aguantó una corrida larga real.
+
+## 10. Auditoría (2026-10-03): por qué el vídeo por escenas solo dejaba la escena 1
+
+**Síntoma reportado:** «con solo texto no puedo hacer el vídeo». Los dos
+proyectos de `projects/` tienen el guion completo (**6 escenas**) pero **solo
+`escena_00.mp4`** (+ `ultimo_00.png`, el fotograma de encadenado): la generación
+se corta después de la primera escena.
+
+**Lo que se verificó (medido, no asumido):**
+
+- Los servicios externos están vivos y son los correctos: **ComfyUI** en
+  `127.0.0.1:8188` y **Ollama** en `127.0.0.1:11434` a la escucha; los cuatro
+  workflows de imagen y los dos de Wan (`wan22_t2v_workflow_api.json`,
+  `wan22_i2v_workflow_api.json`) existen en `C:\CComfyUI` y tienen los nodos que
+  el motor parchea (`6`/`7` `CLIPTextEncode`, `KSamplerAdvanced`, latent
+  `EmptyHunyuanLatentVideo`/`WanImageToVideo`, `LoadImage`).
+- El motor **sí genera**: `plataformaia.log` tiene **28 líneas `WanVideo`** con
+  clips T2V e I2V terminados (`/history … completed=True`, MP4 guardado).
+- El log **no tiene ni un `ERROR`, ni un `Traceback`, ni una línea `escena`**
+  (comprobado por conteo). El corte tras la escena 1 **nunca se registró**.
+
+**Causa raíz del bloqueo de diagnóstico (lo que hay que arreglar):**
+[`ui/workers.py`](../../../Imperator/ui/workers.py:49) → `ThreadWorker.run` **no
+registraba los `EngineError`** (el fallo más habitual: motor caído, OOM, timeout,
+workflow inválido) y bajaba las excepciones inesperadas a `logger.debug`,
+**invisible con `log_level=INFO`** (el valor por defecto). `TaskWidget._on_failed`
+solo escribe en la barra de estado. Resultado: la razón del corte no quedaba en
+`logs/plataformaia.log`, así que no había forma de saber qué pasaba.
+
+**Arreglo aplicado:**
+
+- `ThreadWorker.run`: los `EngineError` reales se registran a **ERROR**; las
+  excepciones inesperadas con `logger.exception` (con traza). La **cancelación**
+  del usuario sigue sin registrarse (no es un fallo).
+- `SequenceWorker.work`: una línea de `INFO` por escena
+  («Proyecto 'x': generando escena N/M (modo t2v|i2v)») antes de cada
+  `generate_video`, para saber en qué escena se quedó si vuelve a cortarse.
+
+**Aclaración de uso (no es fallo de código):** el modo del widget se persiste en
+`settings.json` → `last_models.video` y hoy está en **`i2v`** (imagen→vídeo).
+Con ese modo, el botón **Generar** exige una imagen y **rechaza el texto solo**:
+de ahí el «con solo texto no puedo». Para texto→vídeo hay que elegir
+**Modo → Texto a vídeo (t2v)**. Y el vídeo final con voz/subtítulos/música no lo
+entrega la pestaña Vídeo (que produce los clips y `secuencia.mp4`) sino
+**Audio + Ensamblador**.
+
+**Verificación:** `ruff check` limpio y **70 tests de vídeo en verde**
+(`test_video_sequence`, `test_video_pipeline`, `test_video_script`).
+
+**Resuelto (04/10/2026):** no queda nada que reanudar: `projects/` solo tiene
+`el-secreto-del-trigo-dorado/` y **vacía** (sin clips ni `secuencia.mp4`), y el
+proyecto `el-secreto-del-trigo-de-basajaun` no existe. El log del 03/10 ya
+muestra la secuencia completa (1/6 → 6/6), así que el diagnóstico del corte
+quedó cerrado — ver §16. La ruta de reanudación sigue cubierta por
+`tests/test_video_pipeline.py` y `tests/test_video_sequence.py`.
+
+### 10.1 El guion no se generaba: el timeout del chat era de 120 s en duro
+
+**Síntoma:** «no se pudo generar el guion. Ollama tardó demasiado en responder
+(timeout)». El log del servidor lo deja claro: `qwen3.6:35b` **estaba
+respondiendo** (99-108 t/s) y llevaba **6709 tokens generados** cuando el cliente
+cortó la petición a los **2m0s** (`[GIN] ... 500 | 2m0s | POST /api/chat`).
+
+**Causa:** [`engines/ollama.py`](../../../Imperator/engines/ollama.py:63) fijaba
+`self._chat_timeout = 120.0` **en duro**. El guion de escenas es una tarea de
+razonamiento (prompt de sistema largo + esquema JSON) y con un modelo que
+"piensa" (qwen3.x) los 120 s se agotan a mitad; es el mismo caso que ya se
+resolvió en la visión con 600 s configurables.
+
+**Arreglo:**
+
+- `OllamaEngine` gana `_CHAT_TIMEOUT = 600.0` y un parámetro `timeout`
+  configurable por motor en `engines.json` (`ollama.parametros.timeout`),
+  cableado en `EngineManager._build` igual que el de la visión. La plantilla
+  `engines.example.json` y la config local quedan con `"timeout": 600`.
+- El mensaje de timeout ahora dice el valor usado y cómo subirlo.
+- 3 tests nuevos (`test_ollama_engine`, `test_ollama_defaults`).
+
+**Contrapartida anotada:** la petición es bloqueante, así que durante ese margen
+la cancelación no la aborta; se resolvería con **streaming** de `/api/chat` (que
+además daría progreso real), pendiente.
+
+**Si el guion sale truncado** (no un timeout, sino `done_reason: length`), el
+siguiente ajuste es subir `ollama.parametros.num_ctx` (hoy 8192 en la config
+local; 16384 ya funciona con el 35b según §5.8). Se vería en el log como
+«Ollama: respuesta cortada por el límite de tokens».
+
+**Verificación:** `ruff check .` limpio, config JSON válida y **58 tests en
+verde** (motor Ollama, defaults, gestor de motores y secuencia de vídeo).
+
+### 10.2 El guion no parseaba: JSON cortado por el contexto (``num_ctx``), no por tiempo
+
+**Síntoma:** «no se pudo interpretar el guion del modelo: El JSON del guion no se
+pudo parsear: Expecting ',' delimiter: line 67 column 6 (char 4826)». En el log,
+justo antes, la pista que lo explica:
+
+```
+2026-10-03 07:01:52 WARNING [engines.ollama] Ollama: respuesta cortada por el límite de tokens
+```
+
+**Causa (medida):** con `OLLAMA_NUM_PARALLEL=2` en el entorno y
+`ollama.parametros.num_ctx: 8192`, Ollama sirvió **`context_length: 8192`**
+(comprobado con `/api/ps`). `qwen3.6:35b` **razona** y llena la ventana con
+`thinking` antes de escribir el JSON: el guion se quedó sin espacio y llegó
+**truncado** (~4,8 KB de ~7 KB), así que el parser falló a mitad. **No** era el
+timeout: esa corrida tardó ~85 s, por debajo de los 600 s.
+
+**Arreglo:**
+
+- `ollama.parametros.num_ctx` pasa a **16384** en la config local y en la
+  plantilla `engines.example.json` (el 35b ya cabe: §5.8 lo midió en 12,2 GB con
+  16384). Al reiniciar Ollama, `/api/ps` debe publicar `context_length: 16384`.
+- `ScriptWorker` reconoce el aviso de truncación (`TRUNCATED_NOTE`) y lanza un
+  error **accionable** («se agotó el contexto… sube `num_ctx` y pon
+  OLLAMA_NUM_PARALLEL=1…») en vez del críptico `Expecting ',' delimiter`.
+
+**Nota sobre el paralelismo:** `OLLAMA_NUM_PARALLEL=2` quedó del modo por lotes de
+Documentos, que se **descartó** (`MAX_PARALLEL_PAGES = 1`). Con 2, Ollama reparte
+el contexto entre slots y duplica el KV cache; para el guion conviene
+**`OLLAMA_NUM_PARALLEL=1`** (`setx OLLAMA_NUM_PARALLEL 1` + reiniciar el servidor).
+
+**Verificación:** `ruff check .` limpio, `num_ctx` = 16384 en local y plantilla, y
+**52 tests en verde**.
+
+### 10.3 El «cuadro de diálogo que aparece y desaparece» al escribir en el chat
+
+**Síntoma:** al enviar un mensaje en el chat parpadeaba un diálogo pequeño (aparecía
+y se cerraba solo) y la pestaña podía cambiar sola.
+
+**Causa:** [`ui/main_window.py`](../../../Imperator/ui/main_window.py:336) muestra un
+`QMessageBox.question` («¿Abrir la pestaña …?») cuando el router de intención detecta
+otra tarea. Como el router se dispara **dentro del mismo evento** que el
+`returnPressed` de la barra del chat, Qt le entregaba la tecla **Enter** al diálogo
+recién abierto, que pulsaba el botón por defecto (**Sí**) y lo cerraba en el acto: de
+ahí el parpadeo y el cambio de pestaña sin querer.
+
+**Arreglo:** el diálogo se difiere al siguiente ciclo del bucle de eventos
+(`QTimer.singleShot(0, …)` → `MainWindow._ask_open_tab`), de modo que la tecla ya no
+está viva. La emisión de la señal `routed` **sigue siendo síncrona** (los tests de
+`test_intent_router` la comprueban tal cual); solo se aplaza el mostrarlo.
+
+**Verificación:** `ruff check .` limpio y **88 tests en verde** (`test_chat_widget`,
+`test_intent_router`, `test_video_sequence`).
+
+### 10.4 «Una pantalla negra que se esconde rápidamente»: consolas de subproceso
+
+**Síntoma:** al enviar un mensaje en el chat parpadeaba una ventana negra, «como si
+estuviera dando un comando a una terminal».
+
+**Causa:** Imperator corre con `pythonw.exe` (sin consola) y **cada
+`subprocess.run` abre una consola** en Windows. El `nvidia-smi` del planificador de
+GPU ([`GpuProbe._run`](../../../Imperator/core/gpu_scheduler.py:132)) se sondea en
+**cada reserva de GPU**, es decir, con solo enviar un mensaje en el chat. `ffmpeg`
+(ensamblador, extracción de fotogramas y sondeos) hacía lo mismo.
+
+**Arreglo:** nuevo
+[`core/subprocess_utils.py`](../../../Imperator/core/subprocess_utils.py) con
+`no_window_kwargs()` (`CREATE_NO_WINDOW` + `startupinfo` con `SW_HIDE`), aplicado en
+**todos** los subprocesos: `gpu_scheduler`, `frame_extractor`, `video_assembler`
+(probe y `_run`), `ui/audio_widget` y `ui/video_widget`.
+
+**Verificación:** `ruff check .` limpio y **223 tests en verde**.
+
+### 10.5 «Generar» en modo i2v pide fotos aunque lo que hay es un guion
+
+**Síntoma:** tras generar el guion con sus escenas, pulsar **Generar** no hacía nada:
+«Selecciona una o más imágenes para el modo Imagen a vídeo». El modo del widget se
+persiste en `last_models.video` y está en `i2v`, así que **Generar** (clip único)
+exige foto; las escenas se generan con **«Generar escenas»**.
+
+**Arreglo:**
+[`VideoWidget._generate`](../../../Imperator/ui/video_widget.py:1293) detecta que hay
+un guion cargado y nombra el botón exacto: «Para las N escenas del guion usa “Generar
+escenas”», en vez del mensaje genérico.
+
+### 10.6 El widget no «sabía» que las escenas del guion ya estaban generadas
+
+**Síntoma:** con las **6 escenas ya generadas** (el proyecto
+`projects/el-secreto-del-trigo-dorado/` tenía `escena_00..05.mp4`, `foto_NN.png` y
+`secuencia.mp4`), pulsar **Generar** seguía avisando del modo i2v y **Enviar al
+Ensamblador** quedaba deshabilitado: parecía que el programa no sabía que ya estaba
+hecho.
+
+**Causa:** al generar el guion, `_on_script_ready` llamaba a `load_script(script)`
+**sin proyecto**, así que `self._project`/`self._clips` quedaban vacíos: ni miniaturas
+ni «Enviar al Ensamblador», aunque el proyecto existiera en disco.
+
+**Arreglo:** `_on_script_ready` pasa `vproject.find_project(script.title)`, de modo que
+un guion **con proyecto existente** se engancha (clips + `secuencia.mp4`) y el estado lo
+dice («· N escena(s) ya generadas»). Además, `_generate` con todas las escenas hechas
+indica el paso que falta («Usa “Enviar al Ensamblador”»). Test-guarda en
+`tests/test_video_sequence.py` (`VideoScriptTableTest`).
+
+**Verificación:** `ruff check .` limpio, **27 tests de vídeo** en verde, y la secuencia
+real del proyecto de 6 escenas existe (`secuencia.mp4`, 13,4 MB, generada escena a
+escena con «Fotos primero»).
+
+### 10.7 Vídeo: «Nuevo» y «Borrar proyecto» (empezar otro vídeo desde cero)
+
+**Síntoma:** al terminar un vídeo no había forma clara de empezar otro: la pestaña
+seguía mostrando el anterior y no se veía un botón de borrado.
+
+**Causa (dos cosas):**
+
+1. El borrado **sí existía**, pero dentro de «Proyectos…» y solo sobre la fila
+   seleccionada: sin selección, «Abrir»/«Borrar» no hacían **nada** y ni avisaban (el
+   diálogo no seleccionaba ninguna fila al abrirse).
+2. La pestaña Vídeo no tenía ningún botón para **empezar de cero**.
+
+**Arreglo:**
+
+- `ui/projects_dialog.py`: preselecciona la primera fila y, si no hay ninguna,
+  «Abrir»/«Borrar» avisan («Selecciona un proyecto de la lista.»).
+- `ui/video_widget.py`: botones **«Nuevo»** (limpia guion, clips y proyecto de la
+  pestaña, con confirmación si hay clips; **no** borra nada del disco) y **«Borrar
+  proyecto»** (borra del disco el proyecto cargado, con confirmación). Además,
+  «Generar guion» limpia lo anterior antes de pedir el guion nuevo (un guion nuevo es
+  un vídeo nuevo) y el proyecto que coincida por título se reengancha al llegar
+  (§10.6).
+- 4 tests nuevos en `tests/test_video_sequence.py` (nuevo, borrar, enganche del
+  proyecto y preselección del diálogo).
+
+**Verificación:** `ruff check .` limpio y **91 tests** en verde.
+
+## 11. El guion no seguía la historia: el prompt del guionista
+
+**Síntoma:** «el modelo no sigue la historia, se inventa cosas o no las relaciona
+directamente».
+
+**Causa:** el prompt del guionista pedía «una historia coherente», pero **no
+obligaba** a que la trama saliera de la idea, ni a que cada escena fuese consecuencia
+de la anterior, ni a que la narración y el `visual_prompt` mostrasen el mismo
+instante. Sin esas restricciones, el modelo rellena con subtramas y elementos
+inventados y las escenas quedan como viñetas sueltas (justo lo que se veía).
+
+**Arreglo (solo prompt, `services/video_script.py`):**
+
+- `SCRIPT_SYSTEM_PROMPT` pasa de 7 a **12 reglas** con cuatro que atacan el fallo:
+  la **idea es el contrato** («no añadas tramas, personajes, objetos, lugares ni
+  datos que no se deduzcan de ella … no lo inventes»), **cada escena es consecuencia
+  directa de la anterior** («si se puede quitar sin que la historia cambie, no
+  pertenece»), **continuidad** de lugar/momento del día/vestuario, y **narración =
+  lo que se ve** (sin resúmenes ni moralejas).
+- El mensaje de usuario añade un **repaso previo** con cinco comprobaciones (misma
+  historia que la idea, cadena causal, un cambio real por escena, nada inventado,
+  narración e imagen del mismo instante).
+- El esquema JSON pide la relación causal también en `action` y aclara que
+  `narration` describe lo que se ve.
+
+**Verificación:** `ruff check .` limpio y **131 tests** verdes, con un test-guarda
+nuevo (`tests/test_video_script.py::PromptTest`) que fija las cuatro reglas.
+
+**Límite honesto:** esto **reduce** el fallo, no lo elimina. La coherencia sigue
+siendo de prompt/estilo/semilla, y un modelo que razona puede desviarse. No hay forma
+fiable de validar mecánicamente la «causalidad» de la historia sin otro modelo; si un
+guion sale mal, el camino es editar la tabla (narración/prompt por escena) o
+regenerar.
+
+## 12. Editar una escena suelta (clip y foto)
+
+**Petición:** poder cambiar cualquier clip por otro generado más tarde y cambiar la
+foto de una escena para que el personaje sea otro.
+
+**Arreglo:** menú contextual (clic derecho) en la tabla de escenas de la pestaña Vídeo:
+
+- **Reemplazar clip (MP4)…** — copia el MP4 elegido (p. ej. de `output/`) a
+  `escena_NN.mp4`, borra la miniatura cacheada y deja de ofrecer la `secuencia.mp4`
+  guardada (ya no corresponde). «Generar escenas» la recompone **sin** rehacer las
+  escenas ya hechas.
+- **Reemplazar foto (PNG/JPG)…** — copia la imagen a `foto_NN.png`: es la vía para
+  **cambiar el personaje** de esa escena (con «Fotos primero» esa foto es el primer
+  fotograma de su clip).
+- **Regenerar esta escena** — rehace **solo** ese clip con su foto actual:
+  `SequenceWorker` gana el parámetro `only`, que limita el bucle a esa escena y **no
+  arrastra** a las posteriores (antes, un hueco obligaba a rehacer la cola).
+- **Quitar foto** — elimina `foto_NN.png`.
+
+**Verificación:** `ruff check .` limpio y **77 tests** verdes, con 3 nuevos
+(regenerar solo una escena, reemplazar clip y reemplazar foto).
+
+## 13. Ampliar un guion ya escrito (escenas nuevas)
+
+**Petición:** poder **aumentar** las escenas de un guion ya creado.
+
+**Arreglo:** dos controles bajo la tabla de escenas de la pestaña Vídeo:
+
+- **«Añadir escena»** — añade una escena **en blanco** al final (heading `ESC n`,
+  prompts de relleno) para escribirla a mano en la tabla.
+- **«Ampliar con IA»** (+ «Nuevas: N») — pide al modelo **solo las escenas nuevas**
+  que continúen la historia. `services/video_script.py` gana
+  `EXTENSION_SYSTEM_PROMPT` (continuar, no reescribir), `script_digest` (le da al
+  modelo el guion ya escrito: estilo, reparto con su apariencia **literal** y las
+  escenas), `extension_messages`, `parse_extension` y `extend_script` (añade al final
+  y valida). El worker es `ScriptExtensionWorker`, bajo `gpu_slot('chat')`.
+
+Al pulsar **«Generar escenas»**, la reanudación por prefijo contiguo genera **solo
+las nuevas** (las ya hechas se conservan) y recompone la secuencia.
+
+**Verificación:** `ruff check .` limpio y **83 tests** verdes, con 5 nuevos
+(4 de `services/video_script` y 1 del worker de ampliación).
+
+## 14. Validador ligero del guion (avisos deterministas, sin modelo)
+
+**Decisión:** el chequeo es **determinista**, no una segunda llamada a un modelo. Es
+rápido, gratis, testeable y no puede «alucinar»; lo que no puede es juzgar si la
+historia tiene sentido (eso necesita un modelo o una persona).
+
+**`services/video_script.py`:**
+
+- `ScriptWarning` (frozen: `scene` 1-based o `None`, `code`, `message`) y
+  `script_warnings(script)`.
+- Comprueba: **narración vacía** o **repetida**; **lugar repetido** (mismo `heading`
+  entre escenas consecutivas); **acción casi idéntica** (Jaccard de palabras ≥
+  `ACTION_SIMILARITY` = 0,8); **salto brusco de momento del día** (mañana ↔ noche,
+  leído del `heading`/`action`); **personaje que aparece por primera vez** en una
+  escena > 1 y **personaje del reparto que no sale en ninguna escena**.
+- Helpers puros: `_norm`, `_tokens`, `_day_moment`, `_DAY_MOMENTS`, `_DAY_JUMPS`.
+
+**`ui/video_widget.py`:** etiqueta de avisos bajo la tabla (`⚠ N aviso(s): …`, en
+ámbar) y marca de la fila afectada (fondo + tooltip con el detalle). **No bloquea
+nada**: se recalcula al cargar el guion, al añadirlo/ampliarlo, al reordenar y al
+editar una celda (`itemChanged`). `_rebuild_scenes` bloquea señales mientras rellena
+las filas, y `_refresh_warnings` lleva un **guardia de reentrada** porque marcar una
+celda emite `itemChanged` (sin él, `_refresh_warnings` se llamaba a sí misma hasta
+**desbordar la pila**; se cazó en los tests).
+
+**Verificación:** `ruff check .` limpio y **90 tests** verdes, con 7 nuevos (6 de
+`services/video_script` y 1 del widget).
+
+## 15. Streaming de /api/chat (progreso real y cancelación inmediata)
+
+**Cierra el pendiente de §10.1 y §11.** La petición de chat era bloqueante: mientras
+duraba (hasta el `timeout`) el botón **Cancelar** no hacía nada y no había señal de
+avance.
+
+**Arreglo:**
+
+- `engines/base_engine.py`: `ChatEngine.chat_stream(messages, model, *, on_token,
+  cancel_check)` con implementación por defecto que delega en `chat` (un motor que no
+  lo soporte —o un doble de test— sigue funcionando igual). Nuevo helper
+  `chat_engine_reply(engine, messages, *, model, on_token, cancel_check)`: el punto
+  único que usan los workers y que elige streaming si el motor lo ofrece.
+- `engines/ollama.py`: `OllamaEngine.chat_stream` pide `stream: true`, lee el NDJSON de
+  `/api/chat` línea a línea, acumula `message.content`, llama a
+  `on_token(delta, total_chars)` y consulta `cancel_check`: al cancelar se lanza
+  `CANCEL_MESSAGE` y, al cerrarse la conexión, **Ollama detiene la generación**. El
+  `thinking` no se emite (no es respuesta). Respeta `num_ctx`/`num_predict` y avisa de
+  la respuesta cortada por contexto.
+- `ui/chat_widget.py`: `ChatWorker` usa el helper y emite avance; el indicador
+  «Pensando...» pasa a mostrar «Recibiendo… N caracteres».
+- `ui/video_widget.py`: los workers de guion y de ampliación usan el helper; el estado
+  muestra «Generando guion… recibiendo… N caracteres» y cancelar corta al instante.
+
+**Verificación:** `ruff check .` limpio y **125 tests** verdes en los módulos tocados,
+con 7 nuevos (4 de `chat_stream`, 2 del helper y 1 del worker de chat).
+
+## 16. Prueba en caliente de la secuencia por escenas y fallo de transiciones (2026-10-04)
+
+**Objetivo:** cerrar el pendiente de §9/§10 (probar en caliente una secuencia
+larga con «Reanudar proyecto»). Se hizo **con evidencia, no re-ejecutando GPU**.
+
+**Lo que dicen el disco y el log (comprobado):**
+
+- `projects/` solo contiene `el-secreto-del-trigo-dorado/` y está **vacía**: no
+  hay `escena_NN.mp4`, ni fotos, ni `secuencia.mp4`, ni `guion.json`/`proyecto.json`.
+  El proyecto `el-secreto-del-trigo-de-basajaun` de §10 **no existe**.
+- `logs/plataformaia.log` (03/10/2026) tiene la corrida **completa**: escena 1/6 a
+  las 07:27:22 … escena 6/6 a las 07:50:40, cada clip terminado (`/history`
+  `completed=True`) y `secuencia.mp4` concatenada a las 07:55:54. **Sin `ERROR`,
+  sin `Traceback` y sin corte**: la liberación entre escenas de §9 aguantó en
+  caliente, que es justo lo que el pendiente pedía confirmar.
+- No hay ninguna línea de «reanudar»: la corrida fue limpia de la 1 a la 6, así
+  que la ruta de reanudación **no se ejercitó en caliente** y ya no puede hacerse
+  (no queda proyecto a medias). Sigue cubierta por los tests.
+
+**Fallo real encontrado en esa corrida (y arreglado):** las **transiciones no se
+aplicaban** y el ensamblado caía a corte seco:
+
+```
+WARNING [ui.video_widget] Transiciones no aplicadas (ffmpeg falló:
+[Parsed_xfade_36] The inputs needs to be a constant frame rate;
+current rate of 1/0 is invalid); corte seco.
+```
+
+**Causa (medida, no intuida):** en el grafo del ensamblador, `setpts=PTS-STARTPTS`
+iba **después** de `fps=…`. Con ffmpeg 7.1 (`imageio-ffmpeg` 0.6 →
+`ffmpeg-win-x86_64-v7.1.exe`) ese orden deja la tasa del enlace en **1/0** y
+`xfade` la rechaza. Reproducido con los **6 clips reales** de `output/`
+(720x1280 @16 fps) probando variantes del filtro: solo pasan `setpts` **antes**
+de `fps`, o sin `setpts`.
+
+**Arreglo:** [`core/video_assembler.py`](../../../Imperator/core/video_assembler.py:362)
+construye la cadena como `setpts=PTS-STARTPTS,fps=…,format=yuv420p` (con
+`scale`/`pad`/`setsar=1` delante). Test-guarda en
+[`tests/test_video_assembler.py`](../../../Imperator/tests/test_video_assembler.py:171)
+(`XfadeFilterTest.test_setpts_antes_de_fps`), que fija el orden.
+
+**Verificación con los clips reales del 03/10:** el mismo ensamblado que fallaba
+ahora produce `output/repro_transiciones.mp4` (6 escenas, **11,13 s, 30 fps,
+5,5 MB**) **con las transiciones aplicadas** (fade, dissolve, cut, slide_left,
+circle). Suite de vídeo **111 tests en verde** y `ruff check .` limpio.
+
+**Nota para retomar:** como la carpeta del proyecto está vacía, una prueba en
+caliente de punta a punta (Vídeo → Audio → Ensamblador → `video_final.mp4`)
+exige regenerar las escenas (~4-5 min por clip en esta máquina). El código de ese
+camino no ha cambiado en esta sesión.

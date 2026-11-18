@@ -77,6 +77,26 @@ class ProjectTest(unittest.TestCase):
         self.assertEqual(project.clip_path(1).name, "escena_01.mp4")
         self.assertEqual(project.narration_path(0).name, "narracion_00.wav")
 
+    def test_base_seed_se_persiste_y_find_project(self) -> None:
+        # El widget usa el título del guion como nombre, así que el slug coincide
+        # entre crear y buscar.
+        vp.create_project("El faro", _script(), root=self.root, base_seed=4242)
+        found = vp.find_project("El faro", root=self.root)
+        self.assertIsNotNone(found)
+        self.assertEqual(found.base_seed, 4242)
+        self.assertEqual(vp.load_project(found.directory).base_seed, 4242)
+        self.assertIsNone(vp.find_project("no-existe", root=self.root))
+
+    def test_resume_index_solo_prefijo_contiguo(self) -> None:
+        project = vp.create_project("faro", _script(3), root=self.root)
+        self.assertEqual(project.resume_index(), 0)
+        project.clip_path(0).write_bytes(b"x")
+        project.clip_path(1).write_bytes(b"x")
+        self.assertEqual(project.resume_index(), 2)
+        # Un hueco (falta la 1 pero existe la 2) obliga a regenerar desde la 1.
+        project.clip_path(0).unlink()
+        self.assertEqual(project.resume_index(), 0)
+
     def test_faltantes_y_guardados(self) -> None:
         project = vp.create_project("faro", _script(), root=self.root)
         self.assertEqual(project.missing_scenes(), [1, 2])
@@ -133,6 +153,41 @@ class ContinuidadTest(unittest.TestCase):
         )
         self.assertEqual(params["model"], "i2v")
         self.assertEqual(params["image_path"], "C:/tmp/last.png")
+
+    def test_tamano_explicito_gana_al_preset(self) -> None:
+        script = _script()
+        params = vpar.scene_generate_params(script, 0, base_seed=1, width=1024, height=576)
+        self.assertEqual(params["width"], 1024)
+        self.assertEqual(params["height"], 576)
+
+
+class FotoDeEscenaTest(unittest.TestCase):
+    """«Fotos primero»: cada escena tiene su foto y su prompt a la vez."""
+
+    def test_scene_image_params_lleva_prompt_modelo_y_semilla(self) -> None:
+        script = _script()
+        params = vpar.scene_image_params(script, 0, model="flux_dev", seed=123)
+        # Mismo prompt visual que el clip: estilo + personajes + plano.
+        self.assertIn("cine mudo en blanco y negro", params["prompt"])
+        self.assertIn("melena negra, gabardina ocre", params["prompt"])
+        self.assertIn("plano 0 con Ana en el faro", params["prompt"])
+        self.assertEqual(params["model"], "flux_dev")
+        self.assertEqual(params["seed"], 123)
+        # Tamaño del preset del formato (horizontal -> equilibrado).
+        self.assertEqual((params["width"], params["height"]), (832, 480))
+
+    def test_scene_image_params_respeta_el_tamano_del_widget(self) -> None:
+        params = vpar.scene_image_params(_script(), 0, width=1024, height=576)
+        self.assertEqual((params["width"], params["height"]), (1024, 576))
+        self.assertNotIn("model", params, "sin modelo elegido no se manda 'model'")
+
+    def test_cada_escena_tiene_su_foto_en_el_proyecto(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = vp.create_project("faro", _script(), root=Path(tmp))
+            self.assertEqual(project.frame_path(0).name, "foto_00.png")
+            self.assertEqual(project.saved_frames(), [])
+            project.frame_path(1).write_bytes(b"png")
+            self.assertEqual(project.saved_frames(), [project.frame_path(1)])
 
 
 if __name__ == "__main__":

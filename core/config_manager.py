@@ -100,7 +100,69 @@ DEFAULT_ENGINES: list[dict[str, Any]] = [
         "nombre": "Ollama Vision",
         "ruta": "http://127.0.0.1:11434",
         "enabled": True,
-        "parametros": {"model": "qwen3-vl:8b"},
+        "parametros": {"model": "qwen2.5vl:7b"},
+    },
+    # APIs externas compatibles con OpenAI (chat). Deshabilitadas y sin clave por
+    # defecto: la clave se lee de .env (OPENAI_API_KEY / DEEPSEEK_API_KEY).
+    {
+        "id": "openai",
+        "nombre": "OpenAI",
+        "ruta": "https://api.openai.com/v1",
+        "enabled": False,
+        "parametros": {
+            "model": "gpt-4o-mini",
+            "models": ["gpt-4o-mini", "gpt-4o"],
+        },
+    },
+    {
+        "id": "deepseek",
+        "nombre": "DeepSeek",
+        "ruta": "https://api.deepseek.com/v1",
+        "enabled": False,
+        "parametros": {
+            "model": "deepseek-chat",
+            "models": ["deepseek-chat", "deepseek-reasoner"],
+        },
+    },
+    # Servidores locales compatibles con OpenAI (sin clave). Opcionales.
+    {
+        "id": "llama_cpp",
+        "nombre": "llama.cpp (llama-server)",
+        "ruta": "http://127.0.0.1:8080/v1",
+        "enabled": False,
+        "parametros": {"model": "local-model"},
+    },
+    {
+        "id": "lm_studio",
+        "nombre": "LM Studio",
+        "ruta": "http://127.0.0.1:1234/v1",
+        "enabled": False,
+        "parametros": {"model": "local-model"},
+    },
+    # Imagen externa (API de imágenes de OpenAI). Clave: OPENAI_API_KEY (.env).
+    {
+        "id": "openai_image",
+        "nombre": "OpenAI Imagen",
+        "ruta": "https://api.openai.com/v1",
+        "enabled": False,
+        "parametros": {
+            "model": "gpt-image-1",
+            "models": ["gpt-image-1", "dall-e-3"],
+            "size": "1024x1024",
+        },
+    },
+    # Visión de pago compatible con OpenAI (GPT-4o): mira los fotogramas con más
+    # detalle que un modelo local. Pensada para la Crónica. Clave: OPENAI_API_KEY.
+    {
+        "id": "openai_vision",
+        "nombre": "OpenAI Vision",
+        "ruta": "https://api.openai.com/v1",
+        "enabled": False,
+        "parametros": {
+            "model": "gpt-4o-mini",
+            "models": ["gpt-4o-mini", "gpt-4o"],
+            "detail": "auto",
+        },
     },
     {
         "id": "comfyui",
@@ -136,6 +198,31 @@ DEFAULT_ENGINES: list[dict[str, Any]] = [
         "enabled": False,
         "parametros": {
             "models": ["flux-kontext-pro", "flux-kontext-max", "flux-2-pro"],
+        },
+    },
+    # Herramientas externas de línea de comandos (engines/cli_tool.py). Se
+    # invocan por subprocess; 'ruta' (o 'parametros.executable') apunta al
+    # ejecutable y 'parametros.args' es la plantilla. Deshabilitadas por
+    # defecto porque no vienen instaladas; con el ejecutable ausente el motor
+    # aparece como no disponible (is_available() -> False).
+    {
+        "id": "bkingfilm",
+        "nombre": "BkingFilm (CLI)",
+        "ruta": "bkingfilm",
+        "enabled": False,
+        "parametros": {
+            "args": ["--input", "{input}", "--prompt", "{prompt}", "--output", "{output}"],
+            "output_ext": ".mp4",
+        },
+    },
+    {
+        "id": "lapian_notes",
+        "nombre": "Lapian Notes (CLI)",
+        "ruta": "lapian-notes",
+        "enabled": False,
+        "parametros": {
+            "args": ["--video", "{input}", "--package", "{output}"],
+            "output_ext": ".zip",
         },
     },
     {
@@ -176,6 +263,22 @@ DEFAULT_ENGINES: list[dict[str, Any]] = [
         "parametros": {
             "model": "small",
             "duration": 8,
+        },
+    },
+    # Clonado de voz (XTTS-v2). Deshabilitado por defecto: requiere coqui-tts +
+    # torch (pesados) y una muestra de voz en voices/clones/. Sin la dependencia
+    # el motor aparece como no disponible, sin romper el arranque.
+    {
+        "id": "voice_clone",
+        "nombre": "Clonar voz (XTTS-v2)",
+        "ruta": "voices/clones",
+        "enabled": False,
+        "parametros": {
+            "model": "tts_models/multilingual/multi-dataset/xtts_v2",
+            "language": "es",
+            "device": "cuda",
+            "backend": "subprocess",
+            "python": "venv-tts/Scripts/python.exe",
         },
     },
     # Percepción estructurada. Deshabilitados por defecto porque arrastran

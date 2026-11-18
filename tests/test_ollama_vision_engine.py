@@ -50,6 +50,19 @@ class ImageAnalysisTest(unittest.TestCase):
         self.assertEqual(self.engine.nombre, "Ollama Vision")
         self.assertIsInstance(self.engine, VisionEngine)
 
+    @mock.patch.object(ov, "is_loaded", return_value=True)
+    def test_is_loaded_delega_en_api_ps(self, check) -> None:
+        # Lo pregunta el planificador de GPU: el modelo de visión sigue cargado
+        # entre documentos y no debe bloquear el siguiente por falta de hueco.
+        self.assertTrue(self.engine.is_loaded("qwen3-vl:8b"))
+        self.assertEqual(check.call_args.args[1], "qwen3-vl:8b")
+
+    @mock.patch.object(ov, "is_loaded", return_value=False)
+    def test_is_loaded_sin_modelo_usa_el_ultimo_analisis(self, check) -> None:
+        self.engine._last_used_model = "ultimo"
+        self.assertFalse(self.engine.is_loaded())
+        self.assertEqual(check.call_args.args[1], "ultimo")
+
     def test_analyze_image_envia_la_imagen_en_base64(self) -> None:
         resp = _response({"message": {"content": "texto visto"}})
         with mock.patch.object(ov.requests, "post", return_value=resp) as post:
@@ -103,7 +116,9 @@ class TextAnalysisTest(unittest.TestCase):
         resp = _response({"message": {"content": "ok"}})
         with mock.patch.object(ov.requests, "post", return_value=resp) as post:
             self.engine.analyze_text("c", "p")
-        self.assertEqual(post.call_args.kwargs["json"]["model"], "qwen3-vl:8b")
+        # Se compara con el default del módulo (no un literal): así el test no se
+        # rompe al actualizar el modelo de visión por defecto.
+        self.assertEqual(post.call_args.kwargs["json"]["model"], ov._DEFAULT_MODEL)
 
     def test_pagina_en_blanco_no_es_un_error(self) -> None:
         # Una página sin texto (o una imagen sin letras) devuelve vacío: no hay
@@ -148,6 +163,22 @@ class TextAnalysisTest(unittest.TestCase):
                 self.engine.analyze_text("c", "p")
         mensaje = str(ctx.exception)
         self.assertIn("razonando", mensaje)
+        self.assertIn("qwen2.5vl", mensaje)
+
+    def test_num_predict_gastado_razonando_lo_explica(self) -> None:
+        # Caso real del Cuaderno: con num_predict, el modelo razona y no responde.
+        engine = OllamaVisionEngine(num_predict=256)
+        resp = _response(
+            {
+                "message": {"content": "", "thinking": "pensando..." * 40},
+                "done_reason": "length",
+            }
+        )
+        with mock.patch.object(ov.requests, "post", return_value=resp):
+            with self.assertRaises(EngineError) as ctx:
+                engine.analyze_text("c", "p")
+        mensaje = str(ctx.exception)
+        self.assertIn("256", mensaje)
         self.assertIn("qwen2.5vl", mensaje)
 
     def test_sin_respuesta_por_contexto_lleno_lo_explica(self) -> None:
