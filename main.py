@@ -4,13 +4,69 @@ Crea la QApplication, muestra el splash (si existe el logo) y abre la ventana
 principal con su icono.
 """
 
+# ruff: noqa: E402 - deliberado: el bloque de crash handling de abajo se ejecuta
+# antes de importar la app, así que los imports siguientes quedan "no arriba".
+
+# --- inicio bloque crash handling ---
+import sys
+import os  # noqa: F401 - reservado: el hook de humo usa os.environ (PASO 2.4)
+import traceback
+import datetime
+import faulthandler
+from pathlib import Path
+
+_LOG_DIR = Path(__file__).resolve().parent / "logs"
+_LOG_DIR.mkdir(exist_ok=True)
+_CRASH_LOG = _LOG_DIR / "crash.log"
+
+# faulthandler: captura segfaults/abortos nativos (p.ej. 0xC0000409).
+# El fichero queda abierto durante toda la vida del proceso.
+_fault_file = open(_LOG_DIR / "faulthandler.log", "a", encoding="utf-8")
+faulthandler.enable(file=_fault_file, all_threads=True)
+
+def _install_excepthook() -> None:
+    """Registra traza completa en logs/crash.log y avisa al usuario una vez."""
+    _shown = {"done": False}
+
+    def _hook(exc_type, exc_value, exc_tb):
+        if issubclass(exc_type, (KeyboardInterrupt, SystemExit)):
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+            return
+
+        ts = datetime.datetime.now().isoformat(timespec="seconds")
+        tb_text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+
+        with open(_CRASH_LOG, "a", encoding="utf-8") as f:
+            f.write(f"\n{'=' * 70}\n{ts}\n{'=' * 70}\n{tb_text}\n")
+
+        if _shown["done"]:
+            return
+        _shown["done"] = True
+        try:
+            from PyQt6.QtWidgets import QApplication, QMessageBox
+            if QApplication.instance() is None:
+                return
+            box = QMessageBox()
+            box.setIcon(QMessageBox.Icon.Critical)
+            box.setWindowTitle("Imperator — Error inesperado")
+            box.setText("Se ha producido un error inesperado.\n\n"
+                        "Los detalles se han guardado en logs/crash.log.")
+            box.setDetailedText(tb_text)
+            box.setStandardButtons(QMessageBox.StandardButton.Ok)
+            box.exec()
+        except Exception:  # noqa: BLE001 - informar del fallo no debe fallar
+            traceback.print_exception(exc_type, exc_value, exc_tb, file=sys.stderr)
+
+    sys.excepthook = _hook
+
+_install_excepthook()
+# --- fin bloque crash handling ---
+
 import ctypes
 import logging
 import logging.handlers
-import sys
 import time
 from copy import deepcopy
-from pathlib import Path
 
 from PyQt6.QtCore import QEventLoop, QTimer
 from PyQt6.QtGui import QIcon, QPixmap
