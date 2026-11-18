@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import logging
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
+from PyQt6 import sip
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -24,16 +26,24 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
 )
 
+from core.frame_cache import FrameCache
 from core.frame_extractor import FrameExtractor
 from core.paths import PROJECT_ROOT
 from engines.base_engine import CANCEL_MESSAGE, EngineError, Perception
+from services import chat_engine as ce
+from services import preferences as prefs
+from services import assembler_params as asp
+from services import scoreboard as sb
+from services import sport_params as sp
 from services import video_understanding as vu
+from ui import discipline
 from ui.task_widget import TaskWidget
 from ui.workers import ThreadWorker, run_pool_task
 
@@ -42,10 +52,28 @@ logger = logging.getLogger(__name__)
 #: Nombre del fichero que se propone al guardar el informe.
 DEFAULT_REPORT_NAME = "informe_video.txt"
 
+#: Carpeta donde Comprensión deja su percepción estructurada (reutilizable por
+#: la pestaña Cuaderno, igual que el Cuaderno deja su informe para la Crónica).
+UNDERSTANDING_DIR = PROJECT_ROOT / "projects" / "comprension"
+
 #: Segundos que un fotograma espera a que la GPU tenga hueco antes de renunciar.
 #: Son trabajos de percepción previstos como cortos, pero si hay un lote en curso
 #: conviene ceder en vez de competir por la VRAM.
 PERCEPTION_WAIT_S = 60.0
+
+#: Ejemplo que se muestra en la caja de contexto (una línea por dato).
+CONTEXT_PLACEHOLDER = (
+    "Fecha: 9/10/2026 a las 20:30\n"
+    "Lugar: Polideportivo de Muskiz\n"
+    "Equipos: PAN MENESA MUSKIZ camiseta azul (local) vs BAIGENE CORAZONISTAS "
+    "camisetas rojas (visitante).\n"
+    "Alineación PAN MENESA MUSKIZ: 2 ARANE PEREZ HERNANDEZ, 5 IRIA MORAGA GARCIA, "
+    "6 JUGATX FERNANDEZ GONZALEZ...\n"
+    "Alineación BAIGENE CORAZONISTAS: 3 AMANDA OTERO BENITO, 8 PAULA GARCIA "
+    "VALENCIA, 9 AITANA ESTEBAN GARCIA...\n"
+    "Marcador final: 42-29\n"
+    "Nota: faltas del segundo tiempo del minuto 30 al 40, por error de cámara."
+)
 
 
 class UnderstandingWorker(ThreadWorker):
@@ -63,6 +91,10 @@ class UnderstandingWorker(ThreadWorker):
         transcription_engine=None,
         chat_engine=None,
         model: str | None = None,
+        clip_labels: str = "",
+        context: str = "",
+        instructions: str = "",
+        out_dir: Path | None = None,
         scheduler=None,
         parent=None,
     ) -> None:
@@ -76,6 +108,16 @@ class UnderstandingWorker(ThreadWorker):
         self._transcription_engine = transcription_engine
         self._chat_engine = chat_engine
         self._model = model
+        #: Vocabulario que puntúa CLIP (lista separada por comas). CLIP no describe:
+        #: elige entre estas etiquetas, así que con genéricas da ruido.
+        self._clip_labels = str(clip_labels or "")
+        #: Datos del partido (fecha, lugar, equipos, alineación…). Van al resumen y
+        #: al comprension.json para que el Cuaderno y la Crónica los reutilicen.
+        self._context = str(context or "")
+        #: Instrucciones del usuario (qué destacar): el resumen las prioriza.
+        self._instructions = str(instructions or "")
+        #: Carpeta donde dejar la percepción estructurada (si se indica).
+        self._out_dir = Path(out_dir) if out_dir is not None else None
         self._scheduler = scheduler
 
     # ---- Pipeline --------------------------------------------------
@@ -98,9 +140,15 @@ class UnderstandingWorker(ThreadWorker):
 
         notices: list[str] = []
         frames = self._analyze_frames(instantes, plan, notices)
+        marcador_lecturas = self._read_scoreboard(duracion)
         transcript = self._transcribe(plan, notices)
-        summary = self._summarize(plan, frames, transcript, notices)
-        return vu.build_report(plan, frames, transcript, summary, tuple(notices))
+        summary = self._summarize(plan, frames, transcript, notices, marcador_lecturas)
+        self._save_structured(
+            plan, frames, transcript, summary, duracion, notices, marcador_lecturas
+        )
+        return vu.build_report(
+            plan, frames, transcript, summary, tuple(notices), context=self._context
+        )
 
     # ---- Fases -----------------------------------------------------
 
@@ -131,29 +179,31 @@ class UnderstandingWorker(ThreadWorker):
 
         frames: list[vu.FrameReport] = []
         total = len(instantes)
-        with tempfile.TemporaryDirectory(prefix="imperator_video_") as tmp:
-            for indice, instante in enumerate(instantes):
+        for indice, instante in enumerate(instantes):
+            self._check_cancel()
+            # Caché: el mismo fotograma (vídeo+instante) no se re-extrae.
+            destino = self._extractor.cached_frame(self._video, instante)
+            percepcion = Perception()
+            for motor in motores:
                 self._check_cancel()
-                destino = Path(tmp) / f"frame_{indice:04d}.png"
-                self._extractor.extract_frame(self._video, instante, destino)
-                percepcion = Perception()
-                for motor in motores:
-                    self._check_cancel()
-                    percepcion = percepcion.merge(self._perceive(motor, destino))
-                frames.append(
-                    vu.FrameReport(timestamp=instante, summary=percepcion.summary())
-                )
-                self.progress.emit(
-                    int((indice + 1) / max(1, total) * 70),
-                    f"Fotograma {indice + 1}/{total}",
-                )
+                percepcion = percepcion.merge(self._perceive(motor, destino))
+            frames.append(
+                vu.FrameReport(timestamp=instante, summary=percepcion.summary())
+            )
+            self.progress.emit(
+                int((indice + 1) / max(1, total) * 70),
+                f"Fotograma {indice + 1}/{total}",
+            )
         return frames
 
     def _perceive(self, motor, frame_path: Path) -> Perception:
         """Pasa un fotograma por un motor, respetando el planificador de GPU."""
         etiqueta = f"percepcion:{motor.id}"
+        # Solo CLIP usa ``prompt``: es su vocabulario de etiquetas (lista separada
+        # por comas). YOLO y el OCR lo ignoran.
+        prompt = self._clip_labels if getattr(motor, "id", "") == "clip" else ""
         if self._scheduler is None:
-            return motor.perceive(frame_path)
+            return motor.perceive(frame_path, prompt)
         # Los trabajos de percepción son cortos: se les da un margen para
         # esperar si la GPU está ocupada con un lote (vídeo, imagen).
         with self._scheduler.job(etiqueta, wait=PERCEPTION_WAIT_S) as permitido:
@@ -163,7 +213,43 @@ class UnderstandingWorker(ThreadWorker):
                     etiqueta,
                 )
                 return Perception()
-            return motor.perceive(frame_path)
+            return motor.perceive(frame_path, prompt)
+
+    def _read_scoreboard(self, duracion: float) -> list[tuple[float, str]]:
+        """Lee el marcador por OCR con muestreo denso (cada ~2 s), separado de la visión.
+
+        Devuelve ``[]`` si no hay OCR disponible. El OCR se hace sobre un recorte de
+        la franja superior, donde suele estar el marcador: es más rápido y evita
+        confundir el tanteo con otros textos de la escena.
+        """
+        ocr = self._ocr_engine
+        if ocr is None or not ocr.is_available():
+            return []
+        instantes = vu.scoreboard_timestamps(duracion)
+        if not instantes:
+            return []
+        lecturas: list[tuple[float, str]] = []
+        total = len(instantes)
+        with tempfile.TemporaryDirectory(prefix="imperator_marcador_") as tmp:
+            for indice, t in enumerate(instantes):
+                self._check_cancel()
+                png = Path(tmp) / f"marcador_{indice:05d}.png"
+                try:
+                    self._extractor.extract_cropped_frame(
+                        self._video, t, png, crop=vu.SCOREBOARD_CROP
+                    )
+                    percepcion = ocr.perceive(png, "")
+                    texto = (percepcion.text or "").strip()
+                except EngineError as exc:
+                    logger.debug("Comprensión: marcador t=%gs falló: %s", t, exc)
+                    continue
+                if texto:
+                    lecturas.append((t, texto))
+                self.progress.emit(
+                    70 + int((indice + 1) / max(1, total) * 5),
+                    f"Leyendo marcador {indice + 1}/{total}…",
+                )
+        return lecturas
 
     def _transcribe(
         self, plan: vu.UnderstandingPlan, notices: list[str]
@@ -193,6 +279,7 @@ class UnderstandingWorker(ThreadWorker):
         frames: list[vu.FrameReport],
         transcript: str,
         notices: list[str],
+        marcador_lecturas: list[tuple[float, str]] | None = None,
     ) -> str:
         motor = self._chat_engine
         if motor is None or not motor.is_available():
@@ -207,13 +294,32 @@ class UnderstandingWorker(ThreadWorker):
             )
             or "(sin anotaciones)"
         )
-        prompt = vu.aggregate_prompt(plan, len(frames), bool(transcript.strip()))
+        # El marcador real (derivado del texto del OCR) se le pasa al resumen como
+        # dato duro: sin él, el modelo «ve» un gol en cada anotación. Se prefiere
+        # la lectura densa del marcador (cada ~2 s); si no hay, la de los fotogramas.
+        lecturas = marcador_lecturas or [
+            (frame.timestamp, frame.summary) for frame in frames
+        ]
+        marcador = sb.marcador_block(lecturas)
+        prompt = vu.aggregate_prompt(
+            plan,
+            len(frames),
+            bool(transcript.strip()),
+            self._context,
+            marcador,
+            self._instructions,
+        )
+        # El prompt del resumen se acota: la transcripción de un partido largo (y
+        # las anotaciones) llenaban la ventana y Ollama respondía «se agotó el
+        # espacio de la respuesta». Se recorta por palabra y se avisa con » […]».
         mensaje = {
             "role": "user",
             "content": (
                 f"{prompt}\n"
-                f"--- ANOTACIONES DE FOTOGRAMAS ---\n{anotaciones}\n\n"
-                f"--- TRANSCRIPCIÓN DEL AUDIO ---\n{transcript or '(sin transcripción)'}"
+                "--- ANOTACIONES DE FOTOGRAMAS ---\n"
+                f"{vu.clamp_text(anotaciones, vu.MAX_ANNOTATIONS_CHARS)}\n\n"
+                "--- TRANSCRIPCIÓN DEL AUDIO ---\n"
+                f"{vu.clamp_text(transcript, vu.MAX_TRANSCRIPT_CHARS) or '(sin transcripción)'}"
             ),
         }
         self.progress.emit(85, "Resumiendo el vídeo con el modelo...")
@@ -221,6 +327,49 @@ class UnderstandingWorker(ThreadWorker):
         summary = motor.chat([mensaje], model=self._model)
         self.progress.emit(95, "Montando el informe...")
         return summary
+
+    def _save_structured(
+        self,
+        plan: vu.UnderstandingPlan,
+        frames: list[vu.FrameReport],
+        transcript: str,
+        summary: str,
+        duracion: float,
+        notices: list[str],
+        marcador_lecturas: list[tuple[float, str]] | None = None,
+    ) -> None:
+        """Deja la percepción estructurada para que el Cuaderno la reutilice."""
+        if self._out_dir is None:
+            return
+        lecturas = marcador_lecturas or []
+        serie = sb.score_series(lecturas)
+        try:
+            vu.save_understanding(
+                self._out_dir / vu.UNDERSTANDING_FILENAME,
+                vu.understanding_to_dict(
+                    video_path=str(self._video),
+                    video_name=self._video.name,
+                    duration_s=duracion,
+                    plan=plan,
+                    frames=frames,
+                    transcript=transcript,
+                    summary=summary,
+                    notices=tuple(notices),
+                    context=self._context,
+                    marcador=[
+                        {"t_s": p.t_s, "izquierda": p.izquierda, "derecha": p.derecha}
+                        for p in serie
+                    ],
+                    goles=[
+                        {"t_s": g.t_s, "lado": g.lado, "marcador": g.marcador}
+                        for g in sb.goals_from_series(serie)
+                    ],
+                    juego_inicio=sb.game_start(lecturas),
+                    descanso=sb.half_time(lecturas),
+                ),
+            )
+        except OSError as exc:
+            logger.warning("Comprensión: no se pudo guardar la percepción: %s", exc)
 
     def _check_cancel(self) -> None:
         if self.isInterruptionRequested():
@@ -233,12 +382,34 @@ class UnderstandingWidget(TaskWidget):
     def __init__(self, engine_manager, parent=None) -> None:
         super().__init__(parent)
         self._engine_manager = engine_manager
+        self._prefs = prefs.PrefsStore(getattr(engine_manager, "config_manager", None))
         self._video_path: Path | None = None
         self._last_report = ""
         self._model_task = None
+        #: Carpeta de la sesión: donde se deja la percepción estructurada.
+        self._session_dir: Path | None = None
         self._build_ui()
+        self._restore_instructions()
         self._populate_models()
         self._refresh_availability()
+        # La disciplina es compartida: se restaura y se sincroniza en vivo.
+        self._restore_discipline()
+        discipline.BUS.changed.connect(self._on_sport_changed)
+
+    def _on_sport_picked(self, _index: int) -> None:
+        """Guarda la disciplina elegida y la propaga a las demás pestañas."""
+        clave = self._cmb_sport.currentData()
+        if not clave:
+            return
+        self._prefs.set(prefs.SPORT, clave)
+        discipline.BUS.changed.emit(str(clave))
+
+    def _on_sport_changed(self, clave: str) -> None:
+        """Aplica la disciplina elegida en otra pestaña (sin reemitir)."""
+        discipline.apply(self._cmb_sport, str(clave))
+
+    def _restore_discipline(self) -> None:
+        discipline.apply(self._cmb_sport, discipline.saved(self._prefs))
 
     # ---- Construcción de la UI -------------------------------------
 
@@ -270,10 +441,41 @@ class UnderstandingWidget(TaskWidget):
         options_row.addWidget(self._max_frames)
         options_row.addWidget(QLabel("fotogramas"))
 
+        self._cmb_language = QComboBox()
+        for code, label in asp.LANGUAGES:
+            self._cmb_language.addItem(label, code)
+        self._cmb_language.setToolTip(
+            "Idioma del audio y del resumen. «Auto» lo detecta el motor de\n"
+            "transcripción (Whisper) y el resumen sale en ese idioma; con una\n"
+            "grada ruidosa, Whisper puede confundirlo con inglés: fija «Español»."
+        )
+        language_row = QHBoxLayout()
+        language_row.addWidget(QLabel("Idioma:"))
+        language_row.addWidget(self._cmb_language)
+        language_row.addStretch(1)
+
+        self._cmb_sport = QComboBox()
+        discipline.fill(self._cmb_sport)
+        self._cmb_sport.setToolTip(
+            "Disciplina del vídeo: sus reglas y vocabulario se le pasan al resumen\n"
+            "(sin esto confunde deportes: p. ej. llama «voleibol» a un balonmano).\n"
+            "Es la MISMA en Cuaderno, Crónica y Comprensión: cambiarla aquí la\n"
+            "cambia en las demás."
+        )
+        self._cmb_sport.currentIndexChanged.connect(self._on_sport_picked)
+        sport_row = QHBoxLayout()
+        sport_row.addWidget(QLabel("Disciplina:"))
+        sport_row.addWidget(self._cmb_sport)
+        sport_row.addStretch(1)
+
+        # Por defecto, TODAS las señales activadas: es la opción de más calidad
+        # (cada motor que falte se omite avisando en el informe).
         self._objects = QCheckBox("Objetos (YOLO)")
         self._objects.setChecked(True)
         self._labels = QCheckBox("Etiquetas (CLIP)")
+        self._labels.setChecked(True)
         self._ocr = QCheckBox("Texto en pantalla (OCR)")
+        self._ocr.setChecked(True)
         self._transcribe = QCheckBox("Transcribir audio (Whisper)")
         self._transcribe.setChecked(True)
 
@@ -281,6 +483,32 @@ class UnderstandingWidget(TaskWidget):
         for widget in (self._objects, self._labels, self._ocr, self._transcribe):
             signals_row.addWidget(widget)
         signals_row.addStretch(1)
+
+        self._clip_labels = QLineEdit()
+        self._clip_labels.setText(vu.clip_labels_text())
+        self._clip_labels.setToolTip(
+            "Vocabulario que puntúa CLIP (lista separada por comas). CLIP no describe:\n"
+            "elige entre estas etiquetas. Lo recomendado: etiquetas CONCRETAS y\n"
+            "separables del contenido (deporte, cine...), sin nombres ni colores.\n"
+            "Genéricas («calle, coche, animal») o dos casi iguales dan ruido."
+        )
+        clip_row = QHBoxLayout()
+        clip_row.addWidget(QLabel("Etiquetas CLIP:"))
+        clip_row.addWidget(self._clip_labels, 1)
+        layout_clip = clip_row
+
+        self._context = QPlainTextEdit()
+        self._context.setPlaceholderText(CONTEXT_PLACEHOLDER)
+        self._context.setFixedHeight(72)
+        self._context.setToolTip(
+            "Datos del partido (fecha, lugar, equipos, alineación, marcador, notas),\n"
+            "una línea por dato. Se toman como ciertos: el resumen nombra con ellos y\n"
+            "quedan guardados en comprension.json, así el Cuaderno y la Crónica los\n"
+            "reutilizan sin volver a escribirlos."
+        )
+        context_layout = QVBoxLayout()
+        context_layout.addWidget(QLabel("Contexto (datos del partido, opcional):"))
+        context_layout.addWidget(self._context)
 
         self._model = QComboBox()
         model_row = QHBoxLayout()
@@ -311,9 +539,45 @@ class UnderstandingWidget(TaskWidget):
         layout = QVBoxLayout(self)
         layout.addLayout(video_row)
         layout.addLayout(options_row)
+        layout.addLayout(sport_row)
+        layout.addLayout(language_row)
+        layout.addLayout(context_layout)
+        # Instrucciones para la IA: qué quiere el usuario que destaque el resumen.
+        instr_row = QHBoxLayout()
+        instr_row.addWidget(QLabel("Instrucciones para la IA (qué destacar):"))
+        instr_row.addStretch(1)
+        self._btn_ejemplo_ia = QPushButton("Poner ejemplo (balonmano)")
+        self._btn_ejemplo_ia.setToolTip(
+            "Rellena el ejemplo recomendado: presentar la alineación al principio\n"
+            "(mientras calientan) y después centrarse en goles, paradas del portero\n"
+            "y lanzamientos de 7 metros. Edítalo a tu gusto."
+        )
+        self._btn_ejemplo_ia.clicked.connect(
+            lambda: self._txt_instructions.setPlainText(sp.INSTRUCTIONS_EXAMPLE)
+        )
+        instr_row.addWidget(self._btn_ejemplo_ia)
+        self._txt_instructions = QPlainTextEdit()
+        self._txt_instructions.setFixedHeight(72)
+        self._txt_instructions.setPlaceholderText(sp.INSTRUCTIONS_EXAMPLE)
+        self._txt_instructions.setToolTip(
+            "Escribe qué quieres que destaque el resumen (p. ej. goles, paradas y\n"
+            "7 metros). El Cuaderno y la Crónica heredan este material."
+        )
+        layout.addLayout(instr_row)
+        layout.addWidget(self._txt_instructions)
         layout.addLayout(signals_row)
+        layout.addLayout(layout_clip)
         layout.addLayout(model_row)
         layout.addWidget(self._availability)
+        # Esta pestaña «echa una mano» a la Crónica: su comprension.json lo reutilizan
+        # el Cuaderno y la Crónica sin volver a mirar el vídeo.
+        self._help_cronica = QLabel(
+            "Lo que analices aquí queda en comprension.json: el Cuaderno lo reutiliza "
+            "(sin repetir YOLO/CLIP/OCR/Whisper) y la Crónica lo usa para escribir la "
+            "crónica sin volver a analizar el vídeo."
+        )
+        self._help_cronica.setWordWrap(True)
+        layout.addWidget(self._help_cronica)
         layout.addLayout(buttons_row)
         layout.addWidget(self._result, 1)
         layout.addWidget(self._status)
@@ -358,7 +622,7 @@ class UnderstandingWidget(TaskWidget):
             "labels": manager.get_engine("clip"),
             "ocr": manager.get_engine("paddle_ocr"),
             "transcription": manager.get_engine("whisper"),
-            "chat": manager.get_engine("ollama"),
+            "chat": ce.preferred_chat_engine(manager),
         }
 
     def set_engine_manager(self, engine_manager) -> None:
@@ -370,7 +634,7 @@ class UnderstandingWidget(TaskWidget):
     # ---- Modelos ---------------------------------------------------
 
     def _populate_models(self) -> None:
-        engine = self._engine_manager.get_engine("ollama")
+        engine = ce.preferred_chat_engine(self._engine_manager)
         self._model.clear()
         if engine is None:
             self._model.setEnabled(False)
@@ -388,7 +652,9 @@ class UnderstandingWidget(TaskWidget):
         self._on_models([])
 
     def _on_models(self, models: list) -> None:
-        engine = self._engine_manager.get_engine("ollama")
+        if sip.isdeleted(self):
+            return
+        engine = ce.preferred_chat_engine(self._engine_manager)
         default = getattr(engine, "default_model", None)
         self._model.clear()
         for nombre in models or []:
@@ -402,16 +668,38 @@ class UnderstandingWidget(TaskWidget):
 
     def _choose_video(self) -> None:
         ruta, _ = QFileDialog.getOpenFileName(
-            self,
-            "Elegir vídeo",
-            "",
-            "Vídeos (*.mp4 *.mkv *.mov *.avi *.webm *.m4v);;Todos los archivos (*)",
+            self, "Elegir vídeo", "", vu.VIDEO_FILTER_ALL
         )
         if not ruta:
             return
         self._video_path = Path(ruta)
         self._video_label.setText(self._video_path.name)
+        # Vídeo nuevo -> carpeta de sesión nueva (no mezclar percepciones).
+        self._session_dir = None
         self._set_status("Vídeo listo para analizar.")
+
+    def _out_dir(self) -> Path:
+        """Carpeta donde se deja la percepción estructurada (una por vídeo)."""
+        destino = self._session_dir
+        if destino is None:
+            marca = datetime.now().strftime("%Y%m%d_%H%M%S")
+            stem = self._video_path.stem if self._video_path else "comprension"
+            destino = UNDERSTANDING_DIR / f"{stem}_{marca}"
+            self._session_dir = destino
+        destino.mkdir(parents=True, exist_ok=True)
+        return destino
+
+    def _restore_instructions(self) -> None:
+        """Recupera las instrucciones guardadas (o pone el ejemplo de balonmano)."""
+        guardado = self._prefs.get_str(prefs.UNDERSTANDING_INSTRUCTIONS)
+        self._txt_instructions.setPlainText(
+            guardado if (guardado or "").strip() else sp.INSTRUCTIONS_EXAMPLE
+        )
+
+    def _audio_language(self) -> str | None:
+        """Idioma del audio/resumen elegido (``None`` = automático)."""
+        code = str(self._cmb_language.currentData() or "auto")
+        return None if code == "auto" else code
 
     def _build_plan(self) -> vu.UnderstandingPlan:
         return vu.UnderstandingPlan(
@@ -421,6 +709,8 @@ class UnderstandingWidget(TaskWidget):
             do_labels=self._labels.isChecked(),
             do_ocr=self._ocr.isChecked(),
             transcribe=self._transcribe.isChecked(),
+            sport=self._cmb_sport.currentData(),
+            language=self._audio_language(),
         ).normalized()
 
     def _validation_error(self, plan: vu.UnderstandingPlan) -> str | None:
@@ -457,6 +747,8 @@ class UnderstandingWidget(TaskWidget):
             return
 
         motores = self._resolve_engines()
+        instructions = self._txt_instructions.toPlainText()
+        self._prefs.set(prefs.UNDERSTANDING_INSTRUCTIONS, instructions)
         self._set_status("Analizando el vídeo...")
         self._result.clear()
         self._last_report = ""
@@ -465,13 +757,17 @@ class UnderstandingWidget(TaskWidget):
         self._worker = UnderstandingWorker(
             self._video_path,
             plan,
-            extractor=FrameExtractor(),
+            extractor=FrameExtractor(cache=FrameCache()),
             objects_engine=motores["objects"],
             labels_engine=motores["labels"],
             ocr_engine=motores["ocr"],
             transcription_engine=motores["transcription"],
             chat_engine=motores["chat"],
             model=self._model.currentData(),
+            clip_labels=self._clip_labels.text(),
+            context=self._context.toPlainText(),
+            instructions=instructions,
+            out_dir=self._out_dir(),
             scheduler=self._scheduler_hint(),
             parent=self,
         )
@@ -497,7 +793,10 @@ class UnderstandingWidget(TaskWidget):
     def _on_result(self, report: str) -> None:
         self._last_report = report or ""
         self._result.setPlainText(self._last_report)
-        self._set_status("Informe listo.")
+        self._set_status(
+            "Informe listo. Percepción guardada para el Cuaderno "
+            f"({vu.UNDERSTANDING_FILENAME})."
+        )
         self._on_finished()
 
     def _on_cancelled(self, message: str) -> None:
@@ -543,7 +842,13 @@ class UnderstandingWidget(TaskWidget):
             self._labels,
             self._ocr,
             self._transcribe,
+            self._clip_labels,
+            self._cmb_sport,
+            self._cmb_language,
             self._model,
+            self._context,
+            self._txt_instructions,
+            self._btn_ejemplo_ia,
         )
 
     def _busy_only_widgets(self) -> tuple:
