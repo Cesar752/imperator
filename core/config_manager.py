@@ -12,13 +12,14 @@ viven en ``config/*.example.json``.
 import json
 import logging
 import os
-import tempfile
 import threading
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+
+from services.atomic_io import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -589,18 +590,9 @@ class ConfigManager:
         JSON truncado si una de las dos hace ``os.replace`` mientras la otra
         escribe). El ``os.replace`` final sigue siendo atómico.
         """
-        path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, tmp_name = tempfile.mkstemp(
-            dir=str(path.parent), prefix=f"{path.name}.", suffix=".tmp"
-        )
-        tmp = Path(tmp_name)
         try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as fh:
-                json.dump(data, fh, ensure_ascii=False, indent=2)
-                fh.write("\n")
-            os.replace(tmp, path)
+            atomic_write_json(path, data)
         except (OSError, TypeError, ValueError) as exc:
-            # Limpiar el temporal ante cualquier fallo (I/O o datos no
-            # serializables) para no dejar basura en config/.
-            tmp.unlink(missing_ok=True)
+            # El helper ya borra el temporal ante cualquier fallo (I/O o datos
+            # no serializables): aquí solo se traduce a ConfigError.
             raise ConfigError(f"No se pudo escribir el archivo '{path}': {exc}") from exc

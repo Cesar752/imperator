@@ -26,6 +26,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from services.atomic_io import atomic_write_json
 from services.sport_params import INSTRUCTIONS_LABEL, sport_primer
 
 #: Separación por defecto entre fotogramas analizados (segundos). Por defecto se
@@ -580,8 +581,7 @@ def understanding_to_dict(
 def save_understanding(path: str | Path, data: dict) -> Path:
     """Escribe el informe estructurado (JSON) en ``path`` y devuelve su ruta."""
     destino = Path(path)
-    destino.parent.mkdir(parents=True, exist_ok=True)
-    destino.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(destino, data)
     return destino
 
 

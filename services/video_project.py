@@ -39,6 +39,7 @@ from datetime import datetime
 from pathlib import Path
 
 from services import video_script as vscript
+from services.atomic_io import atomic_write_json, atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +207,7 @@ def find_project(name: str, root: str | Path | None = None) -> Project | None:
 def save_script(project: Project, script: vscript.Script) -> Path:
     """Escribe ``guion.json`` y actualiza el manifiesto; devuelve la ruta del guion."""
     project.directory.mkdir(parents=True, exist_ok=True)
-    project.script_path.write_text(script.to_json(), encoding="utf-8")
+    atomic_write_text(project.script_path, script.to_json())
     manifest = {
         "name": project.name,
         "title": script.title,
@@ -216,9 +217,7 @@ def save_script(project: Project, script: vscript.Script) -> Path:
         "base_seed": project.base_seed,
         "updated": datetime.now().isoformat(timespec="seconds"),
     }
-    project.manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    atomic_write_json(project.manifest_path, manifest)
     return project.script_path
 
 

@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from services import roster_params as rp
+from services.atomic_io import atomic_write_json
 from services.sport_params import (  # noqa: F401 - SPORT_PRESETS/sport_primer se reexportan
     INSTRUCTIONS_LABEL,
     SPORT_PRESETS,
@@ -566,8 +567,7 @@ def informe_to_dict(
 def save_informe(path: str | Path, data: dict) -> Path:
     """Escribe el informe (JSON) en ``path`` y devuelve su ruta."""
     destino = Path(path)
-    destino.parent.mkdir(parents=True, exist_ok=True)
-    destino.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(destino, data)
     return destino
 
 
