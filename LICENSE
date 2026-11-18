@@ -1,0 +1,16 @@
+TODO: elegir licencia
+
+Todavía no se ha decidido la licencia de Imperator. Hasta que se elija, este
+archivo es un marcador de posición y NO concede ningún derecho de uso,
+copia, modificación ni distribución.
+
+Opciones que se barajaron (elegir una y sustituir este archivo por su texto
+oficial):
+
+  - MIT
+  - Apache-2.0
+  - GPL-3.0
+  - Propietaria (todos los derechos reservados)
+
+Nota: al elegir licencia hay que reflejarla también en pyproject.toml (campo
+``license``), que hoy se omite a propósito.

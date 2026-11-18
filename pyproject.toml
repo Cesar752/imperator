@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "imperator"
+version = "0.1.0"
+description = "Plataforma de escritorio (PyQt6) que orquesta motores de IA locales y remotos: chat, imagen, vídeo, voz, documentos, cuaderno y crónica."
+readme = "README.md"
+requires-python = ">=3.12"
+# license: pendiente de decidir (ver LICENSE, hoy con un TODO). No se declara
+# para no afirmar una licencia que no está elegida.
+authors = [{ name = "César Esti" }]
+keywords = ["pyqt6", "ollama", "comfyui", "tts", "video", "desktop"]
+classifiers = [
+    "Environment :: X11 Applications :: Qt",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: Microsoft :: Windows",
+]
+
+dependencies = [
+    "PyQt6>=6.6.0,<7",
+    "python-dotenv>=1.0.0,<2",
+    "requests>=2.31.0,<3",
+    "websocket-client>=1.6.0,<2",
+    "PyMuPDF>=1.24.0,<2",
+    "piper-tts>=1.8.0,<2",
+    "imageio-ffmpeg>=0.6.0,<1",
+    "faster-whisper>=1.0.0,<2",
+    "kokoro>=0.9.4,<1",
+    "soundfile>=0.12.0,<1",
+    "numpy>=1.26.0,<3",
+]
+
+[project.optional-dependencies]
+# Solo desarrollo: no son dependencias de runtime (PyInstaller no va en el .exe).
+dev = [
+    "ruff==0.16.9",
+    "pyinstaller>=6.0,<7",
+]
+
+[project.scripts]
+imperator = "main:main"
+
+[tool.setuptools]
+# Proyecto plano (sin src/): se declaran los paquetes que ya existen.
+py-modules = ["main"]
+packages = ["core", "engines", "services", "tasks", "tools", "ui"]
+
+# El lint se configura en ruff.toml (un único sitio); no se duplica aquí.
