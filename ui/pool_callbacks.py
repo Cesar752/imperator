@@ -24,11 +24,13 @@ class PoolCallbackReceiver(QObject):
     con él) y como fuente del token ``_generation``.
     """
 
-    def __init__(self, owner, on_value, on_error) -> None:
+    def __init__(self, owner, on_value, on_error, context=None) -> None:
         super().__init__(owner)
         self._owner = owner
         self._on_value = on_value
         self._on_error = on_error
+        #: Dato extra para callbacks indexados por motor (p. ej. ``engine_id``).
+        self._context = context
         self._token = 0
 
     def arm(self) -> int:
@@ -39,12 +41,16 @@ class PoolCallbackReceiver(QObject):
     def handle(self, value) -> None:
         """Entrega ``value`` al manejador del widget si sigue vivo y vigente."""
         if self._vivo():
-            self._on_value(self._token, value)
+            self._on_value(self._arg(), value)
 
     def handle_error(self, message) -> None:
         """Entrega el error al manejador del widget si sigue vivo y vigente."""
         if self._vivo():
-            self._on_error(self._token, message)
+            self._on_error(self._arg(), message)
+
+    def _arg(self):
+        """Primer argumento del manejador: el contexto o el token del widget."""
+        return self._context if self._context is not None else self._token
 
     def _vivo(self) -> bool:
         if sip.isdeleted(self._owner):

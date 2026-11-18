@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
 
 from core.engine_manager import EngineManager
 from engines.base_engine import Engine
+from ui.pool_callbacks import PoolCallbackReceiver
 from ui.workers import PoolTask, run_pool_task
 
 logger = logging.getLogger(__name__)
@@ -270,6 +271,10 @@ class EnginesDialog(QDialog):
         self._row_to_id: dict[int, str] = {}
         self._avail_task = None
         self._models_task = None
+        #: Token que descarta comprobaciones de un listado anterior (C2).
+        self._generation = 0
+        #: Receptor del pool por motor (vive con el diálogo).
+        self._rx: dict[str, PoolCallbackReceiver] = {}
         self._build_ui()
         self._populate()
         self._check_all_availability()
@@ -318,6 +323,7 @@ class EnginesDialog(QDialog):
     # ---- Poblado de la tabla ------------------------------------
 
     def _populate(self) -> None:
+        self._generation += 1
         self._table.setRowCount(0)
         self._row_to_id.clear()
         for config in self._manager.list_configs():
@@ -367,11 +373,24 @@ class EnginesDialog(QDialog):
     ) -> PoolTask:
         """Comprueba ``is_available()`` en segundo plano (etiquetando el motor)."""
         handler = on_result or self._on_availability
+        rx = self._receptor(engine_id, handler, self._on_availability_error)
         return run_pool_task(
             engine.is_available,
-            on_result=lambda ok, eid=engine_id: handler(eid, ok),
-            on_error=lambda msg, eid=engine_id: self._on_availability_error(eid, msg),
+            on_result=rx.handle,
+            on_error=rx.handle_error,
         )
+
+    def _receptor(self, engine_id: str, on_value, on_error) -> PoolCallbackReceiver:
+        """Receptor del pool para ``engine_id`` (C2).
+
+        El ``engine_id`` viaja como contexto del receptor, no capturado en un
+        cierre: así el callback es un método ligado a un ``QObject`` hijo y Qt
+        rompe la conexión cuando el diálogo se destruye.
+        """
+        rx = PoolCallbackReceiver(self, on_value, on_error, context=engine_id)
+        self._rx[engine_id] = rx
+        rx.arm()
+        return rx
 
     def _on_availability(self, engine_id: str, ok: bool) -> None:
         if sip.isdeleted(self):
@@ -500,10 +519,11 @@ class EnginesDialog(QDialog):
             QMessageBox.warning(self, "Ver modelos", f"No se pudo construir el motor '{engine_id}'.")
             return
         self._status.setText(f"Obteniendo modelos de '{engine_id}'…")
+        rx = self._receptor(engine_id, self._on_models, self._on_models_error)
         self._models_task = run_pool_task(
             instance.list_models,
-            on_result=lambda models, eid=engine_id: self._on_models(eid, models),
-            on_error=lambda msg, eid=engine_id: self._on_models_error(eid, msg),
+            on_result=rx.handle,
+            on_error=rx.handle_error,
         )
 
     def _on_models(self, engine_id: str, models: list) -> None:
