@@ -11,13 +11,12 @@ try:
 except ImportError:  # pragma: no cover - dependencia declarada en requirements.txt
     imageio_ffmpeg = None
 
+from core.paths import OUTPUT
 from core.subprocess_utils import no_window_kwargs
 from engines.base_engine import EngineError
 
 logger = logging.getLogger(__name__)
 
-# Raíz del proyecto (C:\Imperator); output/ cuelga de aquí.
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Mapeo del estilo de subtítulos (claves internas de la UI) a ASS.
 _POSITION_ALIGNMENT = {"bottom": 2, "middle": 5, "top": 8}
@@ -74,7 +73,7 @@ class VideoAssembler:
 
     def __init__(self, output_dir: str | Path | None = None) -> None:
         self._output_dir = (
-            Path(output_dir) if output_dir is not None else PROJECT_ROOT / "output"
+            Path(output_dir) if output_dir is not None else OUTPUT
         )
 
     @property

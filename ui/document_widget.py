@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
+from core.paths import OUTPUT
 from engines.base_engine import CANCEL_MESSAGE, Engine, EngineError
 from services import document_params as dp
 from services import document_pipeline as dpl
@@ -996,7 +997,7 @@ class DocumentWidget(TaskWidget):
     def _save_as(self) -> None:
         if not self._result_text:
             return
-        output_dir = Path(__file__).resolve().parent.parent / "output"
+        output_dir = OUTPUT
         default = str(output_dir / "resultado.txt")
         target, _ = QFileDialog.getSaveFileName(
             self, "Guardar resultado como...", default, "Texto (*.txt)"

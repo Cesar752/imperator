@@ -15,3 +15,9 @@ ASSETS = PROJECT_ROOT / "assets"
 # Carpeta donde los motores dejan lo que generan (imágenes, vídeos, audios, SRT).
 # Tiene política de retención: ver services/output_cleanup.py.
 OUTPUT = PROJECT_ROOT / "output"
+
+#: Música de fondo del Ensamblador (MP3 del usuario; gitignored).
+MUSIC = PROJECT_ROOT / "music"
+
+#: Caché de fotogramas extraídos de vídeo (core/frame_cache.py).
+CACHE = PROJECT_ROOT / "cache"

@@ -32,6 +32,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.paths import OUTPUT
 from core.subprocess_utils import no_window_kwargs
 from engines.base_engine import EngineError
 
@@ -164,7 +165,7 @@ class CliRunner:
     # ---- Invocación ------------------------------------------------
 
     def _default_output_dir(self) -> Path:
-        return self._output_dir if self._output_dir is not None else PROJECT_ROOT / "output"
+        return self._output_dir if self._output_dir is not None else OUTPUT
 
     def prepare(self, values: dict) -> dict:
         """Completa ``values`` con ``output_dir`` y ``output`` ya resueltos.

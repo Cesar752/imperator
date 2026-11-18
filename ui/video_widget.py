@@ -43,6 +43,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.frame_extractor import FrameExtractor
+from core.paths import OUTPUT
 from core.memory import release_memory
 from core.subprocess_utils import no_window_kwargs
 from core.video_assembler import VideoAssembler
@@ -1200,7 +1201,7 @@ class VideoWidget(TaskWidget):
     @staticmethod
     def _output_dir() -> Path:
         """Carpeta ``output/`` (para abrir los diálogos donde suelen estar los MP4)."""
-        return Path(__file__).resolve().parent.parent / "output"
+        return OUTPUT
 
     def _refresh_from_project(self, *, sequence_valid: bool = True) -> None:
         """Recalcula clips y secuencia del proyecto tras tocar un fichero.
@@ -2034,7 +2035,7 @@ class VideoWidget(TaskWidget):
             label.setVisible(not is_i2v)
 
     def _use_last_image(self) -> None:
-        output_dir = Path(__file__).resolve().parent.parent / "output"
+        output_dir = OUTPUT
         pngs = sorted(
             (p for p in output_dir.glob("*.png") if p.is_file()),
             key=lambda p: p.stat().st_mtime,

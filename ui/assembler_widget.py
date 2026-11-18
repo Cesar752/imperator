@@ -1,9 +1,8 @@
-"""Widget del Ensamblador: combina MP4 + audio + subtítulos (Whisper) en un MP4."""
+﻿"""Widget del Ensamblador: combina MP4 + audio + subtítulos (Whisper) en un MP4."""
 
 import logging
 import os
 import shutil
-from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -22,6 +21,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core.paths import MUSIC
 from core.video_assembler import VideoAssembler
 from engines.base_engine import CANCEL_MESSAGE, Engine, EngineError
 from engines.whisper_engine import WHISPER_MODELS
@@ -37,7 +37,7 @@ VIDEO_FILTER = "Vídeo (*.mp4)"
 AUDIO_FILTER = "Audio (*.wav *.mp3 *.m4a *.ogg *.flac)"
 
 # Carpeta de biblioteca de música de fondo (el usuario mete sus MP3 aquí).
-MUSIC_DIR = Path(__file__).resolve().parent.parent / "music"
+MUSIC_DIR = MUSIC
 MUSIC_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
 
 

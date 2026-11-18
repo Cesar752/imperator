@@ -19,13 +19,12 @@ import hashlib
 import logging
 from pathlib import Path
 
+from core.paths import CACHE
+
 logger = logging.getLogger(__name__)
 
-#: Raíz del proyecto (C:\Imperator); cache/ cuelga de aquí.
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
 #: Carpeta por defecto de la caché de fotogramas (gitignored).
-DEFAULT_CACHE_DIR = PROJECT_ROOT / "cache" / "frames"
+DEFAULT_CACHE_DIR = CACHE / "frames"
 
 
 class FrameCache:

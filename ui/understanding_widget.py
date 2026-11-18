@@ -35,7 +35,7 @@ from PyQt6.QtWidgets import (
 
 from core.frame_cache import FrameCache
 from core.frame_extractor import FrameExtractor
-from core.paths import PROJECT_ROOT
+from core.paths import OUTPUT, PROJECT_ROOT
 from engines.base_engine import EngineError, Perception
 from services import chat_engine as ce
 from services import preferences as prefs
@@ -824,7 +824,7 @@ class UnderstandingWidget(TaskWidget):
         destino, _ = QFileDialog.getSaveFileName(
             self,
             "Guardar informe",
-            str(PROJECT_ROOT / "output" / DEFAULT_REPORT_NAME),
+            str(OUTPUT / DEFAULT_REPORT_NAME),
             "Texto (*.txt)",
         )
         if not destino:
