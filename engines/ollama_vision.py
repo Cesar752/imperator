@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 #: ``core.engine_manager._OLLAMA_VISION_DEFAULT_BASE_URL`` /
 #: ``_OLLAMA_VISION_DEFAULT_MODEL`` (test-guarda: tests/test_ollama_defaults.py).
 _DEFAULT_BASE_URL = "http://127.0.0.1:11434"
-_DEFAULT_MODEL = "qwen3-vl:8b"
+_DEFAULT_MODEL = "qwen2.5vl:7b"
 
 # Marcadores (subcadenas, en minúsculas) para detectar modelos con capacidad de
 # visión entre los expuestos por /api/tags.
@@ -82,6 +82,8 @@ class OllamaVisionEngine(VisionEngine):
         default_model: str = _DEFAULT_MODEL,
         num_ctx: int = _NUM_CTX,
         timeout: float | None = None,
+        think: bool | None = None,
+        num_predict: int | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._default_model = default_model
@@ -89,6 +91,13 @@ class OllamaVisionEngine(VisionEngine):
         self._timeout = (
             float(timeout) if timeout is not None else self._ANALYZE_TIMEOUT
         )
+        # ``think=False`` desactiva el razonamiento (los modelos qwen3-vl gastan
+        # ~90 % de los tokens en «thinking»): se pide el campo ``think`` y se añade
+        # el marcador ``/no_think`` por si la versión de Ollama lo ignora. ``None``
+        # deja el comportamiento por defecto del modelo.
+        self._think = think
+        # Tope de tokens de salida, para acotar el coste del razonamiento.
+        self._num_predict = int(num_predict) if num_predict is not None else None
         self._last_used_model: str | None = None
 
     @property
@@ -153,14 +162,22 @@ class OllamaVisionEngine(VisionEngine):
         """Envía ``messages`` a ``/api/chat`` y devuelve el contenido de la respuesta."""
         model = model or self._default_model
         self._last_used_model = model
+        options: dict = {"num_ctx": self._num_ctx}
+        if self._num_predict is not None:
+            options["num_predict"] = self._num_predict
         payload = {
             "model": model,
             "messages": messages,
             "stream": False,
             # Sin esto Ollama usa su contexto por defecto (4096) y el documento
             # no cabe: ver _NUM_CTX.
-            "options": {"num_ctx": self._num_ctx},
+            "options": options,
         }
+        if self._think is not None:
+            payload["think"] = bool(self._think)
+            if self._think is False:
+                messages = self._apply_no_think(messages)
+                payload["messages"] = messages
         try:
             resp = requests.post(
                 f"{self._base_url}/api/chat",
@@ -209,23 +226,70 @@ class OllamaVisionEngine(VisionEngine):
         return content
 
     def _no_content_reason(self, message: dict, razon: str) -> str:
-        """Explica por qué no hay respuesta (el razonamiento se comió el espacio)."""
-        if razon == "length":
+        """Explica por qué no hay respuesta (el razonamiento se comió el espacio).
+
+        Tres casos, de más a menos frecuente:
+        - ``num_predict`` puesto y el modelo razona: gasta el presupuesto de salida
+          «pensando» y no le queda nada para responder (por fotograma).
+        - se llena la ventana (``num_ctx``) antes de escribir.
+        - el modelo pensó y no escribió (``done_reason`` distinto de ``length``).
+        """
+        pensado = len((message.get("thinking") or "").strip())
+        if razon == "length" and pensado and self._num_predict:
+            motivo = (
+                f"el modelo gastó los {self._num_predict} tokens de salida "
+                f"razonando ({pensado} caracteres de «thinking») y no le quedó "
+                "espacio para responder"
+            )
+            pista = (
+                "Quita 'num_predict' del motor o usa un modelo de visión sin "
+                "razonamiento (p. ej. qwen2.5vl): los qwen3-vl pueden ignorar "
+                "'think': false."
+            )
+        elif razon == "length":
             motivo = (
                 f"se agotó la ventana de contexto (num_ctx={self._num_ctx}) antes "
                 "de escribir la respuesta"
             )
+            pista = (
+                "Usa un modelo de visión sin razonamiento (p. ej. qwen2.5vl) o "
+                "sube num_ctx en engines.json."
+            )
         else:
-            pensado = len((message.get("thinking") or "").strip())
             motivo = (
                 "el modelo gastó la respuesta razonando "
                 f"({pensado} caracteres de «thinking»)"
             )
-        return (
-            f"Ollama Vision: {motivo}. Los modelos de razonamiento (qwen3-vl) "
-            "piensan mucho más de lo que responden: usa un modelo de visión sin "
-            "razonamiento (p. ej. qwen2.5vl) o sube num_ctx en engines.json."
-        )
+            pista = (
+                "Usa un modelo de visión sin razonamiento (p. ej. qwen2.5vl): los "
+                "qwen3-vl pueden ignorar 'think': false."
+            )
+        return f"Ollama Vision: {motivo}. {pista}"
+
+    #: Marcador «soft switch» de Qwen3 para apagar el razonamiento en el prompt.
+    NO_THINK_HINT = "/no_think"
+
+    def _apply_no_think(self, messages: list[dict]) -> list[dict]:
+        """Añade el marcador ``/no_think`` al último turno (sin duplicarlo)."""
+        if not messages:
+            return messages
+        copia = [dict(m) for m in messages]
+        ultimo = copia[-1]
+        contenido = str(ultimo.get("content") or "")
+        if self.NO_THINK_HINT not in contenido:
+            ultimo["content"] = f"{contenido} {self.NO_THINK_HINT}".strip()
+        return copia
+
+    def is_loaded(self, model: str | None = None) -> bool:
+        """¿``model`` (o el del último análisis) está ya cargado en la VRAM?
+
+        Mismo uso que en el chat: si el modelo de visión ya está cargado, la
+        tarea no reserva memoria nueva y no debe bloquearse por falta de hueco.
+        """
+        target = model or self._last_used_model or self._default_model
+        if not target:
+            return False
+        return is_loaded(self._base_url, target, self._SHORT_TIMEOUT)
 
     def unload_model(self) -> bool:
         """Descarga el modelo en uso de la VRAM de Ollama (``keep_alive: 0``).
