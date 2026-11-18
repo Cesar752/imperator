@@ -483,12 +483,24 @@ class MainWindow(QMainWindow):
         engine_id = self._tab_to_engine.get(previous)
         if engine_id is None:
             return
+        # C5.2: ``unload_model()`` hace red (is_loaded + keep_alive) y en el
+        # hilo de la UI eran varios segundos de ventana congelada al cambiar
+        # de pestaña. El motor se resuelve aquí (barato) y la descarga va al
+        # pool.
         try:
             engine = self._engine_manager.get_engine(engine_id)
-            if engine is not None and hasattr(engine, "unload_model"):
-                engine.unload_model()
         except Exception as exc:  # noqa: BLE001 - no bloquear el cambio de pestaña
-            logger.warning("No se pudo liberar VRAM del motor %s: %s", engine_id, exc)
+            logger.warning("No se pudo obtener el motor %s: %s", engine_id, exc)
+            return
+        if engine is None or not hasattr(engine, "unload_model"):
+            return
+        run_pool_task(engine.unload_model, on_result=self._on_vram_released)
+
+    def _on_vram_released(self, liberado: bool) -> None:
+        """Registra una descarga de VRAM lanzada al pool (C5.2)."""
+        if sip.isdeleted(self):
+            return
+        logger.debug("VRAM del motor anterior liberada: %s", liberado)
 
     def _load_settings_merged(self) -> dict:
         """Lee ``settings.json`` sin lanzar y con todas las claves por defecto.
@@ -596,8 +608,20 @@ class MainWindow(QMainWindow):
         return freed
 
     def _free_all_vram(self) -> None:
-        """Libera la VRAM de todos los motores que la usan (botón manual)."""
-        freed = self.release_engines()
+        """Libera la VRAM de todos los motores que la usan (botón manual).
+
+        ``release_engines`` recorre todos los motores y cada
+        ``unload_model`` hace red: en el hilo de la UI eran varios segundos
+        de ventana congelada. Se ejecuta en el pool (C5.2b) y el mensaje se
+        pinta al volver. ``release_engines`` sigue siendo síncrono porque
+        los workers lo llaman desde ``gpu_slot`` y necesitan el ``bool``.
+        """
+        self.statusBar().showMessage("Liberando VRAM…")
+        run_pool_task(self.release_engines, on_result=self._on_all_vram_freed)
+
+    def _on_all_vram_freed(self, freed: bool) -> None:
+        if sip.isdeleted(self):
+            return
         self.statusBar().showMessage(
             "VRAM liberada" if freed else "No se pudo liberar VRAM"
         )
