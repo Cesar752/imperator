@@ -1,4 +1,4 @@
-"""Tests del payload de ``OllamaEngine.chat`` y de las respuestas vacías.
+﻿"""Tests del payload de ``OllamaEngine.chat`` y de las respuestas vacías.
 
 Contexto del bug: con la ventana de contexto llena (``truncated``) o el
 presupuesto de salida gastado pensando, Ollama responde **HTTP 200** con
@@ -265,14 +265,14 @@ class UnloadTest(unittest.TestCase):
         # Este era el caso del log: "descargado de VRAM" de un modelo que nunca
         # se había usado (y que Ollama cargaba para poder descargarlo).
         with mock.patch.object(
-            ollama_mod, "is_loaded", return_value=False
+            ollama_api, "is_loaded", return_value=False
         ), mock.patch.object(ollama_mod.requests, "post") as post:
             self.assertTrue(self.engine.unload_model())
         post.assert_not_called()
 
     def test_descarga_si_esta_cargado(self) -> None:
         with mock.patch.object(
-            ollama_mod, "is_loaded", return_value=True
+            ollama_api, "is_loaded", return_value=True
         ), mock.patch.object(ollama_mod.requests, "post") as post:
             self.assertTrue(self.engine.unload_model())
         self.assertEqual(post.call_args.kwargs["json"]["keep_alive"], 0)
@@ -287,7 +287,7 @@ class UnloadTest(unittest.TestCase):
         ):
             self.engine.chat([{"role": "user", "content": "hola"}])
         with mock.patch.object(
-            ollama_mod, "is_loaded", return_value=True
+            ollama_api, "is_loaded", return_value=True
         ), mock.patch.object(ollama_mod.requests, "post") as post:
             self.engine.unload_model()
         self.assertEqual(post.call_args.kwargs["json"]["model"], self.engine._default_model)

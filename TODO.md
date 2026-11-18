@@ -1444,5 +1444,14 @@ copias ya han divergido**. La ronda debe traer tests propios del mixin (una sola
 `IMPERATOR_GUI_SMOKE=1 python -m unittest discover -s tests`.
 
 **Por qué se aplaza:** es una ronda propia (mixin + tests). Mezclarla con C4
-(`settings.json` inválido tumba `MainWindow`) y C5 (E/S en el hilo de UI) diluye
-el foco de las dos que hoy se notan en uso real.
+(`settings.json` inválido tumba `MainWindow`) y C5 (E/S en el hilo de UI) diluye el foco de las dos que hoy se notan en uso real.
+
+**Actualización (ronda 4, 2026-11-18):** hecho lo mecánico. `_apply_no_think`,
+`is_loaded` y `unload_model` viven ya en una sola definición
+(`engines/ollama_api.py` → `_OllamaCommon`), con el `_lock` de la versión del
+chat (la de visión no lo tomaba) y el nombre `_short_timeout` unificado.
+
+**No** se unificaron `_empty_reply_reason` (chat) y `_no_content_reason`
+(visión): sus firmas son incompatibles (`data, message` frente a
+`message, razon`), las ramas ya divergieron y los llamadores son distintos. La
+divergencia es **de firma, no de lógica**: quedan las dos a propósito.

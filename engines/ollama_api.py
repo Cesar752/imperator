@@ -13,9 +13,12 @@ se rechaza (WinError 10061) y el fallback a IPv4 cuesta esos ~2 s. Por eso la
 configuración usa ``127.0.0.1`` (ver ``core.config_manager.DEFAULT_ENGINES``).
 """
 
+import logging
 import time
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 # Caché a nivel de módulo de /api/tags, clave por base_url.
 _TAGS_CACHE: dict[str, tuple[float, dict]] = {}
@@ -162,3 +165,35 @@ class _OllamaCommon:
         if not target:
             return False
         return is_loaded(self._base_url, target, self._short_timeout)
+
+
+    def unload_model(self) -> bool:
+        """Descarga de la VRAM el modelo en uso (``keep_alive: 0``).
+
+        Solo se pide si el modelo está realmente cargado: con ``keep_alive: 0``
+        sobre un modelo que no lo está, Ollama lo **carga** para descargarlo
+        acto seguido (era lo que aparecía en el log al cambiar de pestaña:
+        "descargado de VRAM" de un modelo que nunca se había usado).
+        """
+        with self._lock:
+            model = self._last_used_model or self._default_model
+        if not model:
+            return True
+        if not is_loaded(self._base_url, model, self._short_timeout):
+            logger.debug(
+                "%s: '%s' no está cargado; no hay nada que descargar",
+                self.nombre,
+                model,
+            )
+            return True
+        try:
+            requests.post(
+                f"{self._base_url}/api/generate",
+                json={"model": model, "keep_alive": 0},
+                timeout=2,
+            )
+            logger.info("%s: modelo '%s' descargado de VRAM", self.nombre, model)
+            return True
+        except requests.RequestException as exc:
+            logger.warning("No se pudo descargar '%s' de Ollama: %s", model, exc)
+            return False

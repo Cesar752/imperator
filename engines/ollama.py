@@ -1,4 +1,4 @@
-"""Motor local Ollama (HTTP API en http://127.0.0.1:11434).
+﻿"""Motor local Ollama (HTTP API en http://127.0.0.1:11434).
 
 Se usa ``127.0.0.1`` y no ``localhost``: en Windows ``localhost`` intenta primero
 ``::1`` (Ollama no escucha ahí), la conexión se rechaza y el fallback a IPv4
@@ -18,7 +18,6 @@ from engines.ollama_api import (
     _OllamaCommon,
     fetch_tags,
     http_error_message,
-    is_loaded,
 )
 
 logger = logging.getLogger(__name__)
@@ -319,31 +318,3 @@ class OllamaEngine(_OllamaCommon, ChatEngine):
             f"modelo sin razonamiento."
         )
 
-    def unload_model(self) -> bool:
-        """Descarga de la VRAM el modelo en uso (``keep_alive: 0``).
-
-        Solo se pide si el modelo está realmente cargado: con ``keep_alive: 0``
-        sobre un modelo que no lo está, Ollama lo **carga** para descargarlo
-        acto seguido (era lo que aparecía en el log al cambiar de pestaña:
-        "descargado de VRAM" de un modelo que nunca se había usado).
-        """
-        with self._lock:
-            model = self._last_used_model or self._default_model
-        if not model:
-            return True
-        if not is_loaded(self._base_url, model, self._short_timeout):
-            logger.debug(
-                "Ollama: '%s' no está cargado; no hay nada que descargar", model
-            )
-            return True
-        try:
-            requests.post(
-                f"{self._base_url}/api/generate",
-                json={"model": model, "keep_alive": 0},
-                timeout=2,
-            )
-            logger.info("Ollama: modelo '%s' descargado de VRAM", model)
-            return True
-        except requests.RequestException as exc:
-            logger.warning("No se pudo descargar '%s' de Ollama: %s", model, exc)
-            return False

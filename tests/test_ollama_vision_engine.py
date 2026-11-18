@@ -268,14 +268,14 @@ class UnloadTest(unittest.TestCase):
         self.engine = OllamaVisionEngine()
 
     def test_no_descarga_si_no_esta_cargado(self) -> None:
-        with mock.patch.object(ov, "is_loaded", return_value=False), mock.patch.object(
+        with mock.patch("engines.ollama_api.is_loaded", return_value=False), mock.patch.object(
             ov.requests, "post"
         ) as post:
             self.assertTrue(self.engine.unload_model())
         post.assert_not_called()
 
     def test_descarga_si_esta_cargado(self) -> None:
-        with mock.patch.object(ov, "is_loaded", return_value=True), mock.patch.object(
+        with mock.patch("engines.ollama_api.is_loaded", return_value=True), mock.patch.object(
             ov.requests, "post"
         ) as post:
             self.assertTrue(self.engine.unload_model())

@@ -1,4 +1,4 @@
-"""Motor local Ollama Vision (HTTP API en http://127.0.0.1:11434).
+﻿"""Motor local Ollama Vision (HTTP API en http://127.0.0.1:11434).
 
 ``127.0.0.1`` en vez de ``localhost``: el fallback de IPv6 de ``localhost``
 cuesta ~2 s por petición (medido: 2 040 ms frente a 15 ms), y aquí se paga una
@@ -18,7 +18,6 @@ from engines.ollama_api import (
     _OllamaCommon,
     fetch_tags,
     http_error_message,
-    is_loaded,
 )
 
 logger = logging.getLogger(__name__)
@@ -275,30 +274,3 @@ class OllamaVisionEngine(_OllamaCommon, VisionEngine):
 
     #: Marcador «soft switch» de Qwen3 para apagar el razonamiento en el prompt.
     NO_THINK_HINT = "/no_think"
-
-    def unload_model(self) -> bool:
-        """Descarga el modelo en uso de la VRAM de Ollama (``keep_alive: 0``).
-
-        Solo si está realmente cargado: ``keep_alive: 0`` sobre un modelo que no
-        está en memoria hace que Ollama lo cargue para descargarlo después.
-        """
-        model = self._last_used_model or self._default_model
-        if not model:
-            return True
-        if not is_loaded(self._base_url, model, self._SHORT_TIMEOUT):
-            logger.debug(
-                "Ollama Vision: '%s' no está cargado; no hay nada que descargar",
-                model,
-            )
-            return True
-        try:
-            requests.post(
-                f"{self._base_url}/api/generate",
-                json={"model": model, "keep_alive": 0},
-                timeout=2,
-            )
-            logger.info("Ollama Vision: modelo '%s' descargado de VRAM", model)
-            return True
-        except requests.RequestException as exc:
-            logger.warning("No se pudo descargar '%s' de Ollama: %s", model, exc)
-            return False
