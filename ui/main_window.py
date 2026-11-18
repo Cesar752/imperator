@@ -2,7 +2,8 @@
 
 import logging
 
-from PyQt6.QtCore import Qt, QThread
+from PyQt6 import sip
+from PyQt6.QtCore import Qt, QThread, QTimer
 from PyQt6.QtGui import QActionGroup, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -16,9 +17,11 @@ from PyQt6.QtWidgets import (
 
 from core.api_manager import ApiManager
 from core.engine_manager import EngineManager
+from core.frame_cache import FrameCache
 from core.gpu_scheduler import GpuScheduler
 from core.paths import ASSETS, OUTPUT
 from core.task_manager import TaskManager
+from services import chat_engine as ce
 from services import intent_router as ir
 from services.output_cleanup import (
     DEFAULT_KEEP_RECENT_HOURS,
@@ -272,11 +275,12 @@ class MainWindow(QMainWindow):
         return label
 
     def _build_status_bar(self) -> None:
-        engine = self._engine_manager.get_engine("ollama")
+        engine = ce.preferred_chat_engine(self._engine_manager)
+        nombre = getattr(engine, "nombre", "Chat") if engine is not None else "Chat"
         if engine is None or not engine.is_available():
-            status = "Ollama: desconectado"
+            status = f"{nombre}: desconectado"
         else:
-            status = "Ollama: conectado"
+            status = f"{nombre}: conectado"
         self.statusBar().showMessage(status)
 
     def _open_engines_dialog(self) -> None:
@@ -291,7 +295,7 @@ class MainWindow(QMainWindow):
 
     def _on_engines_dialog_finished(self) -> None:
         self._engines_dialog = None
-        engine = self._engine_manager.get_engine("ollama")
+        engine = ce.preferred_chat_engine(self._engine_manager)
         # Duck-typing en lugar de isinstance(ChatTask): pedimos la capacidad
         # "refresh_engine" solo si la tarea de chat la expone. Así no acoplamos
         # MainWindow a ChatTask ni mantenemos una referencia con estado que
@@ -299,10 +303,11 @@ class MainWindow(QMainWindow):
         chat_task = self._task_manager.get_task("chat")
         if chat_task is not None and hasattr(chat_task, "refresh_engine"):
             chat_task.refresh_engine()
+        nombre = getattr(engine, "nombre", "Chat") if engine is not None else "Chat"
         if engine is None or not engine.is_available():
-            self.statusBar().showMessage("Ollama: desconectado")
+            self.statusBar().showMessage(f"{nombre}: desconectado")
         else:
-            self.statusBar().showMessage("Ollama: conectado")
+            self.statusBar().showMessage(f"{nombre}: conectado")
 
     # ---- Router de intención (chat -> otras tareas) ---------------
 
@@ -333,6 +338,15 @@ class MainWindow(QMainWindow):
             return
         if index == self._tabs.currentIndex():
             return
+        # El router se dispara dentro del MISMO evento que el ``returnPressed``
+        # de la barra del chat: si el diálogo se abriera aquí, Qt le entregaría la
+        # tecla Enter que acaba de enviar el mensaje y se cerraría solo (aparecía
+        # y desaparecía en un parpadeo, aceptando sin querer). Se difiere al
+        # siguiente ciclo del bucle de eventos para que la tecla ya no esté viva.
+        QTimer.singleShot(0, lambda: self._ask_open_tab(dispatch, index))
+
+    def _ask_open_tab(self, dispatch, index: int) -> None:
+        """Pregunta si abrir la pestaña destino del ``Dispatch`` (ver arriba)."""
         answer = QMessageBox.question(
             self,
             "Abrir otra tarea",
@@ -368,17 +382,24 @@ class MainWindow(QMainWindow):
 
     # ---- Vídeo -> Ensamblador ------------------------------------
 
-    def _connect_video_to_assembler(self) -> None:
-        """Conecta la señal ``clips_ready`` de la pestaña Vídeo con esta ventana.
+    #: Pestañas que pueden mandar su vídeo montado al Ensamblador. Vídeo manda la
+    #: secuencia de escenas; Vídeo IA, lo que sale de un replay, una rampa, unos
+    #: rótulos o una cámara lenta; Crónica, el vídeo con narración y subtítulos.
+    _ASSEMBLER_SENDERS = ("video", "video_enhance", "chronicle")
 
-        Ni el widget de Vídeo conoce el Ensamblador ni al contrario: el primero
-        emite la ruta de su secuencia y la ventana la precarga en el segundo. Se
-        usa ``getattr`` para no acoplar los widgets a este mecanismo.
+    def _connect_video_to_assembler(self) -> None:
+        """Conecta la señal ``clips_ready`` de las pestañas que montan vídeo.
+
+        Ni esos widgets conocen el Ensamblador ni al contrario: emiten la ruta de
+        su vídeo y la ventana la precarga en el Ensamblador. Se usa ``getattr``
+        para no acoplar los widgets a este mecanismo (y para tolerar que una
+        pestaña no exista o no exponga la señal).
         """
-        video = self._task_widgets.get("video")
-        signal = getattr(video, "clips_ready", None)
-        if signal is not None:
-            signal.connect(self._on_video_clips_ready)
+        for task_id in self._ASSEMBLER_SENDERS:
+            widget = self._task_widgets.get(task_id)
+            signal = getattr(widget, "clips_ready", None)
+            if signal is not None:
+                signal.connect(self._on_video_clips_ready)
 
     def _on_video_clips_ready(self, path) -> None:
         """Precarga la secuencia generada en el Ensamblador y abre su pestaña."""
@@ -520,6 +541,8 @@ class MainWindow(QMainWindow):
         run_pool_task(self._gpu_scheduler.describe, on_result=self._on_gpu_status)
 
     def _on_gpu_status(self, texto: str) -> None:
+        if sip.isdeleted(self):
+            return
         QMessageBox.information(self, "Estado de la GPU", texto)
 
     # ---- Retención de las salidas --------------------------------
@@ -553,11 +576,19 @@ class MainWindow(QMainWindow):
             ),
             on_result=self._on_cleanup_done,
         )
+        # La caché de fotogramas (cache/frames) también se poda: sin tope, analizar
+        # varios vídeos deja miles de PNG. Tope holgado; se borra lo más antiguo.
+        run_pool_task(FrameCache().prune, on_result=self._on_cache_pruned)
 
     def _on_cleanup_done(self, plan) -> None:
         """Deja constancia de lo borrado (la UI ya no muestra esos ficheros)."""
         if plan.count:
             logger.info("Limpieza de salidas: %s", plan.describe())
+
+    def _on_cache_pruned(self, borrados) -> None:
+        """Registra la poda de la caché de fotogramas (0 = nada que borrar)."""
+        if borrados:
+            logger.info("Caché de fotogramas: %d ficheros antiguos borrados.", borrados)
 
     def _show_about(self) -> None:
         QMessageBox.about(
