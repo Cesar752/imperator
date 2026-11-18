@@ -1399,3 +1399,50 @@ circle). Suite de vídeo **111 tests en verde** y `ruff check .` limpio.
 caliente de punta a punta (Vídeo → Audio → Ensamblador → `video_final.mp4`)
 exige regenerar las escenas (~4-5 min por clip en esta máquina). El código de ese
 camino no ha cambiado en esta sesión.
+
+## 17. Deuda A7 — duplicación entre `ollama` y `ollama_vision` (2026-11-18)
+
+**Estado: pendiente. No se toca en esta ronda.** Anotado al cerrar la auditoría
+del 18/11 y los commits de higiene.
+
+`OllamaEngine` (`engines/ollama.py`) y `OllamaVisionEngine`
+(`engines/ollama_vision.py`) mantienen tres métodos duplicados:
+
+| Método | `engines/ollama.py` | `engines/ollama_vision.py` | Estado |
+|---|---|---|---|
+| `_apply_no_think` | :137 | :272 | copia idéntica |
+| `is_loaded` | :327 | :283 | casi idéntico, ya divergió |
+| `unload_model` | :340 | :294 | casi idéntico, ya divergió |
+
+**No revertir `b6dbaab`.** Ese commit aporta features reales (cancelación,
+timeout configurable y control de `think`). Lo que toca es extraer, no deshacer.
+
+**La divergencia ya existe, no es hipotética:**
+
+- El helper que explica una respuesta vacía tiene **dos nombres y dos
+  comportamientos**: `_empty_reply_reason` (`engines/ollama.py:304`) y
+  `_no_content_reason` (`engines/ollama_vision.py:228`). Cambia la firma
+  (`data, message` frente a `message, razon`) y cambian las ramas: la de visión
+  separa «`num_predict` gastado en razonar» de «ventana `num_ctx` agotada»
+  (`ollama_vision.py:238-257`), mientras que la del chat mete los dos casos en un
+  mismo mensaje (`ollama.py:312-316`). Una corrección en una no llega a la otra.
+- `is_loaded` del chat toma `self._lock` (`ollama.py:334`) y usa
+  `self._short_timeout`; la de visión **no toma lock** y usa
+  `self._SHORT_TIMEOUT` (`ollama_vision.py:289-292`). El mismo patrón de
+  protección no se aplicó dos veces.
+- `unload_model` repite esa asimetría de lock y de timeout, y cambia el texto del
+  log (`ollama.py:340-367` frente a `ollama_vision.py:294-318`).
+
+**Solución propuesta:** extraer a un mixin `_OllamaCommon` (`_apply_no_think`,
+`is_loaded`, `unload_model` y el helper de respuesta vacía unificado) o, si se
+prefiere no tocar la jerarquía, mover lo común a `engines/ollama_api.py`, que ya
+existe y ya centraliza la consulta de modelos cargados.
+
+**Impacto:** cada corrección hay que hacerla dos veces, y **dos de las tres
+copias ya han divergido**. La ronda debe traer tests propios del mixin (una sola
+`is_loaded`, un solo mensaje de respuesta vacía) y cerrar con
+`IMPERATOR_GUI_SMOKE=1 python -m unittest discover -s tests`.
+
+**Por qué se aplaza:** es una ronda propia (mixin + tests). Mezclarla con C4
+(`settings.json` inválido tumba `MainWindow`) y C5 (E/S en el hilo de UI) diluye
+el foco de las dos que hoy se notan en uso real.
