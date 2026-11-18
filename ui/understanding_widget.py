@@ -45,6 +45,7 @@ from services import sport_params as sp
 from services import video_understanding as vu
 from ui import discipline
 from ui.task_widget import TaskWidget
+from ui.pool_callbacks import PoolCallbackReceiver
 from ui.workers import ThreadWorker, run_pool_task
 
 logger = logging.getLogger(__name__)
@@ -386,6 +387,10 @@ class UnderstandingWidget(TaskWidget):
         self._video_path: Path | None = None
         self._last_report = ""
         self._model_task = None
+        #: Token que descarta respuestas del pool de un motor anterior.
+        self._generation = 0
+        #: Receptor del pool atado a la vida del widget (C2).
+        self._models_rx = PoolCallbackReceiver(self, self._on_models, self._on_models_error)
         #: Carpeta de la sesión: donde se deja la percepción estructurada.
         self._session_dir: Path | None = None
         self._build_ui()
@@ -641,18 +646,22 @@ class UnderstandingWidget(TaskWidget):
             return
         self._model.setEnabled(True)
         self._model.addItem("Cargando modelos…")
+        self._generation += 1
+        self._models_rx.arm()
         self._model_task = run_pool_task(
             engine.list_models,
-            on_result=self._on_models,
-            on_error=self._on_models_error,
+            on_result=self._models_rx.handle,
+            on_error=self._models_rx.handle_error,
         )
 
-    def _on_models_error(self, message: str) -> None:
+    def _on_models_error(self, token: int, message: str) -> None:
+        if sip.isdeleted(self) or token != self._generation:
+            return
         logger.debug("No se pudieron listar los modelos del chat: %s", message)
-        self._on_models([])
+        self._on_models(token, [])
 
-    def _on_models(self, models: list) -> None:
-        if sip.isdeleted(self):
+    def _on_models(self, token: int, models: list) -> None:
+        if sip.isdeleted(self) or token != self._generation:
             return
         engine = ce.preferred_chat_engine(self._engine_manager)
         default = getattr(engine, "default_model", None)
