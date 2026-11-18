@@ -3,6 +3,7 @@
 import json
 import logging
 
+from PyQt6 import sip
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -37,12 +38,43 @@ COL_CONEXION = 3
 # construir, p. ej. ComfyUI sin workflows). El usuario puede editarla como JSON.
 _TYPE_TEMPLATES: dict[str, dict] = {
     "ollama": {"model": "qwen3.6:35b"},
-    "ollama_vision": {"model": "qwen3-vl:8b"},
+    "ollama_vision": {"model": "qwen2.5vl:7b"},
+    "openai": {"model": "gpt-4o-mini", "models": ["gpt-4o-mini", "gpt-4o"]},
+    # Visión de pago compatible con OpenAI (GPT-4o…). Misma clave que el chat de
+    # OpenAI; 'detail' y 'max_tokens' acotan el coste por fotograma.
+    "openai_vision": {
+        "model": "gpt-4o-mini",
+        "models": ["gpt-4o-mini", "gpt-4o"],
+        "detail": "auto",
+    },
+    "deepseek": {
+        "model": "deepseek-chat",
+        "models": ["deepseek-chat", "deepseek-reasoner"],
+    },
+    "llama_cpp": {"model": "local-model"},
+    "lm_studio": {"model": "local-model"},
+    "openai_image": {
+        "model": "gpt-image-1",
+        "models": ["gpt-image-1", "dall-e-3"],
+        "size": "1024x1024",
+    },
     "comfyui": {
         "workflows": {"flux_dev": "C:/CComfyUI/flux_dev_workflow_api.json"},
         "default_model": "flux_dev",
     },
     "bfl": {"models": ["flux-kontext-pro", "flux-kontext-max", "flux-2-pro"]},
+    # Herramientas externas de línea de comandos (engines/cli_tool.py): el
+    # ejecutable va en 'executable' (o en 'ruta') y 'args' es la plantilla.
+    "bkingfilm": {
+        "executable": "bkingfilm",
+        "args": ["--input", "{input}", "--prompt", "{prompt}", "--output", "{output}"],
+        "output_ext": ".mp4",
+    },
+    "lapian_notes": {
+        "executable": "lapian-notes",
+        "args": ["--video", "{input}", "--package", "{output}"],
+        "output_ext": ".zip",
+    },
     "wanvideo": {
         "workflows": {
             "t2v": "C:/CComfyUI/wan22_t2v_workflow_api.json",
@@ -54,6 +86,13 @@ _TYPE_TEMPLATES: dict[str, dict] = {
     "kokoro_tts": {"default_voice": "ef_dora"},
     "whisper": {"model": "small", "device": "cpu", "compute_type": "int8"},
     "musicgen": {"model": "small", "duration": 8},
+    "voice_clone": {
+        "model": "tts_models/multilingual/multi-dataset/xtts_v2",
+        "language": "es",
+        "device": "cuda",
+        "backend": "subprocess",
+        "python": "venv-tts/Scripts/python.exe",
+    },
     "yolo": {"model": "yolov8n.pt", "confidence": 0.25},
     "clip": {"model": "openai/clip-vit-base-patch32", "top_k": 4},
     "paddle_ocr": {"lang": "latin", "use_gpu": False},
@@ -65,13 +104,22 @@ _TYPE_TEMPLATES: dict[str, dict] = {
 _TYPE_URLS: dict[str, str] = {
     "ollama": "http://127.0.0.1:11434",
     "ollama_vision": "http://127.0.0.1:11434",
+    "openai": "https://api.openai.com/v1",
+    "openai_vision": "https://api.openai.com/v1",
+    "deepseek": "https://api.deepseek.com/v1",
+    "llama_cpp": "http://127.0.0.1:8080/v1",
+    "lm_studio": "http://127.0.0.1:1234/v1",
+    "openai_image": "https://api.openai.com/v1",
     "comfyui": "http://127.0.0.1:8188",
     "bfl": "https://api.bfl.ai",
+    "bkingfilm": "bkingfilm",
+    "lapian_notes": "lapian-notes",
     "wanvideo": "http://127.0.0.1:8188",
     "piper_tts": "voices",
     "kokoro_tts": "local",
     "whisper": "local",
     "musicgen": "local",
+    "voice_clone": "voices/clones",
     "yolo": "local",
     "clip": "local",
     "paddle_ocr": "local",
@@ -326,11 +374,15 @@ class EnginesDialog(QDialog):
         )
 
     def _on_availability(self, engine_id: str, ok: bool) -> None:
+        if sip.isdeleted(self):
+            return
         if not self.isVisible():
             return
         self._set_connection(engine_id, "Conectado" if ok else "Desconectado")
 
     def _on_availability_error(self, engine_id: str, message: str) -> None:
+        if sip.isdeleted(self):
+            return
         if not self.isVisible():
             return
         self._set_connection(engine_id, f"Error: {message}")
@@ -455,6 +507,8 @@ class EnginesDialog(QDialog):
         )
 
     def _on_models(self, engine_id: str, models: list) -> None:
+        if sip.isdeleted(self):
+            return
         if not self.isVisible():
             return
         self._status.setText("")
@@ -468,6 +522,8 @@ class EnginesDialog(QDialog):
         )
 
     def _on_models_error(self, engine_id: str, message: str) -> None:
+        if sip.isdeleted(self):
+            return
         if not self.isVisible():
             return
         self._status.setText("")
