@@ -79,6 +79,25 @@ SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
     "output_limpieza": {"type": dict, "required": False},
 }
 
+
+def deep_merge(defaults: dict, data: dict) -> dict:
+    """Devuelve ``defaults`` con ``data`` encima, recursivo para los dict.
+
+    Sirve para que un ``settings.json`` viejo (o escrito a mano) no deje claves
+    sin valor: antes cada consumidor reimplementaba su propio
+    ``settings.get(clave, DEFAULT)`` y las listas de valores por defecto se
+    desincronizaban. Los tipos del JSON ya los valida ``_validate``; aquí solo se
+    rellena lo que falte.
+    """
+    resultado = deepcopy(defaults)
+    for clave, valor in (data or {}).items():
+        previo = resultado.get(clave)
+        if isinstance(previo, dict) and isinstance(valor, dict):
+            resultado[clave] = deep_merge(previo, valor)
+        else:
+            resultado[clave] = deepcopy(valor)
+    return resultado
+
 # Valores por defecto (se escriben en disco cuando el archivo no existe).
 #
 # OJO con la URL de Ollama: se usa ``127.0.0.1`` y **no** ``localhost``. En
@@ -534,7 +553,7 @@ class ConfigManager:
             return deepcopy(default)
 
         try:
-            with path.open("r", encoding="utf-8") as fh:
+            with path.open("r", encoding="utf-8-sig") as fh:
                 data = json.load(fh)
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise ConfigError(

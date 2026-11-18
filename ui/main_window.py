@@ -1,6 +1,7 @@
 """Ventana principal de Imperator."""
 
 import logging
+from copy import deepcopy
 
 from PyQt6 import sip
 from PyQt6.QtCore import Qt, QThread, QTimer
@@ -16,6 +17,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.api_manager import ApiManager
+from core.config_manager import DEFAULT_SETTINGS, deep_merge
 from core.engine_manager import EngineManager
 from core.frame_cache import FrameCache
 from core.gpu_scheduler import GpuScheduler
@@ -61,7 +63,7 @@ class MainWindow(QMainWindow):
         # (prioridades + VRAM libre medida con nvidia-smi). Sustituye a ojo por
         # datos; las tareas lo consultan vía ``MainWindow.gpu_scheduler``.
         self._gpu_scheduler = GpuScheduler.from_settings(
-            self._engine_manager.config_manager.load_settings()
+            self._load_settings_merged()
         )
         # Índice de pestaña -> motor cuyo modelo se descarga al abandonarla. Se
         # deriva del registro de tareas (Task.engine_id) para no duplicar aquí
@@ -429,8 +431,26 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001 - no bloquear el cambio de pestaña
             logger.warning("No se pudo liberar VRAM del motor %s: %s", engine_id, exc)
 
+    def _load_settings_merged(self) -> dict:
+        """Lee ``settings.json`` sin lanzar y con todas las claves por defecto.
+
+        Un ``settings.json`` corrupto (JSON truncado, BOM, un tipo cambiado a
+        mano) no debe impedir abrir la ventana: ``main.py`` ya lo toleraba al
+        configurar el log, pero ``MainWindow`` volvía a leerlo sin red y moría
+        justo después del splash. Fusionar con ``DEFAULT_SETTINGS`` evita además
+        que un fichero viejo deje claves sin valor.
+        """
+        try:
+            cargados = self._engine_manager.config_manager.load_settings()
+        except Exception as exc:  # noqa: BLE001 - el arranque no debe morir aquí
+            logger.warning(
+                "settings.json no válido (%s); se usan los valores por defecto.", exc
+            )
+            return deepcopy(DEFAULT_SETTINGS)
+        return deep_merge(DEFAULT_SETTINGS, cargados)
+
     def _unload_on_tab_change_enabled(self) -> bool:
-        settings = self._engine_manager.config_manager.load_settings()
+        settings = self._load_settings_merged()
         return bool(settings.get("unload_on_tab_change", True))
 
     def _on_unload_toggle(self, checked: bool) -> None:
@@ -442,7 +462,7 @@ class MainWindow(QMainWindow):
         )
 
     def _theme_is_dark(self) -> bool:
-        settings = self._engine_manager.config_manager.load_settings()
+        settings = self._load_settings_merged()
         return settings.get("theme", "dark") != "light"
 
     def _on_theme_toggled(self, checked: bool) -> None:
@@ -558,9 +578,7 @@ class MainWindow(QMainWindow):
         no se borra nada en un ``output/`` normal; el trabajo va al pool porque
         recorre el directorio en disco.
         """
-        ajustes = self._engine_manager.config_manager.load_settings().get(
-            "output_limpieza"
-        )
+        ajustes = self._load_settings_merged().get("output_limpieza")
         if isinstance(ajustes, dict) and ajustes.get("enabled") is False:
             logger.info("Limpieza de salidas desactivada en settings.json.")
             return
