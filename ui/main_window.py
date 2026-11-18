@@ -1,6 +1,7 @@
 """Ventana principal de Imperator."""
 
 import logging
+import time
 from copy import deepcopy
 
 from PyQt6 import sip
@@ -41,6 +42,9 @@ logger = logging.getLogger(__name__)
 # Altura del logo en el header (px).
 HEADER_LOGO_HEIGHT = 120
 
+#: Segundos que se reutiliza el resultado de ``is_available()`` (C5.1).
+STATUS_TTL_S = 60
+
 
 class MainWindow(QMainWindow):
     """Ventana principal con las tareas registradas en pestañas y menú de motores."""
@@ -73,6 +77,10 @@ class MainWindow(QMainWindow):
             for index, task in enumerate(self._task_manager.list_tasks())
             if task.engine_id
         }
+        #: Caché de ``is_available()`` por motor: (momento, disponible).
+        self._status_cache: dict[str, tuple[float, bool]] = {}
+        #: Motor cuya comprobación de conexión está en vuelo (o ``None``).
+        self._status_pending: str | None = None
         self._engines_dialog: EnginesDialog | None = None
         self._current_tab_index = 0
         self._unload_toggle = None
@@ -277,13 +285,67 @@ class MainWindow(QMainWindow):
         return label
 
     def _build_status_bar(self) -> None:
+        self._refresh_status_bar()
+
+    def _refresh_status_bar(self, force: bool = False) -> None:
+        """Pinta el estado del motor de chat sin bloquear la UI (C5.1).
+
+        ``is_available()`` hace red (hasta ~2 s por motor) y se llamaba en el
+        hilo de la UI al arrancar y al cerrar el diálogo de Motores: la ventana
+        se quedaba congelada. Ahora la comprobación va al pool y el resultado se
+        reutiliza ``STATUS_TTL_S`` segundos.
+        """
         engine = ce.preferred_chat_engine(self._engine_manager)
-        nombre = getattr(engine, "nombre", "Chat") if engine is not None else "Chat"
-        if engine is None or not engine.is_available():
-            status = f"{nombre}: desconectado"
-        else:
-            status = f"{nombre}: conectado"
-        self.statusBar().showMessage(status)
+        if engine is None:
+            self.statusBar().showMessage("Chat: desconectado")
+            return
+        nombre = getattr(engine, "nombre", "Chat")
+        engine_id = getattr(engine, "id", "") or nombre
+        cache = self._status_cache.get(engine_id)
+        if (
+            cache is not None
+            and not force
+            and time.monotonic() - cache[0] < STATUS_TTL_S
+        ):
+            self._show_status(nombre, cache[1])
+            return
+        if self._status_pending is not None:
+            return  # ya hay una comprobación en vuelo
+        self._status_pending = engine_id
+        self.statusBar().showMessage(f"{nombre}: comprobando…")
+        run_pool_task(
+            engine.is_available,
+            on_result=self._on_availability,
+            on_error=self._on_availability_error,
+        )
+
+    def _on_availability(self, ok: bool) -> None:
+        """Recibe el ``is_available()`` lanzado al pool (C5.1)."""
+        if sip.isdeleted(self):
+            return
+        pedido = self._status_pending
+        self._status_pending = None
+        engine = ce.preferred_chat_engine(self._engine_manager)
+        if engine is None:
+            self.statusBar().showMessage("Chat: desconectado")
+            return
+        actual = getattr(engine, "id", "") or getattr(engine, "nombre", "Chat")
+        if pedido is not None and pedido != actual:
+            return  # el usuario cambió de motor mientras se comprobaba
+        self._status_cache[actual] = (time.monotonic(), bool(ok))
+        self._show_status(getattr(engine, "nombre", "Chat"), bool(ok))
+
+    def _on_availability_error(self, mensaje: str) -> None:
+        if sip.isdeleted(self):
+            return
+        self._status_pending = None
+        logger.debug("No se pudo comprobar el motor de chat: %s", mensaje)
+        self.statusBar().showMessage("Chat: desconectado")
+
+    def _show_status(self, nombre: str, ok: bool) -> None:
+        estado = "conectado" if ok else "desconectado"
+        self.statusBar().showMessage(f"{nombre}: {estado}")
+
 
     def _open_engines_dialog(self) -> None:
         if self._engines_dialog is not None and self._engines_dialog.isVisible():
@@ -297,7 +359,6 @@ class MainWindow(QMainWindow):
 
     def _on_engines_dialog_finished(self) -> None:
         self._engines_dialog = None
-        engine = ce.preferred_chat_engine(self._engine_manager)
         # Duck-typing en lugar de isinstance(ChatTask): pedimos la capacidad
         # "refresh_engine" solo si la tarea de chat la expone. Así no acoplamos
         # MainWindow a ChatTask ni mantenemos una referencia con estado que
@@ -305,11 +366,9 @@ class MainWindow(QMainWindow):
         chat_task = self._task_manager.get_task("chat")
         if chat_task is not None and hasattr(chat_task, "refresh_engine"):
             chat_task.refresh_engine()
-        nombre = getattr(engine, "nombre", "Chat") if engine is not None else "Chat"
-        if engine is None or not engine.is_available():
-            self.statusBar().showMessage(f"{nombre}: desconectado")
-        else:
-            self.statusBar().showMessage(f"{nombre}: conectado")
+        # Al cerrar Motores el motor puede haber cambiado: se revalida sin
+        # bloquear el cierre del diálogo (C5.1).
+        self._refresh_status_bar(force=True)
 
     # ---- Router de intención (chat -> otras tareas) ---------------
 
