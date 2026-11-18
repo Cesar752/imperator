@@ -21,6 +21,13 @@ Pendiente de decidir antes de construir (ver informe de la ronda 8):
 
 from PyInstaller.utils.hooks import collect_data_files
 
+import os
+
+#: Con ``.spec`` PyInstaller ignora ``--paths``: el entorno de la app se inyecta
+#: aquí (p. ej. ``IMPERATOR_BUILD_PATHS=<venv>\Lib\site-packages``) para poder
+#: construir con el PyInstaller 3.12 del sistema, que no es el venv del proyecto.
+pathex = [p for p in os.environ.get("IMPERATOR_BUILD_PATHS", "").split(os.pathsep) if p]
+
 #: Recursos versionados que la app lee en caliente.
 datas = [
     ("assets", "assets"),
@@ -57,6 +64,12 @@ hiddenimports = [
 #: Motores opcionales: ``engines/perception.py`` y ``voice_clone`` los importan
 #: dentro de funciones y hoy no están instalados. Si se instalan, PyInstaller
 #: los recogerá por el análisis normal (son imports estáticos dentro del método).
+#:
+#: Los pesos de ML (torch y compañía) se EXCLUYEN a propósito: PyInstaller sigue
+#: los ``import`` perezosos de Kokoro/CLIP/XTTS y, si están instalados, mete
+#: torch + transformers en el bundle (varios GB). El proyecto está diseñado para
+#: arrancar sin ellos: cada motor se marca como no disponible. faster-whisper
+#: (ctranslate2 + onnxruntime) sí se empaqueta: es dependencia de runtime.
 excludes = [
     ".git",
     "venv",
@@ -66,11 +79,27 @@ excludes = [
     "tkinter",
     "pytest",
     "ruff",
+    # Pesos y frameworks de los motores opcionales.
+    "torch",
+    "torchaudio",
+    "torchvision",
+    "transformers",
+    "accelerate",
+    "bitsandbytes",
+    "diffusers",
+    "safetensors",
+    "kokoro",
+    "misaki",
+    "audiocraft",
+    "ultralytics",
+    "paddle",
+    "paddleocr",
+    "triton",
 ]
 
 a = Analysis(
     ["main.py"],
-    pathex=[],
+    pathex=pathex,
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
