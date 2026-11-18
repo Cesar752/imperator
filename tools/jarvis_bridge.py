@@ -13,6 +13,7 @@ Uso:
     | python tools/jarvis_bridge.py
 """
 import json
+import logging
 import re
 import subprocess
 import sys
@@ -23,6 +24,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+logger = logging.getLogger(__name__)
 
 import imageio_ffmpeg  # noqa: E402 - va tras fijar PROJECT_ROOT en sys.path
 
@@ -41,6 +44,11 @@ VIDEO_EXTS = (
 JOIN_TIMEOUT = 2 * 3600
 JOIN_NORMALIZE_TIMEOUT = 6 * 3600
 
+#: Topes de los pasos que antes no tenían ninguno: un ffmpeg colgado dejaba a
+#: Jarvis esperando para siempre (el ``excepthook`` solo cubre el hilo principal).
+PROBE_TIMEOUT = 60
+ENHANCE_TIMEOUT = 2 * 3600
+
 
 # Reescalado IA (Real-ESRGAN en venv-photo).
 VENV_PHOTO_PYTHON = PROJECT_ROOT / "venv-photo" / "Scripts" / "python.exe"
@@ -51,6 +59,27 @@ UPSCALE_TIMEOUT = 4 * 3600  # 4 h: reescalar vídeo fotograma a fotograma es len
 
 def _ffmpeg_exe() -> str:
     return imageio_ffmpeg.get_ffmpeg_exe()
+
+
+def _run_ffmpeg(argv: list[str], timeout: float, etiqueta: str):
+    """Ejecuta ffmpeg con tope de tiempo.
+
+    Devuelve ``None`` si se agota: quien llama decide qué hacer (una sonda
+    devuelve valores por defecto; un trabajo devuelve error claro).
+    """
+    try:
+        return subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        logger.error("jarvis_bridge: %s agotó el tiempo (%s s)", etiqueta, timeout)
+        return None
+
 
 
 def _videos_in(folder: Path) -> tuple[Path, ...]:
@@ -64,10 +93,13 @@ def _videos_in(folder: Path) -> tuple[Path, ...]:
 
 def _probe_stream(path: Path) -> dict:
     """Duración, tamaño y fps leídos del stderr de ``ffmpeg -i``."""
-    proc = subprocess.run(
+    proc = _run_ffmpeg(
         [_ffmpeg_exe(), "-hide_banner", "-i", str(path)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        PROBE_TIMEOUT,
+        f"sonda de '{path.name}'",
     )
+    if proc is None:
+        return {}
     texto = proc.stderr or ""
     datos: dict = {}
     m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", texto)
@@ -195,9 +227,13 @@ def run_enhance(entrada: Path, salida: Path, params: dict) -> dict:
     argv += ["-c:a", "copy"]
     argv += ["-movflags", "+faststart", str(salida)]
 
-    proc = subprocess.run(
-        argv, capture_output=True, text=True, encoding="utf-8", errors="replace"
-    )
+    proc = _run_ffmpeg(argv, ENHANCE_TIMEOUT, "enhance")
+    if proc is None:
+        return {
+            "exit_code": -1,
+            "output": None,
+            "log": f"ffmpeg superó el tiempo máximo ({ENHANCE_TIMEOUT} s)",
+        }
     return {
         "exit_code": proc.returncode,
         "output": str(salida) if proc.returncode == 0 and salida.is_file() else None,
@@ -221,10 +257,11 @@ def _last_json(stdout: str) -> dict:
 
 def _probe_fps(entrada: Path) -> float:
     """fps del vídeo leyendo el stderr de ``ffmpeg -i`` (30 si no se lee)."""
-    proc = subprocess.run(
-        [_ffmpeg_exe(), "-i", str(entrada)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    proc = _run_ffmpeg(
+        [_ffmpeg_exe(), "-i", str(entrada)], PROBE_TIMEOUT, "sonda de fps"
     )
+    if proc is None:
+        return 30.0
     m = re.search(r"(\d+(?:\.\d+)?)\s*fps", proc.stderr or "")
     return float(m.group(1)) if m else 30.0
 
@@ -249,9 +286,13 @@ def run_upscale(entrada: Path, salida: Path, params: dict) -> dict:
             "-vf", f"fps={fps:g}", "-start_number", "0",
             str(frames_in / "%05d.png"),
         ]
-        proc = subprocess.run(
-            extract, capture_output=True, text=True, encoding="utf-8", errors="replace"
-        )
+        proc = _run_ffmpeg(extract, UPSCALE_TIMEOUT, "extraer fotogramas")
+        if proc is None:
+            return {
+                "exit_code": -1,
+                "output": None,
+                "log": f"ffmpeg superó el tiempo máximo ({UPSCALE_TIMEOUT} s)",
+            }
         if proc.returncode != 0:
             return {"exit_code": proc.returncode, "output": None, "log": (proc.stderr or "")[-2000:]}
 
@@ -280,9 +321,13 @@ def run_upscale(entrada: Path, salida: Path, params: dict) -> dict:
             "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p",
             "-c:a", "copy", "-shortest", str(salida),
         ]
-        proc = subprocess.run(
-            assemble, capture_output=True, text=True, encoding="utf-8", errors="replace"
-        )
+        proc = _run_ffmpeg(assemble, UPSCALE_TIMEOUT, "remontar vídeo")
+        if proc is None:
+            return {
+                "exit_code": -1,
+                "output": None,
+                "log": f"ffmpeg superó el tiempo máximo ({UPSCALE_TIMEOUT} s)",
+            }
         if proc.returncode != 0 or not salida.is_file():
             return {"exit_code": proc.returncode, "output": None, "log": (proc.stderr or "")[-2000:]}
 
