@@ -1474,3 +1474,24 @@ no hace falta volver a medirlos en cada ronda:
 - **Medios restantes**: `_check_cancel` reimplementado en 3 widgets,
   `unload_model` en `comfyui.py:99`/`wanvideo.py:167`, y
   `preferences.as_map/get_int` releyendo `settings.json` por cada valor.
+
+## 19. Notas de la ronda 8: empaquetado y unload_model (2026-11-18)
+
+**`unload_model()` tras cada clip (comfyui/wanvideo): no se cambia.** Viene del
+commit `b51f22c` («liberación de VRAM entre pestañas»): es política de VRAM, no
+un descuido, y hay un test que la fija (`test_wanvideo_engine.py:418`). El
+arreglo real —descargar al terminar la **secuencia**, no por clip— necesita un
+hook de fin de secuencia que hoy vive en `ui/video_widget.py` (bucle de escenas),
+así que es una sub-ronda de UI, no de motores.
+
+**Empaquetado: tres decisiones antes de construir el .exe** (ronda 9):
+1. **ffmpeg**: `imageio-ffmpeg` trae el binario (87,6 MB) y la app usa
+   `get_ffmpeg_exe()`. El spec lo empaqueta; la alternativa es exigir ffmpeg en
+   PATH (bundle más pequeño, dependencia externa). Decisión de producto.
+2. **Modelos y voces** (`tools/models`, `voices`): no se empaquetan, pero hoy
+   cuelgan de `core.paths.PROJECT_ROOT`, que en un .exe es de solo lectura. Hay
+   que decidir una ruta de usuario (p. ej. `%LOCALAPPDATA%\Imperator`).
+3. **PyInstaller**: no hay versión para Python 3.12 en esta máquina (la única es
+   de 3.14) ni red para instalarla, así que el dry-run real queda pendiente.
+   El spec ya incluye los `hiddenimports` de `tasks` (import dinámico desde la
+   ronda 6), los `datas` de `tools/` y de `imageio-ffmpeg`, y los `excludes`.
