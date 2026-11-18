@@ -1455,3 +1455,22 @@ chat (la de visión no lo tomaba) y el nombre `_short_timeout` unificado.
 (visión): sus firmas son incompatibles (`data, message` frente a
 `message, razon`), las ramas ya divergieron y los llamadores son distintos. La
 divergencia es **de firma, no de lógica**: quedan las dos a propósito.
+
+## 18. Verificación de medios/bajos de la auditoría (2026-11-18)
+
+Comprobado al abrir la ronda 6 (fase 0). **0 de 5 estaban resueltos**, así que
+no hace falta volver a medirlos en cada ronda:
+
+- **9 widgets >500 / 5 >1.000**: sigue igual (22 archivos, 13.061 líneas;
+  `video_widget.py` 2.250, `chronicle_widget.py` 1.589).
+- **i18n/accesibilidad**: 0 `tr()`, 0 `QShortcut`, 0 `setAccessibleName`;
+  `QMessageBox` **72** (eran 62 en la auditoría: +10 en las rondas 2-6).
+- **Empaquetado**: sin `pyproject.toml`, `LICENSE`, `CHANGELOG.md` ni `setup.py`.
+- **Tema claro roto**: `notes_widget.py:131` (`#1e1e1e`), `video_widget.py:1515`
+  (`#4d3a12`), más colores semánticos fijos en `chat_widget.py` y etiquetas de
+  `notes_widget.py`/`video_widget.py`.
+- **Capas invertidas**: **resuelto** en la ronda 6 (`6e63b2f`): `import
+  core.task_manager` ya no carga PyQt6.
+- **Medios restantes**: `_check_cancel` reimplementado en 3 widgets,
+  `unload_model` en `comfyui.py:99`/`wanvideo.py:167`, y
+  `preferences.as_map/get_int` releyendo `settings.json` por cada valor.
