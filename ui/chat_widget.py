@@ -21,6 +21,7 @@ from services import chat_params as cp
 from services import preferences as prefs
 from ui import markdown as md
 from ui.task_widget import TaskWidget
+from ui.pool_callbacks import PoolCallbackReceiver
 from ui.workers import ThreadWorker, gpu_slot, own_model_loaded, run_pool_task
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,10 @@ class ChatWidget(TaskWidget):
         self._pending_model: str | None = None
         self._worker: ChatWorker | None = None
         self._model_task = None
+        #: Token que descarta respuestas del pool de un motor anterior.
+        self._generation = 0
+        #: Receptor del pool atado a la vida del widget (C2).
+        self._details_rx = PoolCallbackReceiver(self, self._on_model_details, self._on_model_details_error)
         self._build_ui()
         self._populate_engines()
         self._populate_models()
@@ -231,21 +236,23 @@ class ChatWidget(TaskWidget):
             return
         self._model.setEnabled(False)
         self._model.addItem("Cargando modelos…")
+        self._generation += 1
+        self._details_rx.arm()
         self._model_task = run_pool_task(
             self._engine.list_model_details,
-            on_result=self._on_model_details,
-            on_error=self._on_model_details_error,
+            on_result=self._details_rx.handle,
+            on_error=self._details_rx.handle_error,
         )
 
-    def _on_model_details_error(self, message: str) -> None:
-        if sip.isdeleted(self):
+    def _on_model_details_error(self, token: int, message: str) -> None:
+        if sip.isdeleted(self) or token != self._generation:
             return
         logger.debug("No se pudieron listar los modelos de Ollama: %s", message)
-        self._on_model_details([])
+        self._on_model_details(token, [])
 
-    def _on_model_details(self, details: list) -> None:
+    def _on_model_details(self, token: int, details: list) -> None:
         """Rellena el selector con los modelos recibidos del worker."""
-        if sip.isdeleted(self):
+        if sip.isdeleted(self) or token != self._generation:
             return
         details = [dict(detail) for detail in details]
         names = [detail["name"] for detail in details]
