@@ -9,7 +9,7 @@ principal con su icono.
 
 # --- inicio bloque crash handling ---
 import sys
-import os  # noqa: F401 - reservado: el hook de humo usa os.environ (PASO 2.4)
+import os
 import traceback
 import datetime
 import faulthandler
@@ -38,6 +38,12 @@ def _install_excepthook() -> None:
 
         with open(_CRASH_LOG, "a", encoding="utf-8") as f:
             f.write(f"\n{'=' * 70}\n{ts}\n{'=' * 70}\n{tb_text}\n")
+
+        # En contexto no interactivo (tests, smoke) no se abre el diálogo: nadie
+        # lo cerraría y el proceso quedaría colgado esperando un clic que nunca
+        # llega (era lo que bloqueaba la suite durante 180 s).
+        if "unittest" in sys.modules or os.environ.get("IMPERATOR_GUI_SMOKE"):
+            return
 
         if _shown["done"]:
             return
