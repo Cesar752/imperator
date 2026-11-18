@@ -636,3 +636,19 @@ a este mensaje»:
   se abre su pestaña; si no, se ofrece abrirla con un diálogo. El punto de
   extensión sigue siendo `services/task_orchestrator.py`, no el widget de chat
   (ver [`VIDEO-GUION.md`](./VIDEO-GUION.md) §5).
+
+## 10. Decisión: callbacks del pool
+
+No se conectan lambdas, `functools.partial` ni cierres a `signals.result` de
+`run_pool_task`. El receptor debe ser un `QObject` hijo del widget
+([`ui/pool_callbacks.py`](./ui/pool_callbacks.py) → `PoolCallbackReceiver`) o un
+método ligado del widget.
+
+Motivo: en este proyecto, el callable suelto provoca un `TypeError` sin traza o
+un *access violation* nativo, según el contexto (ronda 2.5, 2026-11-18). Con el
+mismo widget y el mismo escenario, el receptor `QObject` da cero excepciones en
+la suite completa y la lambda con token daba dos. El receptor, al ser hijo del
+widget, desaparece con él y Qt rompe la conexión, así que un resultado tardío no
+llega a tocar widgets destruidos.
+
+Test de regresión: [`tests/test_pool_callbacks.py`](./tests/test_pool_callbacks.py).
