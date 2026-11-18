@@ -1,24 +1,19 @@
 """Registro y ciclo de vida de las tareas (plugins) de la plataforma."""
 
+from __future__ import annotations
+
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from importlib import import_module
+from typing import TYPE_CHECKING
 
 from core.api_manager import ApiManager
 from core.engine_manager import EngineManager
 from services.task_orchestrator import TaskOrchestrator
-from tasks.base_task import Task
-from tasks.assembler import AssemblerTask
-from tasks.chat import ChatTask
-from tasks.chronicle import ChronicleTask
-from tasks.document import DocumentTask
-from tasks.audio import AudioTask
-from tasks.image import ImageTask
-from tasks.notes import NotesTask
-from tasks.photo import PhotoTask
-from tasks.understanding import UnderstandingTask
-from tasks.video import VideoTask
-from tasks.video_enhance import VideoEnhanceTask
+
+if TYPE_CHECKING:
+    from tasks.base_task import Task
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +37,10 @@ class TaskDeps:
 
 
 # Una factory recibe las dependencias ya resueltas y devuelve la tarea.
-TaskFactory = Callable[[TaskDeps], Task]
+TaskFactory = Callable[[TaskDeps], "Task"]
 
 
-def _engine_only(task_cls: type[Task]) -> TaskFactory:
+def _engine_only(module: str, class_name: str) -> TaskFactory:
     """Adapta una tarea cuyo constructor solo pide ``engine_manager``.
 
     Evita repetir la misma lambda en cada entrada del registro y deja el punto
@@ -53,13 +48,19 @@ def _engine_only(task_cls: type[Task]) -> TaskFactory:
     """
 
     def factory(deps: TaskDeps) -> Task:
-        return task_cls(deps.engine_manager)
+        # Import perezoso: cada tarea importa su widget de ``ui`` (y con él
+        # PyQt6), así que en la cabecera haría que ``import core.task_manager``
+        # cargase la GUI.
+        cls = getattr(import_module(module), class_name)
+        return cls(deps.engine_manager)
 
     return factory
 
 
 def _chat_factory(deps: TaskDeps) -> Task:
     """El chat además recibe el orquestador (para desviar mensajes a otras tareas)."""
+    from tasks.chat import ChatTask
+
     return ChatTask(deps.engine_manager, deps.orchestrator)
 
 
@@ -69,16 +70,16 @@ def _chat_factory(deps: TaskDeps) -> Task:
 # necesitan el motor; una factory propia para las que pidan algo más.
 TASK_FACTORY: dict[str, TaskFactory] = {
     "chat": _chat_factory,
-    "document": _engine_only(DocumentTask),
-    "image": _engine_only(ImageTask),
-    "photo": _engine_only(PhotoTask),
-    "video": _engine_only(VideoTask),
-    "video_enhance": _engine_only(VideoEnhanceTask),
-    "understanding": _engine_only(UnderstandingTask),
-    "notes": _engine_only(NotesTask),
-    "chronicle": _engine_only(ChronicleTask),
-    "audio": _engine_only(AudioTask),
-    "assembler": _engine_only(AssemblerTask),
+    "document": _engine_only("tasks.document", "DocumentTask"),
+    "image": _engine_only("tasks.image", "ImageTask"),
+    "photo": _engine_only("tasks.photo", "PhotoTask"),
+    "video": _engine_only("tasks.video", "VideoTask"),
+    "video_enhance": _engine_only("tasks.video_enhance", "VideoEnhanceTask"),
+    "understanding": _engine_only("tasks.understanding", "UnderstandingTask"),
+    "notes": _engine_only("tasks.notes", "NotesTask"),
+    "chronicle": _engine_only("tasks.chronicle", "ChronicleTask"),
+    "audio": _engine_only("tasks.audio", "AudioTask"),
+    "assembler": _engine_only("tasks.assembler", "AssemblerTask"),
 }
 
 
