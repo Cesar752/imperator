@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
 
+from PyQt6 import sip
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
@@ -36,7 +37,7 @@ from services import document_params as dp
 from services import document_pipeline as dpl
 from services import preferences as prefs
 from ui.task_widget import TaskWidget
-from ui.workers import ThreadWorker, gpu_slot, run_pool_task
+from ui.workers import ThreadWorker, gpu_slot, own_model_loaded, run_pool_task
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,17 @@ class DocumentWorker(ThreadWorker):
 
     def work(self) -> str:
         """Ejecuta el plan con una reserva de GPU (una por documento, no por página)."""
-        with gpu_slot(self._scheduler, "document", liberar_otros=self._liberar_otros):
+        # El modelo de visión es tan grande como el del chat y sigue cargado
+        # entre documentos: si ya está en la VRAM no se reserva nada nuevo y no
+        # debe bloquearse el documento por falta de hueco.
+        with gpu_slot(
+            self._scheduler,
+            "document",
+            liberar_otros=self._liberar_otros,
+            already_loaded=lambda: own_model_loaded(
+                self._engine, getattr(self._plan, "model", None)
+            ),
+        ):
             return self._run_plan()
 
     def _run_plan(self) -> str:
@@ -733,6 +744,8 @@ class DocumentWidget(TaskWidget):
         )
 
     def _on_models_error(self, message: str) -> None:
+        if sip.isdeleted(self):
+            return
         logger.warning("No se pudieron listar los modelos de visión: %s", message)
         self._set_status(f"Ollama Vision no disponible: {message}")
         self._on_models([])
@@ -751,6 +764,8 @@ class DocumentWidget(TaskWidget):
 
     def _on_models(self, models: list) -> None:
         """Rellena el selector con los modelos recibidos (o con el default)."""
+        if sip.isdeleted(self):
+            return
         models = list(models)
         if not models:
             models = [dp.DEFAULT_MODEL]
