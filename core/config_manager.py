@@ -19,6 +19,8 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from core.paths import VOICES
+
 from services.atomic_io import atomic_write_json
 
 logger = logging.getLogger(__name__)
@@ -248,10 +250,10 @@ DEFAULT_ENGINES: list[dict[str, Any]] = [
     {
         "id": "piper_tts",
         "nombre": "Piper TTS",
-        "ruta": "voices",
+        "ruta": str(VOICES),
         "enabled": True,
         "parametros": {
-            "voices_dir": "voices",
+            "voices_dir": str(VOICES),
             "default_voice": "es_ES-davefx-medium",
         },
     },
@@ -291,7 +293,7 @@ DEFAULT_ENGINES: list[dict[str, Any]] = [
     {
         "id": "voice_clone",
         "nombre": "Clonar voz (XTTS-v2)",
-        "ruta": "voices/clones",
+        "ruta": str(VOICES / "clones"),
         "enabled": False,
         "parametros": {
             "model": "tts_models/multilingual/multi-dataset/xtts_v2",

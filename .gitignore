@@ -38,6 +38,11 @@ tools/models/
 # tampoco se versionan (son artefactos, no código).
 projects/
 
+# Artefactos de PyInstaller (ronda 9): nunca se versionan.
+build/
+dist/
+.venv-build/
+
 # Accesos directos de Windows: son binarios con rutas absolutas de la máquina
 # (pythonw.exe del venv, C:\Imperator\...), no son portables y cambian con cada
 # regeneración. El README explica cómo recrear Imperator.lnk con

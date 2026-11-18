@@ -79,7 +79,7 @@ from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import QApplication
 
 from core.config_manager import DEFAULT_SETTINGS, ConfigError, ConfigManager
-from core.paths import ASSETS, PROJECT_ROOT
+from core.paths import ASSETS, PROJECT_ROOT, ensure_dirs
 from ui.shimmer_splash import ShimmerSplash
 from ui.theme import apply_theme
 
@@ -198,6 +198,9 @@ def _force_taskbar_icon(window) -> None:
 
 
 def main() -> int:
+    # Las carpetas de datos de usuario (%APPDATA%) deben existir antes
+    # de que ningún motor escriba en ellas.
+    ensure_dirs()
     settings = _load_settings_safe()
     _configure_logging(settings)
 

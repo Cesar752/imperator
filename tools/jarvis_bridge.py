@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 import imageio_ffmpeg  # noqa: E402 - va tras fijar PROJECT_ROOT en sys.path
 
+from core.paths import MODELS  # noqa: E402 - va tras fijar sys.path
 from services import video_enhance_params as vp  # noqa: E402 - idem
 
 OUTPUT_DIR = PROJECT_ROOT / "output"
@@ -53,7 +54,7 @@ ENHANCE_TIMEOUT = 2 * 3600
 # Reescalado IA (Real-ESRGAN en venv-photo).
 VENV_PHOTO_PYTHON = PROJECT_ROOT / "venv-photo" / "Scripts" / "python.exe"
 UPSCALE_WORKER = PROJECT_ROOT / "tools" / "video_upscale_worker.py"
-MODELS_DIR = PROJECT_ROOT / "tools" / "models"
+MODELS_DIR = MODELS
 UPSCALE_TIMEOUT = 4 * 3600  # 4 h: reescalar vídeo fotograma a fotograma es lento.
 
 

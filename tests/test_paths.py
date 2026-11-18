@@ -16,23 +16,34 @@ sys.path.insert(0, str(ROOT))
 
 from core import paths  # noqa: E402
 
-#: Carpetas de datos de usuario que deben colgar de la raíz del proyecto.
-CARPETAS = {
+#: Carpetas versionadas: viven junto al código.
+DEL_PROYECTO = {"ASSETS": "assets"}
+
+#: Carpetas de datos: desde la ronda 9 viven en %APPDATA%/Imperator.
+DEL_USUARIO = {
     "OUTPUT": "output",
     "MUSIC": "music",
     "CACHE": "cache",
-    "ASSETS": "assets",
+    "MODELS": "models",
+    "VOICES": "voices",
 }
+
+CARPETAS = {**DEL_PROYECTO, **DEL_USUARIO}
 
 
 class PathsTest(unittest.TestCase):
-    def test_son_absolutas_y_cuelgan_de_la_raiz(self) -> None:
+    def test_las_carpetas_versionadas_cuelgan_del_proyecto(self) -> None:
         self.assertEqual(paths.PROJECT_ROOT, ROOT)
-        for nombre, carpeta in CARPETAS.items():
+        for nombre, carpeta in DEL_PROYECTO.items():
+            with self.subTest(ruta=nombre):
+                self.assertEqual(getattr(paths, nombre), paths.PROJECT_ROOT / carpeta)
+
+    def test_las_carpetas_de_datos_cuelgan_del_usuario(self) -> None:
+        for nombre, carpeta in DEL_USUARIO.items():
             ruta = getattr(paths, nombre)
             with self.subTest(ruta=nombre):
                 self.assertTrue(ruta.is_absolute(), f"{nombre} debe ser absoluta")
-                self.assertEqual(ruta, paths.PROJECT_ROOT / carpeta)
+                self.assertEqual(ruta, paths.USER_DATA_DIR / carpeta)
 
     def test_no_dependen_del_cwd(self) -> None:
         antes = {n: getattr(paths, n) for n in CARPETAS}

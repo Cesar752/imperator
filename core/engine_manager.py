@@ -5,6 +5,7 @@ from copy import deepcopy
 from typing import Callable
 
 from core.config_manager import DEFAULT_ENGINES, ConfigError, ConfigManager
+from core.paths import VOICES
 from engines.base_engine import Engine, EngineError
 from engines.bfl import BFLApiEngine
 from engines.cli_tool import CliVideoEngine
@@ -102,7 +103,7 @@ _OPENAI_COMPATIBLE_DEFAULTS: dict[str, tuple] = {
     "llama_cpp": (_LLAMACPP_DEFAULT_BASE_URL, "local-model", [], False),
     "lm_studio": (_LMSTUDIO_DEFAULT_BASE_URL, "local-model", [], False),
 }
-_PIPER_DEFAULT_VOICES_DIR = "voices"
+_PIPER_DEFAULT_VOICES_DIR = str(VOICES)
 _KOKORO_DEFAULT_VOICE = "ef_dora"
 _MUSICGEN_DEFAULT_MODEL = "small"
 _MUSICGEN_DEFAULT_DURATION = 8.0
@@ -117,7 +118,7 @@ _WHISPER_DEFAULT_COMPUTE_TYPE = "int8"
 _VOICE_CLONE_DEFAULT_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
 _VOICE_CLONE_DEFAULT_LANGUAGE = "es"
 _VOICE_CLONE_DEFAULT_DEVICE = "cuda"
-_VOICE_CLONE_DEFAULT_VOICES_DIR = "voices/clones"
+_VOICE_CLONE_DEFAULT_VOICES_DIR = str(VOICES / "clones")
 # Coqui no soporta Python 3.12 (el de la app): por defecto la síntesis se hace en
 # el venv de Python 3.11 vía subprocess (tools/xtts_worker.py).
 _VOICE_CLONE_DEFAULT_BACKEND = "subprocess"
