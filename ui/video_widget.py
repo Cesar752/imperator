@@ -8,6 +8,7 @@ import subprocess
 import time
 from dataclasses import replace
 from pathlib import Path
+from typing import Callable
 
 try:
     import imageio_ffmpeg
@@ -15,7 +16,7 @@ except ImportError:  # pragma: no cover - dependencia declarada en requirements.
     imageio_ffmpeg = None
 
 from PyQt6.QtCore import QSize, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QIcon, QPixmap
+from PyQt6.QtGui import QColor, QDesktopServices, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -26,6 +27,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -40,15 +42,18 @@ from PyQt6.QtWidgets import (
 )
 
 from core.frame_extractor import FrameExtractor
+from core.memory import release_memory
+from core.subprocess_utils import no_window_kwargs
 from core.video_assembler import VideoAssembler
-from engines.base_engine import CANCEL_MESSAGE, Engine, EngineError
+from engines.base_engine import CANCEL_MESSAGE, Engine, EngineError, chat_engine_reply
+from services import image_params as ip
 from services import preferences as prefs
 from services import system_stats as stats
 from services import video_params as vp
 from services import video_project as vproject
 from services import video_script as vs
 from ui.task_widget import TaskWidget
-from ui.workers import ThreadWorker, gpu_slot, run_pool_task
+from ui.workers import ThreadWorker, gpu_slot, own_model_loaded, run_pool_task
 
 logger = logging.getLogger(__name__)
 
@@ -76,13 +81,24 @@ class VideoWorker(ThreadWorker):
     def work(self) -> str:
         params = dict(self._params)
         params["cancel_check"] = self.isInterruptionRequested
+        # ``image_paths``/``prompts`` son claves de la UI (varias fotos), no del
+        # motor: se extraen aquí y se traducen a un ``image_path`` por llamada.
+        # Dejarlas pasar era el «unexpected keyword argument 'image_paths'».
         images = params.pop("image_paths", None)
         prompts = params.pop("prompts", None)
         # Un clip (o una secuencia entera) = una reserva de GPU.
         with gpu_slot(self._scheduler, "video", liberar_otros=self._liberar_otros):
-            if images and len(images) > 1:
-                # Varias imágenes: un clip por imagen y concatenación final.
-                return self._generate_sequence(images, prompts, params)
+            if images:
+                if len(images) == 1:
+                    # Una sola foto: mismo camino que el i2v de una imagen.
+                    params["image_path"] = images[0]
+                    params["prompt"] = self._prompt_for(0, prompts)
+                else:
+                    # Varias imágenes: un clip por imagen y concatenación final.
+                    return self._generate_sequence(images, prompts, params)
+            # ``prompt`` es obligatorio en el motor: si el modo no lo traía
+            # (p. ej. i2v), se envía vacío en vez de fallar por argumento ausente.
+            params.setdefault("prompt", "")
             params["progress_callback"] = self._on_progress
             # Duck-typing: el motor debe exponer generate_video() (VideoEngine).
             return str(self._engine.generate_video(**params))
@@ -131,6 +147,21 @@ class SequenceWorker(ThreadWorker):
     estilo y personajes repetidos + **encadenado i2v**: el último fotograma de una
     escena entra como imagen de la siguiente (``FrameExtractor``). Todo el trabajo
     pesado va bajo una sola reserva de GPU (``gpu_slot``).
+
+    La generación es **reanudable**: cada escena se guarda en el proyecto al
+    terminar y, al volver a lanzar, se salta el prefijo contiguo ya hecho y
+    continúa desde la primera que falta (con la misma semilla común). Entre
+    escena y escena se libera la memoria retenida (VRAM del motor, fotograma de
+    encadenado ya consumido y RAM ociosa del proceso con
+    :func:`core.memory.release_memory`), que es lo que evita que una secuencia
+    larga muera tras unas cuantas escenas por acumulación de memoria.
+
+    Con **fotos primero** (``keyframes=True`` y un ``image_engine``) cada escena
+    pasa por dos pasos: primero se genera su **foto** con el mismo prompt visual
+    y la misma semilla que usará el clip, y esa foto entra como primer fotograma
+    del clip i2v. Así cada escena tiene foto y prompt a la vez y el clip no
+    depende del fotograma anterior. Las fotos viven en el proyecto
+    (``foto_NN.png``) y se **reutilizan** si ya existen, igual que los clips.
     """
 
     def __init__(
@@ -144,9 +175,20 @@ class SequenceWorker(ThreadWorker):
         fps: int = 16,
         chain: bool = True,
         transitions: bool = False,
+        resume: bool = True,
+        release_between_scenes: bool = True,
+        width: int | None = None,
+        height: int | None = None,
+        keyframes: bool = False,
+        image_engine: Engine | None = None,
+        image_model: str | None = None,
+        image_negative: str = "",
+        only: int | None = None,
         parent=None,
         scheduler=None,
         liberar_otros=None,
+        on_release: Callable[[], None] | None = None,
+        trim: Callable[[], bool] | None = None,
     ) -> None:
         super().__init__(parent)
         self._engine = engine
@@ -157,21 +199,75 @@ class SequenceWorker(ThreadWorker):
         self._fps = fps
         self._chain = chain
         self._transitions = transitions
+        self._resume = resume
+        self._release_between_scenes = release_between_scenes
+        self._width = width
+        self._height = height
+        #: «Fotos primero»: foto por escena (motor de imagen) + clip i2v desde ella.
+        self._keyframes = keyframes
+        self._image_engine = image_engine
+        self._image_model = image_model
+        self._image_negative = image_negative
+        #: Si no es ``None``, se rehace **solo** esa escena (0-based); lo usa
+        #: «Regenerar esta escena» tras cambiar su foto, sin tocar las demás.
+        self._only = only
         self._scheduler = scheduler
         self._liberar_otros = liberar_otros
+        # ``on_release``/``trim`` son puntos de inyección para tests: cuentan y
+        # neutralizan la liberación sin tocar el working set del proceso.
+        self._on_release = on_release
+        self._trim = trim
 
     def work(self) -> dict:
         total = len(self._script.scenes)
         if total == 0:
             raise EngineError("El guion no tiene escenas que generar.")
-        extractor = FrameExtractor(self._project.directory)
-        clips: list[str] = []
+        project = self._project
+        # Reanudar = no rehacer el prefijo contiguo de escenas ya guardadas. Un
+        # hueco invalida las posteriores (el encadenado i2v dejaría de ser
+        # continuo), así que se regenera desde la primera que falta.
+        if self._only is not None:
+            # Una sola escena (p. ej. tras cambiar su foto): se rehace esa y solo
+            # esa, sin arrastrar a las posteriores.
+            start = max(0, min(int(self._only), total - 1))
+            end = start + 1
+        else:
+            start = project.resume_index() if self._resume else 0
+            end = total
+        if self._only is None and start:
+            logger.info(
+                "Proyecto '%s': %d escena(s) ya hechas; se reanuda en la %d.",
+                project.name,
+                start,
+                start + 1,
+            )
+        keyframes = self._keyframes and self._image_engine is not None
+        if self._keyframes and not keyframes:
+            logger.warning(
+                "Fotos primero activado sin motor de imagen: se genera sin fotos."
+            )
+        extractor = FrameExtractor(project.directory)
         previous_frame: str | None = None
+        if start > 0 and self._chain and not keyframes:
+            # El encadenado continúa con el último fotograma de la escena previa.
+            previous_frame = self._last_frame(
+                extractor, project.clip_path(start - 1), start - 1
+            )
+        # Un paso por escena, o dos si hay foto (foto + clip).
+        steps = (end - start) * 2 if keyframes else (end - start)
         with gpu_slot(self._scheduler, "video", liberar_otros=self._liberar_otros):
-            for index in range(total):
+            for index in range(start, end):
                 if self.isInterruptionRequested():
                     raise EngineError(CANCEL_MESSAGE)
-                mode = "i2v" if (self._chain and previous_frame) else "t2v"
+                consumed_frame = previous_frame
+                frame: str | None = None
+                if keyframes:
+                    # La foto de la escena es su primer fotograma: el clip no
+                    # depende del último fotograma del clip anterior.
+                    frame = self._ensure_keyframe(project, index, steps)
+                    mode = "i2v"
+                else:
+                    mode = "i2v" if (self._chain and previous_frame) else "t2v"
                 params = vp.scene_generate_params(
                     self._script,
                     index,
@@ -179,30 +275,79 @@ class SequenceWorker(ThreadWorker):
                     fps=self._fps,
                     mode=mode,
                     negative_prompt=self._negative_prompt,
-                    previous_frame=previous_frame,
+                    previous_frame=frame or previous_frame,
+                    width=self._width,
+                    height=self._height,
                 )
                 params["cancel_check"] = self.isInterruptionRequested
+                clip_step = index * 2 + 1 if keyframes else index
                 params["progress_callback"] = (
-                    lambda percent, message, i=index: self._on_scene_progress(
-                        i, total, percent, message
+                    lambda percent, message, i=clip_step, k=index: self._on_scene_progress(
+                        i, steps, percent, message, scene_label=f"Escena {k + 1}/{total}"
                     )
                 )
+                # Migas de pan: con el fallo registrado en el log, esta línea dice
+                # exactamente en qué escena (y modo) se quedó la secuencia, que es
+                # lo que faltaba para diagnosticar un corte a mitad de generación.
+                logger.info(
+                    "Proyecto '%s': generando escena %d/%d (modo %s).",
+                    project.name,
+                    index + 1,
+                    total,
+                    mode,
+                )
                 clip = Path(str(self._engine.generate_video(**params)))
-                destination = self._project.clip_path(index)
+                destination = project.clip_path(index)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 if clip.resolve() != destination.resolve():
                     shutil.copyfile(clip, destination)
-                clips.append(str(destination))
-                if self._chain:
+                if self._chain and not keyframes:
                     previous_frame = self._last_frame(extractor, destination, index)
+                # Guardado hecho: antes de la siguiente escena se suelta lo que
+                # retenía la anterior (es el punto que evita el peta por RAM).
+                if self._release_between_scenes and index + 1 < end:
+                    self._release_memory(consumed_frame)
 
+        # El último fotograma de encadenado ya no se necesita.
+        if previous_frame:
+            Path(previous_frame).unlink(missing_ok=True)
+
+        # Todas las escenas presentes (reanudadas + nuevas), en orden.
+        clips = [
+            str(path)
+            for index in range(total)
+            if (path := project.clip_path(index)).is_file()
+        ]
         sequence = None
         if len(clips) > 1:
-            builder = VideoAssembler(output_dir=self._project.directory)
+            builder = VideoAssembler(output_dir=project.directory)
             sequence = self._concat(builder, clips)
         elif clips:
             sequence = clips[0]
         return {"clips": clips, "sequence": sequence}
+
+    def _release_memory(self, consumed_frame: str | None) -> None:
+        """Suelta lo que retenía la escena anterior antes de empezar la siguiente.
+
+        - Los motores ComfyUI ya liberan su VRAM al terminar cada clip
+          (``POST /free`` dentro de ``generate_video``); se repite aquí por si el
+          motor no lo hace y para que la liberación quede explícita.
+        - El fotograma de encadenado que acaba de entrar en la escena ya no se
+          necesita: se borra para no dejar intermedios ni ocupar disco.
+        - ``release_memory`` fuerza un ``gc.collect()`` y devuelve al SO la RAM
+          ociosa del proceso (working set), que es lo que se acumulaba.
+        """
+        unload = getattr(self._engine, "unload_model", None)
+        if callable(unload):
+            try:
+                unload()
+            except Exception as exc:  # noqa: BLE001 - liberar no debe romper
+                logger.debug("No se pudo liberar el motor entre escenas: %s", exc)
+        if consumed_frame:
+            Path(consumed_frame).unlink(missing_ok=True)
+        release_memory(trim=self._trim)
+        if self._on_release is not None:
+            self._on_release()
 
     def _concat(self, builder: VideoAssembler, clips: list[str]) -> str:
         """Concatena los clips; con transiciones activadas usa ``xfade``."""
@@ -221,6 +366,37 @@ class SequenceWorker(ThreadWorker):
                 logger.warning("Transiciones no aplicadas (%s); corte seco.", exc)
         return str(builder.concat_clips(clips, output_name="secuencia.mp4"))
 
+    def _ensure_keyframe(self, project: "vproject.Project", index: int, steps: int) -> str:
+        """Devuelve la foto de la escena ``index``, generándola si aún no existe.
+
+        Se pide al motor de imagen con el prompt visual de la escena y su semilla
+        (``scene_image_params``), de modo que la foto es reproducible y coherente
+        con el clip. Si el fichero ya está en el proyecto (reanudación, o el
+        usuario lo sustituyó a mano) no se vuelve a gastar GPU en él.
+        """
+        frame = project.frame_path(index)
+        if frame.is_file():
+            return str(frame)
+        self.progress.emit(
+            int(((index * 2) / max(1, steps)) * 100),
+            f"Escena {index + 1}/{len(self._script.scenes)}: foto...",
+        )
+        params = vp.scene_image_params(
+            self._script,
+            index,
+            model=self._image_model,
+            width=self._width,
+            height=self._height,
+            negative_prompt=self._image_negative,
+            seed=vp.scene_seed(self._base_seed, index),
+        )
+        params["cancel_check"] = self.isInterruptionRequested
+        generated = Path(str(self._image_engine.generate_image(**params)))
+        frame.parent.mkdir(parents=True, exist_ok=True)
+        if generated.resolve() != frame.resolve():
+            shutil.copyfile(generated, frame)
+        return str(frame)
+
     def _last_frame(
         self, extractor: FrameExtractor, clip: Path, index: int
     ) -> str | None:
@@ -235,10 +411,22 @@ class SequenceWorker(ThreadWorker):
             return None
 
     def _on_scene_progress(
-        self, index: int, total: int, percent: int, message: str
+        self,
+        step: int,
+        steps: int,
+        percent: int,
+        message: str,
+        *,
+        scene_label: str = "",
     ) -> None:
-        overall = int(((index + percent / 100.0) / total) * 100)
-        self.progress.emit(overall, f"Escena {index + 1}/{total}: {message}")
+        """Progreso global de la secuencia a partir del paso que se está haciendo.
+
+        ``step``/``steps`` cuentan pasos (foto y clip son pasos distintos), pero
+        la etiqueta siempre habla de la escena, que es lo que el usuario sigue.
+        """
+        overall = int(((step + percent / 100.0) / max(1, steps)) * 100)
+        prefix = scene_label or f"Escena {step + 1}/{steps}"
+        self.progress.emit(overall, f"{prefix}: {message}")
 
 
 class ScriptWorker(ThreadWorker):
@@ -282,12 +470,89 @@ class ScriptWorker(ThreadWorker):
             aspect=self._aspect,
             style=self._style,
         )
-        with gpu_slot(self._scheduler, "chat", liberar_otros=self._liberar_otros):
-            reply = self._engine.chat(messages, model=self._model)
+        with gpu_slot(
+            self._scheduler,
+            "chat",
+            liberar_otros=self._liberar_otros,
+            already_loaded=lambda: own_model_loaded(self._engine, self._model),
+        ):
+            reply = chat_engine_reply(
+                self._engine,
+                messages,
+                model=self._model,
+                on_token=self._on_token,
+                cancel_check=self.isInterruptionRequested,
+            )
         script, error = vs.try_parse_script(reply)
         if script is None:
+            # Un guion que no parsea es casi siempre una respuesta **cortada**:
+            # un modelo que razona (qwen3.x) gasta la ventana de contexto
+            # "pensando" y el JSON se queda sin espacio, así que llega a medias y
+            # el parser falla con «Expecting ',' delimiter». Decirlo evita perder
+            # el tiempo mirando el motor cuando lo que hay que subir es num_ctx.
+            note = getattr(type(self._engine), "TRUNCATED_NOTE", None)
+            if note and note in reply:
+                raise EngineError(
+                    "El guion se cortó a mitad: se agotó el contexto de Ollama "
+                    "(el modelo llenó la ventana razonando antes de escribir el "
+                    "JSON). Sube 'num_ctx' del motor 'ollama' en engines.json "
+                    "(p. ej. 16384) y, si tienes OLLAMA_NUM_PARALLEL=2, ponlo a 1 "
+                    "para no repartir el contexto. Detalle: " + error
+                )
             raise EngineError(f"No se pudo interpretar el guion del modelo: {error}")
         return script
+
+    def _on_token(self, _delta: str, total: int) -> None:
+        """Avisa del avance del guion (streaming): caracteres recibidos."""
+        self.progress.emit(0, f"recibiendo… {total} caracteres")
+
+
+class ScriptExtensionWorker(ThreadWorker):
+    """Pide a Ollama **escenas nuevas** que continúen el guion cargado.
+
+    Devuelve una tupla de ``Scene`` (solo las nuevas): el guion existente no se
+    reescribe, así que las escenas ya generadas no se tocan.
+    """
+
+    def __init__(
+        self,
+        engine: Engine,
+        script: "vs.Script",
+        extra: int,
+        *,
+        model: str | None = None,
+        parent=None,
+        scheduler=None,
+        liberar_otros=None,
+    ) -> None:
+        super().__init__(parent)
+        self._engine = engine
+        self._script = script
+        self._extra = max(1, int(extra))
+        self._model = model
+        self._scheduler = scheduler
+        self._liberar_otros = liberar_otros
+
+    def work(self) -> tuple:
+        messages = vs.extension_messages(self._script, self._extra)
+        with gpu_slot(
+            self._scheduler,
+            "chat",
+            liberar_otros=self._liberar_otros,
+            already_loaded=lambda: own_model_loaded(self._engine, self._model),
+        ):
+            reply = chat_engine_reply(
+                self._engine,
+                messages,
+                model=self._model,
+                on_token=self._on_token,
+                cancel_check=self.isInterruptionRequested,
+            )
+        return vs.parse_extension(reply)
+
+    def _on_token(self, _delta: str, total: int) -> None:
+        """Avisa del avance de la ampliación (streaming)."""
+        self.progress.emit(0, f"recibiendo… {total} caracteres")
 
 
 class VideoWidget(TaskWidget):
@@ -305,11 +570,15 @@ class VideoWidget(TaskWidget):
         config_manager=None,
         parent=None,
         chat_engine: Engine | None = None,
+        image_engines: dict[str, Engine | None] | None = None,
     ) -> None:
         super().__init__(parent)
         self._engine: Engine | None = engine
         #: Motor de chat (Ollama) para generar el guion; puede ser ``None``.
         self._chat_engine: Engine | None = chat_engine
+        #: Motores de imagen (ComfyUI local + BFL de pago) para «Fotos primero».
+        self._image_engines: dict[str, Engine | None] = image_engines or {}
+        self._image_model_engine: dict[str, str] = {}
         self._config_manager = config_manager
         self._prefs = prefs.PrefsStore(config_manager)
         self._worker: VideoWorker | None = None
@@ -322,13 +591,19 @@ class VideoWidget(TaskWidget):
         self._clips: list[str] = []
         self._sequence_path: str | None = None
         self._script_worker = None
+        self._extend_worker = None
         self._reordering = False
+        #: Guardia del recálculo de avisos: marcar una celda emite ``itemChanged``
+        #: y sin esto la llamada se re-entraría hasta desbordar la pila.
+        self._refreshing_warnings = False
         self._stats_task = None
         self._ram_free_bytes: object = None
         self._ram_free_at = 0.0
         self._build_ui()
         self._populate_modes()
         self._populate_script_models()
+        self._populate_image_models()
+        self._restore_image_config()
         self._restore_timeout()
         self._refresh_system_stats()
         if self._engine is None:
@@ -433,12 +708,60 @@ class VideoWidget(TaskWidget):
         self._scene_table.setDragDropMode(QTableWidget.DragDropMode.InternalMove)
         self._scene_table.model().rowsMoved.connect(self._on_scene_rows_moved)
         self._scene_table.setIconSize(QSize(48, 27))
+        # Menú por escena (clic derecho): reemplazar su clip o su foto, o rehacer
+        # solo esa escena, sin tocar las demás.
+        self._scene_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._scene_table.customContextMenuRequested.connect(self._scene_context_menu)
+
+        # Avisos del validador ligero (determinista, sin modelo). No bloquean nada:
+        # solo orientan, y se recalculan al editar cualquier celda.
+        self._warnings = QLabel()
+        self._warnings.setWordWrap(True)
+        self._warnings.setVisible(False)
+        self._warnings.setStyleSheet("color: #d8a657;")
+        self._scene_table.itemChanged.connect(self._refresh_warnings)
+
+        # Añadir escenas: una en blanco (a mano) o varias que continúen la historia
+        # (se pide al modelo SOLO las nuevas, sin reescribir el guion).
+        self._add_scene_button = QPushButton("Añadir escena")
+        self._add_scene_button.setToolTip(
+            "Añade una escena en blanco al final para escribirla a mano."
+        )
+        self._add_scene_button.clicked.connect(self._add_blank_scene)
+        self._extend_spin = QSpinBox()
+        self._extend_spin.setRange(1, 10)
+        self._extend_spin.setValue(2)
+        self._extend_button = QPushButton("Ampliar con IA")
+        self._extend_button.setToolTip(
+            "Pide al modelo N escenas nuevas que continúen la historia, con el mismo "
+            "reparto y estilo."
+        )
+        self._extend_button.clicked.connect(self._extend_with_ai)
+        add_scene_row = QHBoxLayout()
+        add_scene_row.addWidget(self._add_scene_button)
+        add_scene_row.addWidget(QLabel("Nuevas:"))
+        add_scene_row.addWidget(self._extend_spin)
+        add_scene_row.addWidget(self._extend_button)
+        add_scene_row.addStretch(1)
 
         self._plan_button = QPushButton("Generar escenas")
         self._plan_button.clicked.connect(self._generate_sequence)
         self._send_button = QPushButton("Enviar al Ensamblador")
         self._send_button.setEnabled(False)
         self._send_button.clicked.connect(self._send_to_assembler)
+        self._new_button = QPushButton("Nuevo")
+        self._new_button.setToolTip(
+            "Empezar un vídeo desde cero: quita de la pestaña el guion, sus clips y "
+            "el proyecto cargado (el proyecto NO se borra del disco)."
+        )
+        # ``clicked`` emite un bool; la lambda evita depender del recorte de
+        # argumentos de PyQt (``_start_fresh`` tiene ``confirm`` keyword-only).
+        self._new_button.clicked.connect(lambda: self._start_fresh())
+        self._delete_project_button = QPushButton("Borrar proyecto")
+        self._delete_project_button.setToolTip(
+            "Borra del disco el proyecto cargado y todos sus clips."
+        )
+        self._delete_project_button.clicked.connect(self._delete_current_project)
 
         script_buttons = QHBoxLayout()
         script_buttons.addWidget(self._plan_button)
@@ -485,9 +808,38 @@ class VideoWidget(TaskWidget):
         transitions_row.addWidget(self._transitions_check)
         transitions_row.addWidget(self._transition_combo, 1)
 
+        # «Fotos primero»: una foto por escena antes de su clip (imagen → vídeo).
+        self._keyframes_check = QCheckBox("Fotos primero (imagen → vídeo)")
+        self._keyframes_check.setToolTip(
+            "Genera una foto por escena con su prompt visual y la usa como primer "
+            "fotograma del clip (i2v). Las fotos quedan en el proyecto y se "
+            "reutilizan si ya existen."
+        )
+        self._keyframes_check.toggled.connect(self._on_keyframes_toggled)
+        self._image_model = QComboBox()
+        self._image_model.setToolTip(
+            "Motor y modelo con el que se generan las fotos de las escenas "
+            "(«PAGO» es la API de Black Forest Labs)."
+        )
+        self._image_model.currentIndexChanged.connect(self._on_image_model_changed)
+
+        keyframes_row = QHBoxLayout()
+        keyframes_row.addWidget(self._keyframes_check)
+        keyframes_row.addWidget(self._image_model, 1)
+
+        self._resume_check = QCheckBox("Reanudar proyecto")
+        self._resume_check.setChecked(True)
+        self._resume_check.setToolTip(
+            "Si el proyecto ya tiene escenas, continúa desde la primera que falta "
+            "en vez de rehacerlo todo. Cada escena se guarda al terminar y la "
+            "semilla común del proyecto se conserva."
+        )
+
         self._projects_button = QPushButton("Proyectos…")
         self._projects_button.setToolTip("Abrir o borrar proyectos guardados.")
         self._projects_button.clicked.connect(self._open_projects_dialog)
+        script_buttons.addWidget(self._new_button)
+        script_buttons.addWidget(self._delete_project_button)
         script_buttons.addWidget(self._projects_button)
 
         self._script_group = QGroupBox("Guion · escenas")
@@ -495,7 +847,11 @@ class VideoWidget(TaskWidget):
         script_layout.addLayout(idea_row)
         script_layout.addLayout(model_row)
         script_layout.addLayout(transitions_row)
+        script_layout.addLayout(keyframes_row)
+        script_layout.addWidget(self._resume_check)
         script_layout.addWidget(self._scene_table)
+        script_layout.addWidget(self._warnings)
+        script_layout.addLayout(add_scene_row)
         script_layout.addLayout(script_buttons)
 
         self._generate_button = QPushButton("Generar")
@@ -595,18 +951,26 @@ class VideoWidget(TaskWidget):
         self._rebuild_scenes()
         self._script_group.setVisible(True)
         self._refresh_thumbnails()
+        hechas = len(self._clips)
+        extra = f" · {hechas} escena(s) ya generadas" if hechas else ""
         self._set_status(
-            f"Guion cargado: «{script.title}» ({len(script.scenes)} escenas)."
+            f"Guion cargado: «{script.title}» ({len(script.scenes)} escenas){extra}."
         )
 
     def _rebuild_scenes(self) -> None:
         script = self._script
-        self._scene_table.setRowCount(0)
-        if script is None:
-            return
-        self._scene_table.setRowCount(len(script.scenes))
-        for row, scene in enumerate(script.scenes):
-            self._set_scene_row(row, scene)
+        # Sin señales mientras se rellenan las filas: ``itemChanged`` dispararía un
+        # recálculo de avisos por cada celda.
+        self._scene_table.blockSignals(True)
+        try:
+            self._scene_table.setRowCount(0)
+            if script is not None:
+                self._scene_table.setRowCount(len(script.scenes))
+                for row, scene in enumerate(script.scenes):
+                    self._set_scene_row(row, scene)
+        finally:
+            self._scene_table.blockSignals(False)
+        self._refresh_warnings()
 
     def _set_scene_row(self, row: int, scene) -> None:
         heading = QTableWidgetItem(scene.heading or f"Escena {row + 1}")
@@ -663,12 +1027,46 @@ class VideoWidget(TaskWidget):
         script = self._apply_transition_override(script)
         script = self._with_config(script)
         self._script = script
+
+        # Reanudar conserva las escenas ya guardadas y la semilla común del
+        # proyecto: así una generación interrumpida no vuelve a empezar de cero
+        # ni pierde la coherencia visual de los clips anteriores.
+        resume = self._resume_check.isChecked()
+        existing = vproject.find_project(script.title) if resume else None
+        base_seed = (
+            existing.base_seed
+            if existing is not None and existing.base_seed is not None
+            else vp.new_base_seed()
+        )
         try:
-            project = vproject.create_project(script.title, script, overwrite=True)
+            project = vproject.create_project(
+                script.title, script, overwrite=True, base_seed=base_seed
+            )
         except (OSError, vs.ScriptError) as exc:
             self._set_status(f"No se pudo crear el proyecto: {exc}")
             return
         self._project = project
+
+        pending = project.resume_index() if resume else 0
+        if resume and pending >= len(script.scenes):
+            self._set_status(
+                f"El proyecto «{project.name}» ya tiene las {len(script.scenes)} "
+                "escenas; se recompondrá la secuencia."
+            )
+        elif resume and pending:
+            self._set_status(
+                f"Reanudando «{project.name}» desde la escena {pending + 1}."
+            )
+
+        # «Fotos primero»: se hace una foto por escena antes de su clip. Sin
+        # motor de imagen disponible se avisa y se sigue sin fotos (t2v/encadenado).
+        keyframes = self._keyframes_check.isChecked()
+        image_engine = self._current_image_engine() if keyframes else None
+        if keyframes and image_engine is None:
+            self._set_status(
+                "«Fotos primero» activado, pero no hay motor de imagen "
+                "disponible; se generará sin fotos."
+            )
 
         set_timeout = getattr(self._engine, "set_timeout", None)
         if callable(set_timeout):
@@ -678,15 +1076,23 @@ class VideoWidget(TaskWidget):
 
         self._set_busy(True)
         self._progress.setValue(0)
-        self._set_status("Generando escenas... 0%")
+        if not (resume and pending):
+            self._set_status("Generando escenas... 0%")
         self._worker = SequenceWorker(
             self._engine,
             script,
             project,
-            base_seed=vp.new_base_seed(),
+            base_seed=base_seed,
             negative_prompt=self._negative_prompt.text().strip(),
             fps=self._fps.value(),
             transitions=self._transitions_check.isChecked(),
+            resume=resume,
+            width=self._width.value(),
+            height=self._height.value(),
+            keyframes=keyframes,
+            image_engine=image_engine,
+            image_model=self._image_model.currentData(),
+            image_negative=self._negative_prompt.text().strip(),
             parent=self,
             scheduler=self._gpu_scheduler(),
             liberar_otros=self._gpu_liberar_otros,
@@ -717,6 +1123,395 @@ class VideoWidget(TaskWidget):
         self.clips_ready.emit(target)
         self._set_status("Secuencia enviada al Ensamblador.")
 
+    def _start_fresh(self, *, confirm: bool = True) -> None:
+        """Deja la pestaña lista para un **vídeo nuevo**.
+
+        Quita el guion, sus clips y el proyecto **de la pestaña**; no toca el disco
+        (para eso están «Borrar proyecto» y el diálogo «Proyectos…»). Sin esto,
+        al terminar un vídeo la pestaña seguía mostrando el anterior y no había
+        forma clara de empezar otro desde cero.
+        """
+        project = self._project
+        if confirm and project is not None and project.saved_clips():
+            answer = QMessageBox.question(
+                self,
+                "Empezar de cero",
+                "Se quitará de la pestaña el guion y sus clips.\n\n"
+                f"El proyecto «{project.name}» seguirá en disco "
+                "(usa «Borrar proyecto» para eliminarlo).\n\n¿Continuar?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._script = None
+        self._project = None
+        self._clips = []
+        self._sequence_path = None
+        self._last_path = None
+        self._scene_table.setRowCount(0)
+        self._send_button.setEnabled(False)
+        self._save_button.setEnabled(False)
+        self._open_button.setEnabled(False)
+        self._progress.setValue(0)
+        self._idea.clear()
+        self._set_status(
+            "Vídeo nuevo: escribe una idea y pulsa «Generar guion», o pega un guion "
+            "y revisa la tabla."
+        )
+
+    def _delete_current_project(self) -> None:
+        """Borra del disco el proyecto cargado y deja la pestaña en blanco."""
+        project = self._project
+        if project is None:
+            self._set_status(
+                "No hay proyecto cargado. Usa «Proyectos…» para elegir uno y borrarlo."
+            )
+            return
+        answer = QMessageBox.question(
+            self,
+            "Borrar proyecto",
+            f"¿Borrar el proyecto «{project.name}» y todos sus clips del disco?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        name = project.name
+        if vproject.delete_project(project.directory):
+            self._start_fresh(confirm=False)
+            self._set_status(f"Proyecto «{name}» borrado del disco.")
+        else:
+            self._set_status(f"No se pudo borrar el proyecto «{name}».")
+
+    # ---- Edición por escena (clip / foto) -------------------------
+
+    @staticmethod
+    def _output_dir() -> Path:
+        """Carpeta ``output/`` (para abrir los diálogos donde suelen estar los MP4)."""
+        return Path(__file__).resolve().parent.parent / "output"
+
+    def _refresh_from_project(self, *, sequence_valid: bool = True) -> None:
+        """Recalcula clips y secuencia del proyecto tras tocar un fichero.
+
+        Con ``sequence_valid=False`` la ``secuencia.mp4`` guardada queda obsoleta
+        (se ha cambiado un clip), así que se deja de ofrecer hasta recomponerla.
+        """
+        project = self._project
+        if project is None:
+            return
+        self._clips = [str(path) for path in project.saved_clips()]
+        if not sequence_valid:
+            self._sequence_path = None
+        elif self._clips:
+            sequence = project.directory / "secuencia.mp4"
+            self._sequence_path = (
+                str(sequence) if sequence.is_file() else self._clips[-1]
+            )
+        else:
+            self._sequence_path = None
+        self._send_button.setEnabled(
+            bool(self._clips) and self._sequence_path is not None
+        )
+
+    def _scene_context_menu(self, pos) -> None:
+        """Clic derecho en una escena: reemplazar su clip/foto o rehacerla."""
+        if self._script is None or self._project is None:
+            return
+        if (self._worker is not None and self._worker.isRunning()) or (
+            self._script_worker is not None and self._script_worker.isRunning()
+        ):
+            return
+        item = self._scene_table.itemAt(pos)
+        if item is None:
+            return
+        row = item.row()
+        menu = QMenu(self)
+        replace_clip = menu.addAction("Reemplazar clip (MP4)…")
+        replace_photo = menu.addAction("Reemplazar foto (PNG/JPG)…")
+        regenerate = menu.addAction("Regenerar esta escena")
+        quitar_foto = menu.addAction("Quitar foto")
+        chosen = menu.exec(self._scene_table.viewport().mapToGlobal(pos))
+        if chosen is replace_clip:
+            self._replace_scene_clip(row)
+        elif chosen is replace_photo:
+            self._replace_scene_photo(row)
+        elif chosen is regenerate:
+            self._regenerate_scene(row)
+        elif chosen is quitar_foto:
+            self._clear_scene_photo(row)
+
+    def _replace_scene_clip(self, row: int) -> None:
+        """Pone otro MP4 (p. ej. uno recién generado en ``output/``) como clip."""
+        project = self._project
+        if project is None:
+            return
+        source, _ = QFileDialog.getOpenFileName(
+            self,
+            f"Clip para la escena {row + 1}",
+            str(self._output_dir()),
+            "Vídeo (*.mp4 *.webm *.mov)",
+        )
+        if not source:
+            return
+        try:
+            shutil.copyfile(source, project.clip_path(row))
+        except OSError as exc:
+            self._set_status(f"No se pudo reemplazar el clip: {exc}")
+            return
+        # La miniatura cacheada ya no corresponde al clip nuevo.
+        (project.directory / f"miniatura_{row:02d}.png").unlink(missing_ok=True)
+        self._refresh_from_project(sequence_valid=False)
+        self._refresh_thumbnails()
+        self._set_status(
+            f"Escena {row + 1}: clip reemplazado por «{Path(source).name}». "
+            "Pulsa «Generar escenas» para recomponer la secuencia (no rehará las "
+            "escenas ya hechas)."
+        )
+
+    def _replace_scene_photo(self, row: int) -> None:
+        """Cambia la **foto** de arranque de la escena (sirve para cambiar el personaje)."""
+        project = self._project
+        if project is None:
+            return
+        source, _ = QFileDialog.getOpenFileName(
+            self,
+            f"Foto para la escena {row + 1}",
+            str(self._output_dir()),
+            "Imagen (*.png *.jpg *.jpeg *.webp)",
+        )
+        if not source:
+            return
+        try:
+            shutil.copyfile(source, project.frame_path(row))
+        except OSError as exc:
+            self._set_status(f"No se pudo reemplazar la foto: {exc}")
+            return
+        self._set_status(
+            f"Escena {row + 1}: foto reemplazada por «{Path(source).name}». "
+            "Pulsa «Regenerar esta escena» para rehacer su clip con la nueva foto."
+        )
+
+    def _clear_scene_photo(self, row: int) -> None:
+        """Quita la foto de la escena (su clip se rehará sin foto si se regenera)."""
+        project = self._project
+        if project is None:
+            return
+        project.frame_path(row).unlink(missing_ok=True)
+        self._set_status(f"Escena {row + 1}: foto quitada.")
+
+    def _regenerate_scene(self, row: int) -> None:
+        """Rehace **solo** el clip de esa escena (con su foto actual, si la hay)."""
+        if self._engine is None:
+            self._set_status("Wan Video no está configurado.")
+            return
+        if self._worker is not None and self._worker.isRunning():
+            return
+        script = self._script_from_table()
+        if script is None or self._project is None:
+            self._set_status("Carga un guion antes de regenerar una escena.")
+            return
+        script = self._with_config(self._apply_transition_override(script))
+        self._script = script
+        project = self._project
+        # Se borra el clip (y su miniatura) para que el worker lo rehaga.
+        project.clip_path(row).unlink(missing_ok=True)
+        (project.directory / f"miniatura_{row:02d}.png").unlink(missing_ok=True)
+        self._refresh_from_project(sequence_valid=False)
+
+        keyframes = self._keyframes_check.isChecked()
+        image_engine = self._current_image_engine() if keyframes else None
+        set_timeout = getattr(self._engine, "set_timeout", None)
+        if callable(set_timeout):
+            set_timeout(self._timeout.value())
+        if not self._warn_low_ram():
+            return
+        base_seed = (
+            project.base_seed
+            if project.base_seed is not None
+            else vp.new_base_seed()
+        )
+        self._set_busy(True)
+        self._progress.setValue(0)
+        self._set_status(f"Regenerando la escena {row + 1}…")
+        self._worker = SequenceWorker(
+            self._engine,
+            script,
+            project,
+            base_seed=base_seed,
+            negative_prompt=self._negative_prompt.text().strip(),
+            fps=self._fps.value(),
+            transitions=self._transitions_check.isChecked(),
+            resume=False,
+            only=row,
+            width=self._width.value(),
+            height=self._height.value(),
+            keyframes=keyframes,
+            image_engine=image_engine,
+            image_model=self._image_model.currentData(),
+            image_negative=self._negative_prompt.text().strip(),
+            parent=self,
+            scheduler=self._gpu_scheduler(),
+            liberar_otros=self._gpu_liberar_otros,
+        )
+        self._worker.progress.connect(self._on_progress)
+        self._worker.result.connect(self._on_sequence_ready)
+        self._worker.failed.connect(self._on_error)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.start()
+
+    def _add_blank_scene(self) -> None:
+        """Añade una escena vacía al final del guion (para escribirla a mano)."""
+        if self._script is None:
+            self._set_status("Genera o carga un guion antes de añadir escenas.")
+            return
+        number = len(self._script.scenes) + 1
+        nueva = vs.Scene(
+            heading=f"ESC {number}",
+            action="(describe qué ocurre en esta escena)",
+            visual_prompt="(describe qué se ve en el plano)",
+            narration="",
+            duration_s=vs.clamp_duration(4),
+        )
+        self._script = replace(self._script, scenes=(*self._script.scenes, nueva))
+        self._rebuild_scenes()
+        self._refresh_thumbnails()
+        self._set_status(
+            f"Escena {number} añadida. Edítala en la tabla y pulsa «Generar escenas» "
+            "(solo generará las que falten)."
+        )
+
+    def _extend_with_ai(self) -> None:
+        """Pide al modelo N escenas nuevas que continúen el guion cargado."""
+        if self._chat_engine is None:
+            self._set_status("Ollama no está configurado; no se puede ampliar el guion.")
+            return
+        if self._script is None:
+            self._set_status("Genera o carga un guion antes de ampliarlo.")
+            return
+        if self._script_worker is not None and self._script_worker.isRunning():
+            return
+        if self._worker is not None and self._worker.isRunning():
+            return
+        if self._extend_worker is not None and self._extend_worker.isRunning():
+            return
+        extra = self._extend_spin.value()
+        self._script_button.setEnabled(False)
+        self._extend_button.setEnabled(False)
+        self._extend_button.setText("Ampliando…")
+        self._set_status(f"Pidiendo {extra} escena(s) nuevas al modelo…")
+        self._extend_worker = ScriptExtensionWorker(
+            self._chat_engine,
+            self._script,
+            extra,
+            model=self._script_model.currentData(),
+            parent=self,
+            scheduler=self._gpu_scheduler(),
+            liberar_otros=self._gpu_liberar_otros,
+        )
+        self._extend_worker.result.connect(self._on_extension_ready)
+        self._extend_worker.failed.connect(self._on_extension_failed)
+        self._extend_worker.progress.connect(self._on_extension_progress)
+        self._extend_worker.finished.connect(self._on_extension_finished)
+        self._extend_worker.start()
+
+    def _on_extension_ready(self, scenes) -> None:
+        if self._script is None:
+            return
+        try:
+            updated = vs.extend_script(self._script, tuple(scenes))
+        except vs.ScriptError as exc:
+            self._set_status(f"No se pudo ampliar el guion: {exc}")
+            return
+        self._script = updated
+        self._rebuild_scenes()
+        self._refresh_thumbnails()
+        self._set_status(
+            f"Guion ampliado con {len(scenes)} escena(s) (ahora "
+            f"{len(updated.scenes)}). Pulsa «Generar escenas» para generar solo las "
+            "nuevas."
+        )
+
+    def _on_extension_progress(self, _percent: int, message: str) -> None:
+        """Avance de la ampliación (streaming)."""
+        self._set_status(f"Ampliando el guion… {message}")
+
+    def _on_extension_failed(self, message: str) -> None:
+        self._set_status(f"No se pudo ampliar el guion: {message}")
+
+    def _on_extension_finished(self) -> None:
+        self._extend_button.setEnabled(True)
+        self._extend_button.setText("Ampliar con IA")
+        self._script_button.setEnabled(self._chat_engine is not None)
+        self._extend_worker = None
+
+    def _script_for_warnings(self) -> "vs.Script | None":
+        """Copia silenciosa del guion con lo que hay en la tabla (sin validar).
+
+        Sirve para calcular avisos mientras se edita; usar ``_script_from_table``
+        escribiría el estado en cada pulsación.
+        """
+        script = self._script
+        if script is None:
+            return None
+        scenes = []
+        for row, scene in enumerate(script.scenes):
+            scenes.append(
+                replace(
+                    scene,
+                    narration=self._cell_text(row, 1) or scene.narration,
+                    visual_prompt=self._cell_text(row, 2) or scene.visual_prompt,
+                    duration_s=vs.clamp_duration(
+                        self._cell_text(row, 3), scene.duration_s
+                    ),
+                )
+            )
+        return replace(script, scenes=tuple(scenes))
+
+    def _refresh_warnings(self) -> None:
+        """Recalcula los avisos y los marca en la tabla, con guardia de reentrada.
+
+        Marcar una celda (``setData``/``setBackground``/``setToolTip``) emite
+        ``itemChanged``: sin el guardia, ``_refresh_warnings`` se volvería a llamar
+        a sí misma de forma infinita (desbordaba la pila en los tests).
+        """
+        if self._refreshing_warnings:
+            return
+        self._refreshing_warnings = True
+        try:
+            self._refresh_warnings_inner()
+        finally:
+            self._refreshing_warnings = False
+
+    def _refresh_warnings_inner(self) -> None:
+        label = self._warnings
+        script = self._script_for_warnings()
+        if script is None:
+            label.setVisible(False)
+            return
+        warnings = vs.script_warnings(script)
+        for row in range(self._scene_table.rowCount()):
+            item = self._scene_table.item(row, 0)
+            if item is not None:
+                item.setData(Qt.ItemDataRole.BackgroundRole, None)
+                item.setToolTip("")
+        by_scene: dict[int, list[str]] = {}
+        for warning in warnings:
+            if warning.scene is not None:
+                by_scene.setdefault(warning.scene, []).append(warning.message)
+        for scene_number, messages in by_scene.items():
+            item = self._scene_table.item(scene_number - 1, 0)
+            if item is not None:
+                item.setBackground(QColor("#4d3a12"))
+                item.setToolTip("\n".join(messages))
+        if not warnings:
+            label.setVisible(False)
+            return
+        first = "; ".join(warning.message for warning in warnings[:4])
+        extra = f" (+{len(warnings) - 4} más)" if len(warnings) > 4 else ""
+        label.setText(f"⚠ {len(warnings)} aviso(s): {first}{extra}")
+        label.setVisible(True)
+
     def _generate_script(self) -> None:
         """Pide un guion a Ollama y lo carga en la tabla de escenas."""
         if self._chat_engine is None:
@@ -728,6 +1523,11 @@ class VideoWidget(TaskWidget):
             return
         if self._script_worker is not None and self._script_worker.isRunning():
             return
+        # Un guion nuevo es un vídeo nuevo: se limpia lo anterior para no arrastrar
+        # los clips del anterior. Al llegar el guion, si su título coincide con un
+        # proyecto existente se reengancha (reanudar tras un corte, ver TODO §10.6).
+        self._start_fresh(confirm=False)
+        self._idea.setText(idea)
         self._script_button.setEnabled(False)
         self._script_button.setText("Generando guion...")
         self._set_status("Generando guion con el modelo...")
@@ -743,6 +1543,7 @@ class VideoWidget(TaskWidget):
         )
         self._script_worker.result.connect(self._on_script_ready)
         self._script_worker.failed.connect(self._on_script_failed)
+        self._script_worker.progress.connect(self._on_script_progress)
         self._script_worker.finished.connect(self._on_script_finished)
         self._script_worker.start()
 
@@ -761,7 +1562,16 @@ class VideoWidget(TaskWidget):
         self._generate_script()
 
     def _on_script_ready(self, script) -> None:
-        self.load_script(script)
+        # Un guion recién generado no trae proyecto. Si ya existe uno con el mismo
+        # título (escenas hechas en una sesión anterior), se engancha: así la tabla
+        # muestra sus miniaturas y «Enviar al Ensamblador» queda disponible sin
+        # volver a generar nada. Antes se cargaba con ``project=None`` y el widget
+        # «no sabía» que las escenas ya estaban hechas.
+        self.load_script(script, vproject.find_project(script.title))
+
+    def _on_script_progress(self, _percent: int, message: str) -> None:
+        """Avance del guion (streaming): se muestra mientras el modelo responde."""
+        self._set_status(f"Generando guion… {message}")
 
     def _on_script_failed(self, message: str) -> None:
         self._set_status(f"No se pudo generar el guion: {message}")
@@ -797,6 +1607,61 @@ class VideoWidget(TaskWidget):
             index = self._script_model.findData(default)
             if index >= 0:
                 self._script_model.setCurrentIndex(index)
+
+    # ---- Fotos de escena (imagen → vídeo) -------------------------
+
+    def set_engines(self, engines: dict[str, Engine | None] | None) -> None:
+        """Actualiza los motores de imagen disponibles (ComfyUI local + BFL)."""
+        self._image_engines = engines or {}
+        self._populate_image_models()
+
+    def _populate_image_models(self) -> None:
+        """Rellena el combo con los modelos de todos los motores de imagen."""
+        self._image_model.blockSignals(True)
+        self._image_model.clear()
+        self._image_model_engine = {}
+        for engine_id, engine in self._image_engines.items():
+            if engine is None:
+                continue
+            list_models = getattr(engine, "list_models", None)
+            if not callable(list_models):
+                continue
+            try:
+                models = [str(name) for name in list_models()]
+            except Exception as exc:  # noqa: BLE001 - un motor caído no rompe la UI
+                logger.debug("No se pudieron listar los modelos de imagen: %s", exc)
+                continue
+            default = getattr(engine, "default_model", None)
+            if default and default not in models:
+                models.insert(0, default)
+            for model_id in models:
+                self._image_model.addItem(
+                    ip.display_model(model_id, engine_id), model_id
+                )
+                self._image_model_engine[model_id] = engine_id
+        saved = self._prefs.get_str(prefs.VIDEO_IMAGE_MODEL)
+        index = self._image_model.findData(saved) if saved else -1
+        self._image_model.setCurrentIndex(index if index >= 0 else 0)
+        self._image_model.blockSignals(False)
+
+    def _current_image_engine(self) -> Engine | None:
+        """Motor de imagen elegido para las fotos de escena (o ``None``)."""
+        model = self._image_model.currentData()
+        return self._image_engines.get(self._image_model_engine.get(model))
+
+    def _restore_image_config(self) -> None:
+        """Restaura de las preferencias la casilla de fotos y el modelo elegido."""
+        self._keyframes_check.setChecked(self._prefs.get_bool(prefs.VIDEO_KEYFRAMES))
+        saved = self._prefs.get_str(prefs.VIDEO_IMAGE_MODEL)
+        index = self._image_model.findData(saved) if saved else -1
+        if index >= 0:
+            self._image_model.setCurrentIndex(index)
+
+    def _on_keyframes_toggled(self, checked: bool) -> None:
+        self._prefs.set_bool(prefs.VIDEO_KEYFRAMES, checked)
+
+    def _on_image_model_changed(self) -> None:
+        self._prefs.set(prefs.VIDEO_IMAGE_MODEL, self._image_model.currentData())
 
     def _restore_config(self) -> None:
         """Restaura fps y transiciones guardados en ``Script.config``."""
@@ -940,6 +1805,7 @@ class VideoWidget(TaskWidget):
                 capture_output=True,
                 text=True,
                 timeout=_AUDIO_PROBE_TIMEOUT,
+                **no_window_kwargs(),
             )
         except Exception as exc:  # noqa: BLE001 - binario ausente o fallo de ejecución
             logger.debug("No se pudo sondear la duración del audio: %r", exc)
@@ -965,7 +1831,25 @@ class VideoWidget(TaskWidget):
             self._sync_prompts()
             photos = [p for p in self._photos if p["path"]]
             if not photos:
-                self._set_status("Selecciona una o más imágenes para el modo Imagen a vídeo.")
+                # «Generar» hace un clip i2v y necesita una foto. Con un guion
+                # cargado se nombra el botón exacto; y si sus escenas ya están
+                # todas hechas, el paso que falta es enviarlas al Ensamblador.
+                escenas = len(self._script.scenes) if self._script else 0
+                if escenas and len(self._clips) >= escenas:
+                    self._set_status(
+                        f"Las {escenas} escenas ya están generadas. Usa "
+                        "«Enviar al Ensamblador» para montar el vídeo final "
+                        "(y Audio para la narración)."
+                    )
+                elif escenas:
+                    self._set_status(
+                        "«Generar» hace un clip de imagen→vídeo y necesita una foto. "
+                        f"Para las {escenas} escenas del guion usa «Generar escenas»."
+                    )
+                else:
+                    self._set_status(
+                        "Selecciona una o más imágenes para el modo Imagen a vídeo."
+                    )
                 return
             if any(not p["prompt"] for p in photos):
                 self._set_status("Escribe un prompt para cada foto.")
@@ -1236,7 +2120,13 @@ class VideoWidget(TaskWidget):
             self._photos_container,
             self._plan_button,
             self._send_button,
+            self._new_button,
+            self._delete_project_button,
+            self._add_scene_button,
+            self._extend_spin,
+            self._extend_button,
             self._scene_table,
+            self._resume_check,
         )
 
     def _busy_only_widgets(self) -> tuple:
